@@ -432,33 +432,33 @@ onMounted(() => {
       </div>
 
       <!-- Search Results Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto p-0.5">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[460px] overflow-y-auto p-0.5">
         <div
           v-for="app in catalog"
           :key="app.name + app.source"
-          class="p-2.5 rounded-lg bg-black/40 border border-white/10 hover:border-sky-500/30 flex flex-col justify-between gap-2"
+          class="p-3 rounded-xl bg-black/40 border border-white/10 hover:border-sky-500/40 transition flex flex-col justify-between gap-2.5 shadow-sm"
         >
           <div>
             <div class="flex items-start justify-between gap-2">
-              <div>
-                <span class="mono font-bold text-xs text-sky-300">{{ app.name }}</span>
-                <span class="mono text-[10.5px] text-gray-400 ml-1.5">{{ app.version }}</span>
+              <div class="min-w-0">
+                <span class="mono font-bold text-[18px] text-sky-300">{{ app.name }}</span>
+                <span class="mono text-[13px] text-gray-300 font-semibold ml-2">{{ app.version }}</span>
               </div>
-              <span :class="app.installed ? 'badge badge-green' : 'badge badge-gray'">
+              <span class="badge text-[11px] font-bold px-2.5 py-0.5 shrink-0" :class="app.installed ? 'badge-green' : 'badge-gray'">
                 {{ app.installed ? 'INSTALLED' : app.category }}
               </span>
             </div>
-            <p class="text-[11px] text-gray-300 mt-1 line-clamp-2">{{ app.description }}</p>
+            <p class="text-[13px] text-gray-200 mt-1.5 line-clamp-2 leading-relaxed">{{ app.description }}</p>
           </div>
 
-          <div class="flex items-center justify-between pt-2 border-t border-white/5">
-            <span class="text-[10px] text-gray-400 mono truncate max-w-[170px]" :title="app.source">
+          <div class="flex items-center justify-between pt-2.5 border-t border-white/5">
+            <span class="text-[11.5px] text-gray-400 mono font-medium truncate max-w-[170px]" :title="app.source">
               {{ app.source }}
             </span>
             <div class="flex items-center gap-1.5">
               <button
                 v-if="!app.installed"
-                class="btn-primary text-[10.5px] py-0.5 px-2.5"
+                class="btn-primary text-[11.5px] font-bold py-1 px-3"
                 :disabled="pkgActionLoading !== null"
                 @click="installPackage(app.name, app.download_url || '')"
               >
@@ -466,7 +466,7 @@ onMounted(() => {
               </button>
               <button
                 v-else
-                class="btn-danger text-[10.5px] py-0.5 px-2.5"
+                class="btn-danger text-[11.5px] font-bold py-1 px-3"
                 :disabled="pkgActionLoading !== null"
                 @click="removePackage(app.name)"
               >
@@ -570,11 +570,11 @@ onMounted(() => {
         />
       </div>
 
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-52 overflow-y-auto p-1">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-56 overflow-y-auto p-1">
         <div
           v-for="pkg in filteredPackages"
           :key="pkg"
-          class="px-2 py-1 rounded bg-black/30 border border-white/5 mono text-[10.5px] text-gray-300 truncate"
+          class="px-2.5 py-1.5 rounded-lg bg-black/40 border border-white/5 mono text-[12px] font-medium text-gray-200 hover:text-white hover:border-sky-500/30 transition truncate"
           :title="pkg"
         >
           {{ pkg }}

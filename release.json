@@ -1,9 +1,9 @@
 {
-    "version":  "v1.0.8",
-    "revision":  9,
-    "released_at":  "2026-11-07 00:57:52",
+    "version":  "v1.0.9",
+    "revision":  10,
+    "released_at":  "2026-11-07 01:17:56",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.0.8",
-    "changelog":  "v1.0.8: Fix overlay vs tmpfs NAND reporting, unthrottle yt-dlp single combined stream, set GMT+7 ICT timezone, root clear log buttons \u0026 rename to R3P MINI SERVER OS"
+    "commit_sha":  "v1.0.9",
+    "changelog":  "v1.0.9: Enlarge subtitles on dashboard cards \u0026 app catalog, add 4 DNS AdBlock stream metrics with counters, clean www assets to reclaim flash overlay"
 }

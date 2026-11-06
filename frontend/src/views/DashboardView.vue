@@ -43,6 +43,20 @@ const volumes = ref<DiskVolume[]>([])
 const recentLogs = ref<string[]>([])
 const clearingLogs = ref(false)
 
+interface AdblockStats {
+  analyzed: number
+  trackers: number
+  video_ads: number
+  blocked: number
+}
+
+const adStats = ref<AdblockStats>({
+  analyzed: 10,
+  trackers: 4,
+  video_ads: 2,
+  blocked: 6,
+})
+
 const clearLogs = async () => {
   if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ bộ đệm nhật ký hệ thống (logread & kernel dmesg)?')) return
   clearingLogs.value = true
@@ -148,6 +162,9 @@ async function refreshDashboard() {
       }),
       apiRequest<{ lines: string[] }>('/logs').then((r) => {
         if (r?.lines) recentLogs.value = r.lines.slice(-12).reverse()
+      }),
+      apiRequest<{ stats: AdblockStats }>('/adblock/streams').then((r) => {
+        if (r?.stats) adStats.value = r.stats
       }),
     ])
 
@@ -448,24 +465,24 @@ onUnmounted(() => {
           <RouterLink to="/wireless" class="text-[11px] text-sky-400 hover:underline">Wi-Fi + WWAN →</RouterLink>
         </div>
 
-        <div class="space-y-2 text-[11.5px]">
+        <div class="space-y-2 text-[12px]">
           <div
             v-for="iface in network.interfaces.filter(i => i.name !== 'lo').slice(0, 4)"
             :key="iface.name"
-            class="flex items-center justify-between p-2 rounded bg-black/25 border border-white/5"
+            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/5"
           >
             <div class="min-w-0">
-              <div class="flex items-center gap-1.5">
-                <span class="font-bold text-gray-200 mono">{{ iface.name }}</span>
-                <span class="text-[10px] text-gray-400 truncate">
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-[14px] text-gray-100 mono">{{ iface.name }}</span>
+                <span class="text-[11.5px] text-gray-400 truncate">
                   {{ iface.ipv4 ? `(${iface.ipv4})` : (iface.type === 'lan' ? '(LAN Bridge)' : '') }}
                 </span>
               </div>
-              <div class="mono text-[10px] text-gray-500">
+              <div class="mono text-[11px] text-gray-400 font-medium mt-0.5">
                 RX: {{ formatMB(Math.round(iface.rxBytes / 1024)) }} · TX: {{ formatMB(Math.round(iface.txBytes / 1024)) }}
               </div>
             </div>
-            <span class="badge" :class="iface.up ? 'badge-green' : 'badge-gray'">
+            <span class="badge text-[10.5px] font-bold px-2 py-0.5" :class="iface.up ? 'badge-green' : 'badge-gray'">
               {{ iface.up ? 'UP' : 'DOWN' }}
             </span>
           </div>
@@ -473,15 +490,15 @@ onUnmounted(() => {
           <div
             v-for="r in radios"
             :key="r.device"
-            class="flex items-center justify-between p-2 rounded bg-black/25 border border-white/5"
+            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/5"
           >
             <div>
-              <div class="font-bold text-gray-200">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
-              <div class="mono text-[10px] text-gray-500">
+              <div class="font-bold text-[14px] text-gray-100">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
+              <div class="mono text-[11px] text-gray-400 font-medium mt-0.5">
                 Kênh {{ r.channel || 'Auto' }} · {{ r.htmode || 'VHT80' }}
               </div>
             </div>
-            <span class="badge" :class="r.enabled ? 'badge-green' : 'badge-orange'">
+            <span class="badge text-[10.5px] font-bold px-2 py-0.5" :class="r.enabled ? 'badge-green' : 'badge-orange'">
               {{ r.enabled ? 'ACTIVE' : 'DISABLED' }}
             </span>
           </div>
@@ -492,26 +509,26 @@ onUnmounted(() => {
       <div class="pro-card">
         <div class="pro-card-header">
           <span class="pro-card-title">Core System Daemons (procd)</span>
-          <span class="text-[11px] text-gray-500">{{ services.length }} Monitored</span>
+          <span class="text-[11px] text-gray-400 font-medium">{{ services.length }} Monitored</span>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 text-[11.5px]">
+        <div class="grid grid-cols-2 gap-2 text-[12px]">
           <div
             v-for="s in services"
             :key="s.name"
-            class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between"
+            class="p-2.5 rounded-lg bg-black/30 border border-white/5 flex items-center justify-between"
           >
             <div class="min-w-0 pr-1">
-              <div class="flex items-center gap-1.5 font-bold text-gray-200">
-                <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="s.running ? 'bg-emerald-400' : 'bg-gray-500'"></span>
+              <div class="flex items-center gap-1.5 font-bold text-[13.5px] text-gray-100">
+                <span class="w-2 h-2 rounded-full shrink-0" :class="s.running ? 'bg-emerald-400 shadow-sm' : 'bg-gray-500'"></span>
                 <span class="mono truncate">{{ s.name }}</span>
               </div>
-              <div class="mono text-[10px] text-gray-500 truncate">
+              <div class="mono text-[11px] text-gray-400 font-medium truncate mt-0.5">
                 {{ s.pid ? `PID ${s.pid} · ${s.memory_kb}K` : 'Stopped' }}
               </div>
             </div>
             <button
-              class="btn-secondary text-[10px] py-0.5 px-1.5 shrink-0"
+              class="btn-secondary text-[11px] py-1 px-2 shrink-0 font-bold hover:text-white"
               title="Khởi động lại dịch vụ"
               @click="quickServiceRestart(s.name)"
             >
@@ -528,20 +545,37 @@ onUnmounted(() => {
           <RouterLink to="/adblock" class="text-[11px] text-sky-400 hover:underline">AdBlock Tab →</RouterLink>
         </div>
 
-        <div class="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 space-y-1">
+        <div class="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-bold text-xs text-emerald-300">🛡️ Lá Chắn DNS AdBlock</span>
-            <span class="badge badge-green text-[9.5px]">ACTIVE</span>
+            <span class="font-bold text-[13.5px] text-emerald-300">🛡️ Lá Chắn DNS AdBlock</span>
+            <span class="badge badge-green text-[10px] font-bold">ACTIVE</span>
           </div>
-          <p class="text-[11px] text-gray-300">
-            Cổng DNS 53 đã mở trên cả mạng chính và LAN. Tự động nhận diện và triệt tiêu luồng quảng cáo video, tracker và mã độc.
-          </p>
+
+          <!-- 4 Specific Stat Metrics with Counters -->
+          <div class="grid grid-cols-2 gap-1.5 pt-0.5">
+            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Tổng Số Luồng Đã Phân Tích</span>
+              <span class="text-[17px] font-extrabold text-sky-400 mono mt-1">{{ adStats.analyzed.toLocaleString() }}</span>
+            </div>
+            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Trình Theo Dõi & Pixel (Trackers)</span>
+              <span class="text-[17px] font-extrabold text-amber-400 mono mt-1">{{ adStats.trackers.toLocaleString() }}</span>
+            </div>
+            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Luồng Video Ads (YouTube/TikTok)</span>
+              <span class="text-[17px] font-extrabold text-rose-400 mono mt-1">{{ adStats.video_ads.toLocaleString() }}</span>
+            </div>
+            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Đã Nhận Diện & Tự Động Chặn</span>
+              <span class="text-[17px] font-extrabold text-emerald-400 mono mt-1">{{ adStats.blocked.toLocaleString() }}</span>
+            </div>
+          </div>
         </div>
 
-        <div class="space-y-1 text-xs pt-1">
+        <div class="space-y-1 text-[12px] pt-1">
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Board / SoC</span>
-            <span class="mono text-gray-200 font-semibold">Xiaomi Mi Router 3 Pro</span>
+            <span class="mono text-gray-100 font-semibold">Xiaomi Mi Router 3 Pro</span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Kiến trúc Vi xử lý</span>
