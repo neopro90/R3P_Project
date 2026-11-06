@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ type AIConfig struct {
 	Model             string `json:"model"`
 	AutoExecute       bool   `json:"auto_execute"`
 	AllowExec         bool   `json:"allow_exec"`
+	TelegramAIEnabled bool   `json:"telegram_ai_enabled"`
+	AutoRemember      bool   `json:"auto_remember"`
+	ActiveSessionID   string `json:"active_session_id"`
 	SystemPromptExtra string `json:"system_prompt_extra"`
 	SystemNote        string `json:"system_note"`
 }
@@ -38,6 +42,7 @@ type AIChatMessage struct {
 	Role       string         `json:"role"`
 	Content    string         `json:"content"`
 	Timestamp  string         `json:"timestamp"`
+	Source     string         `json:"source,omitempty"` // "web" or "telegram"
 	ToolEvents []AIToolAction `json:"tool_events,omitempty"`
 	Commands   []AICmdLog     `json:"commands,omitempty"`
 }
@@ -49,24 +54,149 @@ type AIToolAction struct {
 	Success bool   `json:"success"`
 }
 
+type AIMemoryEntry struct {
+	ID        string `json:"id"`
+	Category  string `json:"category"` // "system_rule", "preference", "network_note", "fact"
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
+type AIChatSession struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	CreatedAt string          `json:"created_at"`
+	UpdatedAt string          `json:"updated_at"`
+	Messages  []AIChatMessage `json:"messages"`
+}
+
 const (
-	aiConfigFile  = "/etc/r3p/ai_config.json"
-	aiHistoryFile = "/etc/r3p/ai_history.json"
+	aiConfigFile    = "/etc/r3p/ai_config.json"
+	aiHistoryFile   = "/etc/r3p/ai_history.json"
+	aiSessionsFile  = "/etc/r3p/ai_sessions.json"
+	aiMemoryFile    = "/etc/r3p/ai_memory.json"
+	aiBlueprintFile = "/etc/r3p/SYSTEM_BLUEPRINT.md"
 )
 
 var (
-	aiMu      sync.Mutex
-	aiHistory []AIChatMessage
+	aiMu       sync.Mutex
+	aiSessions []AIChatSession
+	aiMemories []AIMemoryEntry
 )
+
+const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOME SERVER OS (SYSTEM BLUEPRINT)
+> File tham chiếu kiến trúc cốt lõi tại: /etc/r3p/SYSTEM_BLUEPRINT.md
+> Đối tượng sử dụng: Root System AI Agent & Quản trị viên hệ thống
+
+## 1. Phần Cứng & Vi Xử Lý (Hardware & SoC)
+- **Thiết bị**: Xiaomi Mi Router 3 Pro (Mã board: mir3p / R3P)
+- **SoC / CPU**: MediaTek MT7621AT Dual-Core 880MHz (4 luồng xử lý phần cứng, kiến trúc mipsle_24kc)
+- **Bộ nhớ RAM**: 512MB DDR3 (RAM盘 /tmp dùng tmpfs tốc độ cao)
+- **Bộ nhớ Flash NAND**: 256MB SLC NAND Flash:
+  - /rom: SquashFS chứa nhân hệ điều hành gốc
+  - /overlay: Phân vùng UBIFS đọc-ghi bền vững (~206MB) lưu toàn bộ cấu hình, ứng dụng và dữ liệu hệ thống
+- **Cổng USB 3.0 & Lưu Trữ Ngoài**:
+  - Ổ cứng ngoài / USB gắn tại /dev/sda1 -> tự động mount vào /mnt/sda1 (symlink /mnt/usb)
+  - Tinh chỉnh tốc độ đọc/ghi qua /sys/block/sda/queue/read_ahead_kb (4096) và max_sectors_kb (1024)
+- **Chip Wi-Fi**: MediaTek MT7615N 4x4 MU-MIMO Dual-Band:
+  - phy0 (radio0): Băng tần 2.4GHz (Kênh 1-13, hỗ trợ đồng thời phát AP + thu sóng Client STA)
+  - phy1 (radio1): Băng tần 5GHz (Kênh 36-165, chuẩn 802.11ac Wave2 MU-MIMO, vùng tần số US)
+
+## 2. Kiến Trúc Mạng & Định Tuyến (Network & Wireless Topology)
+- **LAN Bridge (br-lan)**:
+  - Địa chỉ IP nội bộ mặc định: 192.168.2.1/24
+  - Dịch vụ cấp phát IP & DNS nội bộ: dnsmasq (/etc/config/dhcp)
+- **Chế Độ Thu Sóng Wi-Fi Client (WISP / Repeater Client)**:
+  - Interface mạng: network.wwan / network.wclient (gắn trên phy0-sta0 hoặc phy1-sta0)
+  - Cấu hình UCI: /etc/config/wireless (section wwan_sta hoặc wclient)
+  - Danh sách Wi-Fi đã lưu: /etc/r3p/saved-wifi.json
+- **USB Tethering / 4G WAN**:
+  - Interface: usb0 / wwan0 / eth1 -> tự động gán vào network.usbwan (firewall zone wan)
+
+## 3. Các Dịch Vụ Cốt Lõi & Bản Đồ Đường Dẫn File (Services & File Map)
+- **Daemon Trung Tâm**: /usr/bin/r3p-api (Quản lý bởi /etc/init.d/r3p-api)
+  - Cổng HTTP: 80 (Web UI & REST API v1)
+  - Cổng HTTPS: 8443 (TLS Web UI & REST API v1)
+  - Cổng Localhost Runtime: 8787 (ESP32-Download Linux Runtime & Telegram Poller)
+- **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 Hass.io Dashboard)
+- **Thư Mục Cấu Hình Bền Vững (/etc/r3p/)**:
+  - /etc/r3p/SYSTEM_BLUEPRINT.md : Tài liệu cấu trúc hệ thống này
+  - /etc/r3p/version.json        : Thông tin phiên bản Firmware & Revision GitHub
+  - /etc/r3p/ai_config.json      : Cấu hình nhà cung cấp AI, API Key, Model, quyền Root
+  - /etc/r3p/ai_memory.json      : Bộ nhớ dài hạn của AI (ghi nhớ quy tắc, sở thích, ghi chú cài đặt)
+  - /etc/r3p/ai_sessions.json    : Lịch sử các phiên trò chuyện (Multi-Session) của AI
+  - /etc/r3p/adblock.json        : Cấu hình DNS AdBlock, nguồn danh sách chặn, bộ lọc luồng quảng cáo
+  - /etc/r3p/saved-wifi.json     : Danh sách các mạng Wi-Fi đã lưu và mật khẩu kết nối
+  - /etc/r3p/esp32-local-config.json : Cấu hình bền vững của ESP32-Download & Telegram Bot
+- **Hệ Thống Tải Xuống Đa Phương Tiện (ESP32-Download Linux Host)**:
+  - Giao diện Web: /overlay/esp32-download-host/public/ (phục vụ tại /esp32-download/ và cổng :8787)
+  - Thư mục lưu video/file tải về: /mnt/sda1/esp32-downloads (hoặc /overlay/downloads khi không cắm USB)
+  - Công cụ dòng lệnh: /usr/bin/yt-dlp, /usr/bin/aria2c, /usr/bin/curl, /usr/sbin/iwinfo
+
+## 4. Bộ Công Cụ Quyền Root Dành Cho AI (AI Root Tool Directives)
+AI có toàn quyền thực thi và chỉnh sửa hệ thống bằng cách xuất các thẻ công cụ sau trong phản hồi:
+1. Thực thi lệnh Shell với quyền root:
+   <exec_cmd>lệnh linux hoặc script tại đây</exec_cmd>
+2. Ghi hoặc chỉnh sửa bất kỳ file cấu hình / script nào:
+   <write_file path="/đường/dẫn/file">nội dung file đầy đủ</write_file>
+3. Chỉnh sửa nhanh cấu hình OpenWrt UCI và tự động commit + reload:
+   <uci_set>
+   wireless.default_radio0.ssid='TenWiFiMoi'
+   wireless.default_radio0.disabled='0'
+   </uci_set>
+4. Lưu thông tin quan trọng vào Bộ Nhớ Dài Hạn của AI (/etc/r3p/ai_memory.json):
+   <memory_save>Ghi chú hoặc cài đặt cần nhớ lâu dài</memory_save>
+5. Đẩy link video/file vào hàng đợi tải xuống ESP32-Download:
+   <download_url>https://...</download_url>
+`
+
+func ensureSystemBlueprintFile() string {
+	_ = os.MkdirAll("/etc/r3p", 0755)
+	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 {
+		return string(b)
+	}
+	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)
+	return defaultSystemBlueprintMD
+}
+
+func isBareURLMessage(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	matches := urlExtractRegex.FindAllString(trimmed, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	leftover := urlExtractRegex.ReplaceAllString(trimmed, "")
+	leftover = strings.TrimSpace(leftover)
+	return leftover == ""
+}
+
+func filterOutBareURLMessages(msgs []AIChatMessage) []AIChatMessage {
+	var out []AIChatMessage
+	for _, m := range msgs {
+		if m.Role == "user" && isBareURLMessage(m.Content) {
+			continue
+		}
+		out = append(out, m)
+	}
+	if out == nil {
+		out = []AIChatMessage{}
+	}
+	return out
+}
 
 func loadAIConfig() AIConfig {
 	def := AIConfig{
-		Provider:    "gemini",
-		APIKey:      "",
-		BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
-		Model:       "gemini-3-flash-preview",
-		AutoExecute: true,
-		AllowExec:   true,
+		Provider:          "gemini",
+		APIKey:            "",
+		BaseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
+		Model:             "gemini-3-flash-preview",
+		AutoExecute:       true,
+		AllowExec:         true,
+		TelegramAIEnabled: true,
+		AutoRemember:      true,
+		ActiveSessionID:   "default",
 	}
 	b, err := os.ReadFile(aiConfigFile)
 	if err == nil {
@@ -82,6 +212,9 @@ func loadAIConfig() AIConfig {
 		def.SystemPromptExtra = def.SystemNote
 	} else if def.SystemPromptExtra != "" && def.SystemNote == "" {
 		def.SystemNote = def.SystemPromptExtra
+	}
+	if def.ActiveSessionID == "" {
+		def.ActiveSessionID = "default"
 	}
 	def.AllowExec = def.AutoExecute
 	def.HasAPIKey = def.APIKey != ""
@@ -103,36 +236,185 @@ func saveAIConfig(cfg AIConfig) {
 	}
 }
 
-func loadAIHistory() []AIChatMessage {
+func loadAIMemories() []AIMemoryEntry {
 	aiMu.Lock()
 	defer aiMu.Unlock()
-	if aiHistory != nil {
-		return aiHistory
-	}
-	b, err := os.ReadFile(aiHistoryFile)
-	if err == nil {
-		_ = json.Unmarshal(b, &aiHistory)
-	}
-	if aiHistory == nil {
-		aiHistory = []AIChatMessage{
-			{
-				Role:      "assistant",
-				Content:   "Xin chào! Tôi là **R3P System AI Agent** có toàn quyền truy cập và điều khiển hệ thống **Xiaomi Mi Router 3 Pro (OpenWrt 25.12.5 Linux 6.12.94)**.\n\nTôi nắm rõ toàn bộ cấu trúc phần cứng (MT7621AT, 512MB RAM, NAND `/overlay`, ổ cứng USB 3.0 500GB `/mnt/sda1`, Wi-Fi MT7615N AP + Client WWAN, USB Tethering `usbwan`, AdBlock DNS, và dịch vụ `Esp32-Download` Linux Host trên cổng `8787`).\n\nBạn có thể:\n- Nhập **API Key** (Gemini / OpenAI / DeepSeek / Claude / Groq / OpenRouter) ở khung **Cấu Hình API** phía trên rồi trò chuyện bằng ngôn ngữ tự nhiên ở cửa sổ Chat bên dưới.\n- Hoặc gõ trực tiếp `!<lệnh shell>` (ví dụ: `!df -h`, `!uci show wireless`, `!yt-dlp --version`) vào khung Chat để thực thi lệnh trực tiếp với quyền `root` ngay lập tức!",
-				Timestamp: time.Now().Format("15:04:05"),
-			},
-		}
-	}
-	return aiHistory
+	return loadAIMemoriesLocked()
 }
 
-func saveAIHistory() {
+func loadAIMemoriesLocked() []AIMemoryEntry {
+	if aiMemories != nil {
+		return aiMemories
+	}
+	if b, err := os.ReadFile(aiMemoryFile); err == nil {
+		_ = json.Unmarshal(b, &aiMemories)
+	}
+	if len(aiMemories) == 0 {
+		aiMemories = []AIMemoryEntry{
+			{
+				ID:        "mem-init-1",
+				Category:  "system_rule",
+				Content:   "Router R3P chạy tại IP LAN 192.168.2.1, kết nối Wi-Fi Client tới Gateway chính 192.168.1.1 (IP Client 192.168.1.6).",
+				CreatedAt: time.Now().Format("2006-01-02 15:04"),
+			},
+			{
+				ID:        "mem-init-2",
+				Category:  "preference",
+				Content:   "Luôn trả lời bằng Tiếng Việt ngắn gọn, rõ ràng và tự động thực thi lệnh root khi người dùng yêu cầu kiểm tra hoặc cấu hình hệ thống.",
+				CreatedAt: time.Now().Format("2006-01-02 15:04"),
+			},
+		}
+		saveAIMemoriesLocked()
+	}
+	return aiMemories
+}
+
+func saveAIMemoriesLocked() {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	if len(aiHistory) > 60 {
-		aiHistory = aiHistory[len(aiHistory)-60:]
+	if len(aiMemories) > 100 {
+		aiMemories = aiMemories[len(aiMemories)-100:]
 	}
-	if b, err := json.MarshalIndent(aiHistory, "", "  "); err == nil {
-		_ = os.WriteFile(aiHistoryFile, b, 0600)
+	if b, err := json.MarshalIndent(aiMemories, "", "  "); err == nil {
+		_ = os.WriteFile(aiMemoryFile, b, 0600)
 	}
+}
+
+func addAIMemoryEntry(category, content string) AIMemoryEntry {
+	content = strings.TrimSpace(content)
+	if category == "" {
+		category = "fact"
+	}
+	aiMu.Lock()
+	defer aiMu.Unlock()
+	_ = loadAIMemoriesLocked()
+	// Avoid exact duplicate
+	for _, m := range aiMemories {
+		if strings.EqualFold(strings.TrimSpace(m.Content), content) {
+			return m
+		}
+	}
+	entry := AIMemoryEntry{
+		ID:        fmt.Sprintf("mem-%d", time.Now().UnixNano()/1e6),
+		Category:  category,
+		Content:   content,
+		CreatedAt: time.Now().Format("2006-01-02 15:04"),
+	}
+	aiMemories = append([]AIMemoryEntry{entry}, aiMemories...)
+	saveAIMemoriesLocked()
+	return entry
+}
+
+func defaultWelcomeMessages() []AIChatMessage {
+	return []AIChatMessage{
+		{
+			Role:      "assistant",
+			Content:   "Xin chào! Tôi là **R3P System AI Agent** có **toàn quyền `root`** điều khiển hệ thống **Xiaomi Mi Router 3 Pro (OpenWrt 25.12.5 · Kernel 6.12.94)**.\n\n- **Bộ nhớ AI & Phiên làm việc (Sessions)**: Mọi phiên chat và ghi nhớ hệ thống được lưu trữ bền vững tại `/etc/r3p/ai_sessions.json` và `/etc/r3p/ai_memory.json`.\n- **Bản thiết kế hệ thống (Blueprint)**: Tôi luôn tham chiếu `/etc/r3p/SYSTEM_BLUEPRINT.md` để nắm rõ sơ đồ phần cứng, mạng, lưu trữ và dịch vụ.\n- **Đồng bộ Telegram Bot**: Nhắn URL đơn vào Telegram sẽ tự chuyển sang Host Download; nhắn văn bản/lệnh vào Telegram sẽ được tôi xử lý và phản hồi trực tiếp!",
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "web",
+		},
+	}
+}
+
+func loadAISessionsLocked() []AIChatSession {
+	if aiSessions != nil {
+		return aiSessions
+	}
+	if b, err := os.ReadFile(aiSessionsFile); err == nil {
+		_ = json.Unmarshal(b, &aiSessions)
+	}
+	if len(aiSessions) == 0 {
+		// Migrate legacy ai_history.json if present
+		var legacy []AIChatMessage
+		if b, err := os.ReadFile(aiHistoryFile); err == nil {
+			_ = json.Unmarshal(b, &legacy)
+		}
+		if len(legacy) == 0 {
+			legacy = defaultWelcomeMessages()
+		}
+		nowStr := time.Now().Format("2006-01-02 15:04")
+		aiSessions = []AIChatSession{
+			{
+				ID:        "default",
+				Title:     "Phiên Điều Khiển Chính (Root Session)",
+				CreatedAt: nowStr,
+				UpdatedAt: nowStr,
+				Messages:  filterOutBareURLMessages(legacy),
+			},
+		}
+		saveAISessionsLocked()
+	}
+	return aiSessions
+}
+
+func saveAISessionsLocked() {
+	_ = os.MkdirAll("/etc/r3p", 0755)
+	for i := range aiSessions {
+		aiSessions[i].Messages = filterOutBareURLMessages(aiSessions[i].Messages)
+		if len(aiSessions[i].Messages) > 80 {
+			aiSessions[i].Messages = aiSessions[i].Messages[len(aiSessions[i].Messages)-80:]
+		}
+	}
+	if b, err := json.MarshalIndent(aiSessions, "", "  "); err == nil {
+		_ = os.WriteFile(aiSessionsFile, b, 0600)
+	}
+}
+
+func getActiveSessionMessages(sessionID string) (string, []AIChatMessage) {
+	aiMu.Lock()
+	defer aiMu.Unlock()
+	_ = loadAISessionsLocked()
+	if sessionID == "" {
+		cfg := loadAIConfig()
+		sessionID = cfg.ActiveSessionID
+	}
+	for _, s := range aiSessions {
+		if s.ID == sessionID {
+			return s.ID, filterOutBareURLMessages(s.Messages)
+		}
+	}
+	return aiSessions[0].ID, filterOutBareURLMessages(aiSessions[0].Messages)
+}
+
+func appendMessageToSession(sessionID string, msg AIChatMessage) []AIChatMessage {
+	if msg.Role == "user" && isBareURLMessage(msg.Content) {
+		_, msgs := getActiveSessionMessages(sessionID)
+		return msgs
+	}
+	aiMu.Lock()
+	defer aiMu.Unlock()
+	_ = loadAISessionsLocked()
+	if sessionID == "" {
+		cfg := loadAIConfig()
+		sessionID = cfg.ActiveSessionID
+	}
+	idx := -1
+	for i := range aiSessions {
+		if aiSessions[i].ID == sessionID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		idx = 0
+	}
+	aiSessions[idx].Messages = append(aiSessions[idx].Messages, msg)
+	aiSessions[idx].UpdatedAt = time.Now().Format("2006-01-02 15:04")
+	// Auto-title new session from first user message
+	if msg.Role == "user" && (strings.HasPrefix(aiSessions[idx].Title, "Phiên Mới") || aiSessions[idx].Title == "New Session") {
+		titleRunes := []rune(strings.TrimSpace(msg.Content))
+		if len(titleRunes) > 36 {
+			aiSessions[idx].Title = string(titleRunes[:36]) + "…"
+		} else if len(titleRunes) > 0 {
+			aiSessions[idx].Title = string(titleRunes)
+		}
+	}
+	saveAISessionsLocked()
+	return append([]AIChatMessage{}, aiSessions[idx].Messages...)
+}
+
+func loadAIHistory() []AIChatMessage {
+	_, msgs := getActiveSessionMessages("")
+	return msgs
 }
 
 func defaultBaseURLForProvider(provider string) string {
@@ -174,57 +456,245 @@ func defaultModelForProvider(provider string) string {
 }
 
 func buildSystemArchitecturePrompt(extra string) string {
+	blueprint := ensureSystemBlueprintFile()
 	dfOut, _ := runCmd(2, "df", "-h")
 	ipOut, _ := runCmd(2, "ip", "-br", "addr")
 	routeOut, _ := runCmd(2, "ip", "route")
 	wifiOut, _ := runCmd(2, "uci", "show", "wireless")
 	netStatus := getInternetStatusSnapshot()
 
-	return fmt.Sprintf(`You are the embedded Root System AI Administrator for R3P Home Server OS running on a Xiaomi Mi Router 3 Pro (R3P / mir3p).
-You have FULL ROOT ACCESS to inspect, configure, and modify the entire Linux / OpenWrt system.
+	mems := loadAIMemories()
+	var memLines []string
+	for _, m := range mems {
+		memLines = append(memLines, fmt.Sprintf("- [%s] (%s): %s", m.Category, m.CreatedAt, m.Content))
+	}
+	memBlock := "Chưa có ghi nhớ nào."
+	if len(memLines) > 0 {
+		memBlock = strings.Join(memLines, "\n")
+	}
 
-=== COMPLETE SYSTEM ARCHITECTURE ===
-1. Hardware & Kernel:
-   - Board: Xiaomi Mi Router 3 Pro (MediaTek MT7621AT Dual-Core 4-Threads @ 880MHz, mipsle)
-   - Memory: 512MB DDR3 RAM (/tmp tmpfs)
-   - Internal Flash: 256MB SLC NAND (UBI /overlay ~206MB)
-   - External USB 3.0 Storage: 500GB HGST G-DRIVE HDD formatted as high-speed ext4 (no_journal, read_ahead_kb=4096, max_sectors_kb=1024), mounted at /mnt/sda1 (symlinked at /mnt/usb).
-   - Wireless: MediaTek MT7615N 4x4 MU-MIMO Dual-Band:
-     * radio0 (2.4GHz) & radio1 (5GHz)
-     * Supports simultaneous AP broadcasting (default_radio0, default_radio1) AND Wireless Client / WISP STA mode (wireless.wwan_sta on network.wwan).
-   - Dual-Role USB 3.0 Port:
-     * Hotplug Storage (/etc/hotplug.d/block/20-r3p-usb-storage): Auto-mounts /dev/sd* to /mnt/sd* and tunes block queue.
-     * Hotplug USB Tethering / 4G WAN (/etc/hotplug.d/net/20-r3p-usb-tether): Auto-binds usb0/wwan0/eth1 to UCI network.usbwan (DHCP) in firewall wan zone.
+	return fmt.Sprintf(`Bạn là Root System AI Administrator nhúng trực tiếp trong R3P Home Server OS (Xiaomi Mi Router 3 Pro - mir3p).
+Bạn có TOÀN QUYỀN ROOT để kiểm tra, cấu hình, sửa file, chỉnh UCI, quản lý mạng/Wi-Fi/AdBlock/Download và ghi nhớ thông tin hệ thống.
 
-2. Services & Paths:
-   - Main Backend Binary: /usr/bin/r3p-api (serves Web UI & REST API v1 on HTTPS port 8443, init script /etc/init.d/r3p-api)
-   - Web Frontend Assets: /www/ (Vue 3 SPA with 15 tabs including Dashboard, Network LAN/WAN Config, Wireless AP+Client, AdBlock, Firewall, NAS & USB Format, Download Bot + ESP32 Host, AI Agent, OpenWrt + GitHub Apps, Firmware Update, etc.)
-   - Embedded ESP32-Download Linux Runtime: Built into r3p-api listening on HTTP port 8787 (0.0.0.0:8787) and /esp32-download/.
-     * Data & Config: /overlay/esp32-download-host/data/local-config.json
-     * Media Output Directory: /mnt/sda1/esp32-downloads
-     * Installed CLI Tools: /usr/bin/yt-dlp, /usr/bin/aria2c, /usr/sbin/iwinfo, /usr/sbin/mkfs.ext4
-   - DNS AdBlock Engine: /etc/r3p/adblock.json, /tmp/r3p-adblock.hosts, /tmp/dnsmasq.d/r3p-adblock.conf
-
-3. Live System Telemetry Right Now:
-   - Internet Status: Online=%v, Mode=%s, Interface=%s, Latency=%.1fms, External IP=%s (%s)
-   - Filesystems (df -h):
-%s
-   - Network Interfaces (ip -br addr):
-%s
-   - Routing Table (ip route):
-%s
-   - Wireless UCI:
+=== TÀI LIỆU CẤU TRÚC HỆ THỐNG (/etc/r3p/SYSTEM_BLUEPRINT.md) ===
 %s
 
-=== HOW TO EXECUTE COMMANDS ON THE SYSTEM ===
-Whenever the user asks you to check, change, fix, configure, or run anything on the router (or when you need live info), emit one or more tool execution blocks in this exact XML format:
-<exec_cmd>sh command here</exec_cmd>
+=== BỘ NHỚ DÀI HẠN CỦA AI (/etc/r3p/ai_memory.json) ===
+%s
 
-The backend will automatically execute every <exec_cmd>...</exec_cmd> block as root (/bin/sh -c) on the router, capture stdout/stderr, and feed the real result back to you so you can verify and report the outcome clearly in Vietnamese.
-%s`, netStatus.Online, netStatus.WanMode, netStatus.WanIface, netStatus.LatencyMs, netStatus.ExternalIP, netStatus.ISP, dfOut, ipOut, routeOut, wifiOut, extra)
+=== TRẠNG THÁI HỆ THỐNG THỜI GIAN THỰC (LIVE TELEMETRY) ===
+- Internet: Online=%v | Mode=%s | Interface=%s | Latency=%.1fms | External IP=%s (%s)
+- Dung lượng ổ đĩa (df -h):
+%s
+- Địa chỉ IP các cổng mạng (ip -br addr):
+%s
+- Bảng định tuyến (ip route):
+%s
+- Cấu hình Wi-Fi (uci show wireless):
+%s
+
+=== HƯỚNG DẪN SỬ DỤNG CÔNG CỤ ROOT (TOOL DIRECTIVES) ===
+Khi người dùng yêu cầu kiểm tra, cài đặt, chỉnh sửa hệ thống, lưu ghi nhớ, hoặc tải video:
+1. Thực thi lệnh Shell với quyền root:
+   <exec_cmd>lệnh shell tại đây</exec_cmd>
+2. Ghi hoặc cập nhật file cấu hình / script trên hệ thống:
+   <write_file path="/đường/dẫn/file">nội dung file</write_file>
+3. Thay đổi cấu hình OpenWrt UCI (tự động commit và reload dịch vụ):
+   <uci_set>
+   wireless.default_radio0.ssid=TenMoi
+   </uci_set>
+4. Ghi nhớ thông tin/quy tắc/cài đặt mới vào bộ nhớ dài hạn của AI:
+   <memory_save>nội dung cần ghi nhớ lâu dài</memory_save>
+5. Đẩy URL vào hàng đợi tải xuống ESP32-Download:
+   <download_url>https://...</download_url>
+
+%s`, blueprint, memBlock, netStatus.Online, netStatus.WanMode, netStatus.WanIface, netStatus.LatencyMs, netStatus.ExternalIP, netStatus.ISP, dfOut, ipOut, routeOut, wifiOut, extra)
 }
 
-var execCmdRegex = regexp.MustCompile(`(?s)<exec_cmd>(.*?)</exec_cmd>`)
+var (
+	execCmdRegex     = regexp.MustCompile(`(?s)<exec_cmd>(.*?)</exec_cmd>`)
+	writeFileRegex   = regexp.MustCompile(`(?s)<write_file\s+path="([^"]+)"\s*>(.*?)</write_file>`)
+	uciSetRegex      = regexp.MustCompile(`(?s)<uci_set>(.*?)</uci_set>`)
+	memorySaveRegex  = regexp.MustCompile(`(?s)<memory_save>(.*?)</memory_save>`)
+	downloadUrlRegex = regexp.MustCompile(`(?s)<download_url>(.*?)</download_url>`)
+)
+
+// Executes all root tool tags (<exec_cmd>, <write_file>, <uci_set>, <memory_save>, <download_url>)
+func executeAIToolBlocks(respText string, allowExec bool) ([]AIToolAction, []AICmdLog, []string, string) {
+	var allToolEvents []AIToolAction
+	var allCmdLogs []AICmdLog
+	var cmdOutputs []string
+
+	// 1. Always process <memory_save> blocks
+	memMatches := memorySaveRegex.FindAllStringSubmatch(respText, -1)
+	for _, m := range memMatches {
+		fact := strings.TrimSpace(m[1])
+		if fact != "" {
+			entry := addAIMemoryEntry("fact", fact)
+			allToolEvents = append(allToolEvents, AIToolAction{
+				Tool:    "memory_save",
+				Command: "Lưu vào bộ nhớ AI (/etc/r3p/ai_memory.json)",
+				Output:  entry.Content,
+				Success: true,
+			})
+		}
+	}
+
+	// 2. Process <download_url> blocks
+	dlMatches := downloadUrlRegex.FindAllStringSubmatch(respText, -1)
+	for _, m := range dlMatches {
+		u := strings.TrimSpace(m[1])
+		if u != "" {
+			job, dup, err := enqueueEspJob(u, "ai_agent", "", false)
+			outMsg := ""
+			if err != nil {
+				outMsg = "Lỗi thêm URL tải xuống: " + err.Error()
+			} else if dup {
+				outMsg = "URL đã có trong hàng đợi tải xuống: #" + job.ID
+			} else {
+				outMsg = "Đã thêm vào hàng đợi ESP32-Download: #" + job.ID + " (" + u + ")"
+			}
+			allToolEvents = append(allToolEvents, AIToolAction{
+				Tool:    "download_url",
+				Command: u,
+				Output:  outMsg,
+				Success: err == nil,
+			})
+			cmdOutputs = append(cmdOutputs, fmt.Sprintf("[DOWNLOAD_URL %s] -> %s", u, outMsg))
+		}
+	}
+
+	if allowExec {
+		// 3. Process <write_file path="...">...</write_file>
+		wfMatches := writeFileRegex.FindAllStringSubmatch(respText, -1)
+		for _, m := range wfMatches {
+			targetPath := strings.TrimSpace(m[1])
+			fileContent := strings.TrimPrefix(m[2], "\n")
+			if targetPath == "" {
+				continue
+			}
+			t0 := time.Now()
+			_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+			perm := os.FileMode(0644)
+			if strings.HasSuffix(targetPath, ".sh") || strings.HasPrefix(targetPath, "/etc/init.d/") || strings.HasPrefix(targetPath, "/etc/hotplug.d/") {
+				perm = 0755
+			}
+			wErr := os.WriteFile(targetPath, []byte(fileContent), perm)
+			durMs := time.Since(t0).Milliseconds()
+			outMsg := fmt.Sprintf("Đã ghi %d bytes vào %s (mode %04o)", len(fileContent), targetPath, perm)
+			exitCode := 0
+			if wErr != nil {
+				exitCode = 1
+				outMsg = "Lỗi ghi file " + targetPath + ": " + wErr.Error()
+			}
+			allToolEvents = append(allToolEvents, AIToolAction{
+				Tool:    "write_file",
+				Command: "write " + targetPath,
+				Output:  outMsg,
+				Success: wErr == nil,
+			})
+			allCmdLogs = append(allCmdLogs, AICmdLog{
+				Command:    "write_file " + targetPath,
+				Output:     outMsg,
+				ExitCode:   exitCode,
+				DurationMs: durMs,
+			})
+			cmdOutputs = append(cmdOutputs, fmt.Sprintf("[WRITE_FILE %s]\n%s", targetPath, outMsg))
+		}
+
+		// 4. Process <uci_set>...</uci_set>
+		uciMatches := uciSetRegex.FindAllStringSubmatch(respText, -1)
+		for _, m := range uciMatches {
+			lines := strings.Split(strings.TrimSpace(m[1]), "\n")
+			t0 := time.Now()
+			pkgs := map[string]bool{}
+			var applied []string
+			var uciErrs []string
+			for _, line := range lines {
+				l := strings.TrimSpace(line)
+				l = strings.TrimPrefix(l, "uci set ")
+				if l == "" || strings.HasPrefix(l, "#") {
+					continue
+				}
+				if out, err := runCmd(5, "uci", "set", l); err != nil {
+					uciErrs = append(uciErrs, l+": "+out+" "+err.Error())
+				} else {
+					applied = append(applied, "uci set "+l)
+					dot := strings.Index(l, ".")
+					if dot > 0 {
+						pkgs[l[:dot]] = true
+					}
+				}
+			}
+			for pkg := range pkgs {
+				_, _ = runCmd(5, "uci", "commit", pkg)
+				applied = append(applied, "uci commit "+pkg)
+			}
+			durMs := time.Since(t0).Milliseconds()
+			outMsg := strings.Join(applied, "\n")
+			if len(uciErrs) > 0 {
+				outMsg += "\nErrors:\n" + strings.Join(uciErrs, "\n")
+			}
+			allToolEvents = append(allToolEvents, AIToolAction{
+				Tool:    "uci_set",
+				Command: strings.Join(applied, " && "),
+				Output:  outMsg,
+				Success: len(uciErrs) == 0,
+			})
+			allCmdLogs = append(allCmdLogs, AICmdLog{
+				Command:    "uci_set (" + fmt.Sprintf("%d rules", len(applied)) + ")",
+				Output:     outMsg,
+				ExitCode:   map[bool]int{true: 0, false: 1}[len(uciErrs) == 0],
+				DurationMs: durMs,
+			})
+			cmdOutputs = append(cmdOutputs, fmt.Sprintf("[UCI_SET]\n%s", outMsg))
+		}
+
+		// 5. Process <exec_cmd>...</exec_cmd>
+		matches := execCmdRegex.FindAllStringSubmatch(respText, -1)
+		for _, m := range matches {
+			cmdStr := strings.TrimSpace(m[1])
+			if cmdStr == "" {
+				continue
+			}
+			t0 := time.Now()
+			out, cmdErr := runCmd(25, "sh", "-c", cmdStr)
+			durMs := time.Since(t0).Milliseconds()
+			exitCode := 0
+			if cmdErr != nil {
+				exitCode = 1
+				if out == "" {
+					out = cmdErr.Error()
+				}
+			}
+			if len(out) > 4000 {
+				out = out[:4000] + "\n...(truncated)"
+			}
+			allToolEvents = append(allToolEvents, AIToolAction{
+				Tool:    "exec_cmd",
+				Command: cmdStr,
+				Output:  out,
+				Success: cmdErr == nil,
+			})
+			allCmdLogs = append(allCmdLogs, AICmdLog{
+				Command:    cmdStr,
+				Output:     out,
+				ExitCode:   exitCode,
+				DurationMs: durMs,
+			})
+			cmdOutputs = append(cmdOutputs, fmt.Sprintf("$ %s\n%s", cmdStr, out))
+		}
+	}
+
+	cleaned := execCmdRegex.ReplaceAllString(respText, "")
+	cleaned = writeFileRegex.ReplaceAllString(cleaned, "")
+	cleaned = uciSetRegex.ReplaceAllString(cleaned, "")
+	cleaned = memorySaveRegex.ReplaceAllString(cleaned, "")
+	cleaned = downloadUrlRegex.ReplaceAllString(cleaned, "")
+	cleaned = strings.TrimSpace(cleaned)
+
+	return allToolEvents, allCmdLogs, cmdOutputs, cleaned
+}
 
 func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -340,6 +810,122 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 	return "", lastErr
 }
 
+// Process a text message coming from Telegram Bot (when not a bare URL)
+func processTelegramAIChat(text, chatID string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || isBareURLMessage(trimmed) {
+		return ""
+	}
+	cfg := loadAIConfig()
+	activeSessID, _ := getActiveSessionMessages(cfg.ActiveSessionID)
+
+	// Direct root shell command via Telegram (!cmd or /exec cmd)
+	if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "/exec ") {
+		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, "!"), "/exec "))
+		appendMessageToSession(activeSessID, AIChatMessage{
+			Role:      "user",
+			Content:   "📱 [Telegram] " + trimmed,
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "telegram",
+		})
+		t0 := time.Now()
+		out, err := runCmd(25, "sh", "-c", cmdStr)
+		durMs := time.Since(t0).Milliseconds()
+		exitCode := 0
+		if err != nil {
+			exitCode = 1
+			if out == "" {
+				out = err.Error()
+			}
+		}
+		if len(out) > 3000 {
+			out = out[:3000] + "\n...(truncated)"
+		}
+		replyMsg := AIChatMessage{
+			Role:       "assistant",
+			Content:    fmt.Sprintf("Đã thực thi lệnh từ Telegram (`root@R3P`):\n```\n$ %s\n%s\n```", cmdStr, out),
+			Timestamp:  time.Now().Format("15:04:05"),
+			Source:     "telegram",
+			ToolEvents: []AIToolAction{{Tool: "root_shell", Command: cmdStr, Output: out, Success: err == nil}},
+			Commands:   []AICmdLog{{Command: cmdStr, Output: out, ExitCode: exitCode, DurationMs: durMs}},
+		}
+		appendMessageToSession(activeSessID, replyMsg)
+		return fmt.Sprintf("⚡ [R3P Root Shell]\n$ %s\n\n%s", cmdStr, out)
+	}
+
+	if !cfg.TelegramAIEnabled {
+		return "ℹ️ Tính năng AI qua Telegram đang tạm tắt trong tab Trợ Lý AI."
+	}
+
+	appendMessageToSession(activeSessID, AIChatMessage{
+		Role:      "user",
+		Content:   "📱 [Telegram] " + trimmed,
+		Timestamp: time.Now().Format("15:04:05"),
+		Source:    "telegram",
+	})
+
+	if cfg.APIKey == "" {
+		reply := "🤖 R3P AI Agent: Chưa cấu hình API Key trong tab Trợ Lý AI trên Router. Bạn vẫn có thể gửi `!<lệnh>` (ví dụ: `!df -h`, `!uptime`, `!ip -br addr`) qua Telegram để chạy lệnh root trực tiếp, hoặc gửi URL để tải video!"
+		appendMessageToSession(activeSessID, AIChatMessage{
+			Role:      "assistant",
+			Content:   reply,
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "telegram",
+		})
+		return reply
+	}
+
+	sysPrompt := buildSystemArchitecturePrompt(cfg.SystemPromptExtra)
+	llmMsgs := []map[string]string{
+		{"role": "system", "content": sysPrompt},
+	}
+	_, sessMsgs := getActiveSessionMessages(activeSessID)
+	startIdx := 0
+	if len(sessMsgs) > 10 {
+		startIdx = len(sessMsgs) - 10
+	}
+	for _, m := range sessMsgs[startIdx:] {
+		if m.Role == "user" || m.Role == "assistant" {
+			llmMsgs = append(llmMsgs, map[string]string{"role": m.Role, "content": m.Content})
+		}
+	}
+
+	var allToolEvents []AIToolAction
+	var allCmdLogs []AICmdLog
+	var finalReply string
+
+	for turn := 0; turn < 3; turn++ {
+		respText, err := callLLMAPI(cfg, llmMsgs)
+		if err != nil {
+			finalReply = "❌ Lỗi kết nối AI API: " + err.Error()
+			break
+		}
+		evts, logs, outputs, cleaned := executeAIToolBlocks(respText, cfg.AutoExecute)
+		allToolEvents = append(allToolEvents, evts...)
+		allCmdLogs = append(allCmdLogs, logs...)
+		finalReply = cleaned
+		if len(outputs) == 0 {
+			break
+		}
+		llmMsgs = append(llmMsgs,
+			map[string]string{"role": "assistant", "content": respText},
+			map[string]string{"role": "user", "content": "Kết quả thực thi công cụ trên Router:\n```\n" + strings.Join(outputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng bằng tiếng Việt (không lặp lại thẻ công cụ)."},
+		)
+	}
+	if strings.TrimSpace(finalReply) == "" {
+		finalReply = "✅ Đã thực thi yêu cầu trên Router R3P."
+	}
+	appendMessageToSession(activeSessID, AIChatMessage{
+		Role:       "assistant",
+		Content:    finalReply,
+		Timestamp:  time.Now().Format("15:04:05"),
+		Source:     "telegram",
+		ToolEvents: allToolEvents,
+		Commands:   allCmdLogs,
+	})
+	return "🤖 [R3P Root AI]\n" + finalReply
+}
+
 // GET / PUT /api/v1/ai/config
 func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
@@ -349,7 +935,11 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		cfg := loadAIConfig()
 		safeCfg := cfg
-		safeCfg.APIKey = "" // Do not expose raw key in GET response
+		safeCfg.APIKey = ""
+		aiMu.Lock()
+		sessions := append([]AIChatSession{}, loadAISessionsLocked()...)
+		aiMu.Unlock()
+		activeID, hist := getActiveSessionMessages(cfg.ActiveSessionID)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"config":              safeCfg,
 			"provider":            cfg.Provider,
@@ -360,10 +950,16 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 			"model":               cfg.Model,
 			"auto_execute":        cfg.AutoExecute,
 			"allow_exec":          cfg.AllowExec,
+			"telegram_ai_enabled": cfg.TelegramAIEnabled,
+			"auto_remember":       cfg.AutoRemember,
+			"active_session_id":   activeID,
 			"system_prompt_extra": cfg.SystemPromptExtra,
 			"system_note":         cfg.SystemNote,
 			"system_context":      buildSystemArchitecturePrompt(cfg.SystemPromptExtra),
-			"history":             loadAIHistory(),
+			"blueprint_path":      aiBlueprintFile,
+			"memories":            loadAIMemories(),
+			"sessions":            sessions,
+			"history":             hist,
 		})
 
 	case http.MethodPut:
@@ -375,6 +971,9 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 			Model             string `json:"model"`
 			AutoExecute       *bool  `json:"auto_execute"`
 			AllowExec         *bool  `json:"allow_exec"`
+			TelegramAIEnabled *bool  `json:"telegram_ai_enabled"`
+			AutoRemember      *bool  `json:"auto_remember"`
+			ActiveSessionID   string `json:"active_session_id"`
 			SystemPromptExtra string `json:"system_prompt_extra"`
 			SystemNote        string `json:"system_note"`
 		}
@@ -411,6 +1010,15 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.AutoExecute = *body.AutoExecute
 			cfg.AllowExec = *body.AutoExecute
 		}
+		if body.TelegramAIEnabled != nil {
+			cfg.TelegramAIEnabled = *body.TelegramAIEnabled
+		}
+		if body.AutoRemember != nil {
+			cfg.AutoRemember = *body.AutoRemember
+		}
+		if strings.TrimSpace(body.ActiveSessionID) != "" {
+			cfg.ActiveSessionID = strings.TrimSpace(body.ActiveSessionID)
+		}
 		note := strings.TrimSpace(body.SystemNote)
 		if note == "" {
 			note = strings.TrimSpace(body.SystemPromptExtra)
@@ -421,18 +1029,237 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		updated := loadAIConfig()
 		updated.APIKey = ""
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
-			"saved":              true,
-			"config":             updated,
-			"provider":           updated.Provider,
-			"api_key_configured": updated.HasAPIKey,
-			"has_api_key":        updated.HasAPIKey,
-			"api_key_masked":     updated.APIKeyMasked,
-			"base_url":           updated.BaseURL,
-			"model":              updated.Model,
-			"auto_execute":       updated.AutoExecute,
-			"allow_exec":         updated.AllowExec,
+			"saved":               true,
+			"config":              updated,
+			"provider":            updated.Provider,
+			"api_key_configured":  updated.HasAPIKey,
+			"has_api_key":         updated.HasAPIKey,
+			"api_key_masked":      updated.APIKeyMasked,
+			"base_url":            updated.BaseURL,
+			"model":               updated.Model,
+			"auto_execute":        updated.AutoExecute,
+			"allow_exec":          updated.AllowExec,
+			"telegram_ai_enabled": updated.TelegramAIEnabled,
+			"auto_remember":       updated.AutoRemember,
+			"active_session_id":   updated.ActiveSessionID,
 		})
 
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+
+// GET / POST / DELETE /api/v1/ai/memory
+func handleAIMemory(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"memories": loadAIMemories(),
+		})
+	case http.MethodPost:
+		var body struct {
+			Category string `json:"category"`
+			Content  string `json:"content"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
+			writeJSON(w, http.StatusBadRequest, false, "Nội dung ghi nhớ không được để trống")
+			return
+		}
+		entry := addAIMemoryEntry(body.Category, body.Content)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"entry":    entry,
+			"memories": loadAIMemories(),
+		})
+	case http.MethodDelete:
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		aiMu.Lock()
+		_ = loadAIMemoriesLocked()
+		if id == "" || id == "all" {
+			aiMemories = []AIMemoryEntry{}
+		} else {
+			var kept []AIMemoryEntry
+			for _, m := range aiMemories {
+				if m.ID != id {
+					kept = append(kept, m)
+				}
+			}
+			aiMemories = kept
+		}
+		saveAIMemoriesLocked()
+		res := append([]AIMemoryEntry{}, aiMemories...)
+		aiMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"memories": res,
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+
+// GET / POST / PUT / DELETE /api/v1/ai/sessions
+func handleAISessions(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg := loadAIConfig()
+		aiMu.Lock()
+		sessions := append([]AIChatSession{}, loadAISessionsLocked()...)
+		aiMu.Unlock()
+		activeID, msgs := getActiveSessionMessages(cfg.ActiveSessionID)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"active_session_id": activeID,
+			"sessions":          sessions,
+			"history":           msgs,
+		})
+
+	case http.MethodPost:
+		var body struct {
+			Title string `json:"title"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		title := strings.TrimSpace(body.Title)
+		if title == "" {
+			title = "Phiên Mới (" + time.Now().Format("15:04") + ")"
+		}
+		newID := fmt.Sprintf("sess-%d", time.Now().UnixNano()/1e6)
+		nowStr := time.Now().Format("2006-01-02 15:04")
+		newSess := AIChatSession{
+			ID:        newID,
+			Title:     title,
+			CreatedAt: nowStr,
+			UpdatedAt: nowStr,
+			Messages:  defaultWelcomeMessages(),
+		}
+		aiMu.Lock()
+		_ = loadAISessionsLocked()
+		aiSessions = append([]AIChatSession{newSess}, aiSessions...)
+		saveAISessionsLocked()
+		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		aiMu.Unlock()
+
+		cfg := loadAIConfig()
+		cfg.ActiveSessionID = newID
+		saveAIConfig(cfg)
+
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"active_session_id": newID,
+			"session":           newSess,
+			"sessions":          sessionsCopy,
+			"history":           newSess.Messages,
+		})
+
+	case http.MethodPut:
+		var body struct {
+			SessionID string `json:"session_id"`
+			Title     string `json:"title"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || strings.TrimSpace(body.SessionID) == "" {
+			writeJSON(w, http.StatusBadRequest, false, "session_id is required")
+			return
+		}
+		sid := strings.TrimSpace(body.SessionID)
+		aiMu.Lock()
+		_ = loadAISessionsLocked()
+		if strings.TrimSpace(body.Title) != "" {
+			for i := range aiSessions {
+				if aiSessions[i].ID == sid {
+					aiSessions[i].Title = strings.TrimSpace(body.Title)
+					break
+				}
+			}
+			saveAISessionsLocked()
+		}
+		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		aiMu.Unlock()
+
+		cfg := loadAIConfig()
+		cfg.ActiveSessionID = sid
+		saveAIConfig(cfg)
+		activeID, msgs := getActiveSessionMessages(sid)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"active_session_id": activeID,
+			"sessions":          sessionsCopy,
+			"history":           msgs,
+		})
+
+	case http.MethodDelete:
+		sid := strings.TrimSpace(r.URL.Query().Get("id"))
+		aiMu.Lock()
+		_ = loadAISessionsLocked()
+		var kept []AIChatSession
+		for _, s := range aiSessions {
+			if s.ID != sid {
+				kept = append(kept, s)
+			}
+		}
+		if len(kept) == 0 {
+			nowStr := time.Now().Format("2006-01-02 15:04")
+			kept = []AIChatSession{{
+				ID:        "default",
+				Title:     "Phiên Điều Khiển Chính",
+				CreatedAt: nowStr,
+				UpdatedAt: nowStr,
+				Messages:  defaultWelcomeMessages(),
+			}}
+		}
+		aiSessions = kept
+		saveAISessionsLocked()
+		nextActive := aiSessions[0].ID
+		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		msgsCopy := append([]AIChatMessage{}, aiSessions[0].Messages...)
+		aiMu.Unlock()
+
+		cfg := loadAIConfig()
+		cfg.ActiveSessionID = nextActive
+		saveAIConfig(cfg)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"active_session_id": nextActive,
+			"sessions":          sessionsCopy,
+			"history":           msgsCopy,
+		})
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+
+// GET / PUT /api/v1/ai/blueprint
+func handleAIBlueprint(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		content := ensureSystemBlueprintFile()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"path":    aiBlueprintFile,
+			"content": content,
+		})
+	case http.MethodPut:
+		var body struct {
+			Content string `json:"content"`
+			Reset   bool   `json:"reset"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 131072)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+			return
+		}
+		content := body.Content
+		if body.Reset || strings.TrimSpace(content) == "" {
+			content = defaultSystemBlueprintMD
+		}
+		_ = os.MkdirAll("/etc/r3p", 0755)
+		_ = os.WriteFile(aiBlueprintFile, []byte(content), 0644)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"saved":   true,
+			"path":    aiBlueprintFile,
+			"content": content,
+		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
@@ -443,12 +1270,28 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	cfg := loadAIConfig()
+	activeSessID, _ := getActiveSessionMessages(cfg.ActiveSessionID)
+
 	if r.Method == http.MethodDelete {
 		aiMu.Lock()
-		aiHistory = []AIChatMessage{}
-		saveAIHistory()
+		_ = loadAISessionsLocked()
+		for i := range aiSessions {
+			if aiSessions[i].ID == activeSessID {
+				aiSessions[i].Messages = defaultWelcomeMessages()
+				aiSessions[i].UpdatedAt = time.Now().Format("2006-01-02 15:04")
+				break
+			}
+		}
+		saveAISessionsLocked()
+		sessionsCopy := append([]AIChatSession{}, aiSessions...)
 		aiMu.Unlock()
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"cleared": true, "history": loadAIHistory()})
+		_, hist := getActiveSessionMessages(activeSessID)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"cleared":  true,
+			"history":  hist,
+			"sessions": sessionsCopy,
+		})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -457,6 +1300,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
+		SessionID    string     `json:"session_id"`
 		Message      string     `json:"message"`
 		Execute      *bool      `json:"execute"`
 		BrowserReply string     `json:"browser_reply"`
@@ -466,69 +1310,31 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 		return
 	}
+	if strings.TrimSpace(body.SessionID) != "" {
+		activeSessID = strings.TrimSpace(body.SessionID)
+	}
 
-	// Browser-Bridged AI Continuation: when the router has no WAN Internet, the user's browser
-	// calls the LLM API directly and sends the raw AI response here so the router can execute
-	// <exec_cmd> blocks as root and persist the conversation!
+	// Browser-Bridged AI Continuation
 	if strings.TrimSpace(body.BrowserReply) != "" {
 		respText := strings.TrimSpace(body.BrowserReply)
-		cfg := loadAIConfig()
 		if body.Execute != nil {
 			cfg.AutoExecute = *body.Execute
 		}
-		var allToolEvents []AIToolAction
+		allToolEvents, newCmdLogs, cmdOutputs, cleanReply := executeAIToolBlocks(respText, cfg.AutoExecute)
 		var allCmdLogs []AICmdLog
 		allCmdLogs = append(allCmdLogs, body.PrevCommands...)
-		var cmdOutputs []string
+		allCmdLogs = append(allCmdLogs, newCmdLogs...)
 
-		if cfg.AutoExecute {
-			matches := execCmdRegex.FindAllStringSubmatch(respText, -1)
-			for _, m := range matches {
-				cmdStr := strings.TrimSpace(m[1])
-				if cmdStr == "" {
-					continue
-				}
-				t0 := time.Now()
-				out, cmdErr := runCmd(25, "sh", "-c", cmdStr)
-				durMs := time.Since(t0).Milliseconds()
-				exitCode := 0
-				if cmdErr != nil {
-					exitCode = 1
-					if out == "" {
-						out = cmdErr.Error()
-					}
-				}
-				if len(out) > 4000 {
-					out = out[:4000] + "\n...(truncated)"
-				}
-				allToolEvents = append(allToolEvents, AIToolAction{
-					Tool:    "exec_cmd",
-					Command: cmdStr,
-					Output:  out,
-					Success: cmdErr == nil,
-				})
-				allCmdLogs = append(allCmdLogs, AICmdLog{
-					Command:    cmdStr,
-					Output:     out,
-					ExitCode:   exitCode,
-					DurationMs: durMs,
-				})
-				cmdOutputs = append(cmdOutputs, fmt.Sprintf("$ %s\n%s", cmdStr, out))
-			}
-		}
-
-		// If commands were executed in this turn and prev_commands was empty, let browser do 1 follow-up synthesis turn
 		if len(cmdOutputs) > 0 && len(body.PrevCommands) == 0 {
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
 				"needs_browser_followup": true,
 				"commands":               allCmdLogs,
 				"tool_events":            allToolEvents,
-				"followup_user_prompt":   "Kết quả thực thi lệnh trên Router:\n```\n" + strings.Join(cmdOutputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng bằng tiếng Việt cho người dùng (không lặp lại thẻ <exec_cmd>).",
+				"followup_user_prompt":   "Kết quả thực thi công cụ trên Router:\n```\n" + strings.Join(cmdOutputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng bằng tiếng Việt cho người dùng (không lặp lại thẻ công cụ).",
 			})
 			return
 		}
 
-		cleanReply := strings.TrimSpace(execCmdRegex.ReplaceAllString(respText, ""))
 		if cleanReply == "" {
 			cleanReply = "Đã thực thi lệnh hệ thống trên Router (`root@R3P`)."
 		}
@@ -536,13 +1342,13 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			Role:       "assistant",
 			Content:    cleanReply,
 			Timestamp:  time.Now().Format("15:04:05"),
+			Source:     "web",
 			ToolEvents: allToolEvents,
 			Commands:   allCmdLogs,
 		}
+		histCopy := appendMessageToSession(activeSessID, replyMsg)
 		aiMu.Lock()
-		aiHistory = append(aiHistory, replyMsg)
-		saveAIHistory()
-		histCopy := append([]AIChatMessage{}, aiHistory...)
+		sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
 		aiMu.Unlock()
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -550,6 +1356,8 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			"tool_events": allToolEvents,
 			"commands":    allCmdLogs,
 			"history":     histCopy,
+			"sessions":    sessionsCopy,
+			"memories":    loadAIMemories(),
 		})
 		return
 	}
@@ -560,17 +1368,32 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = loadAIHistory()
-	aiMu.Lock()
-	aiHistory = append(aiHistory, AIChatMessage{
+	// Filter bare URL messages: route directly to Host Download without cluttering AI chat
+	if isBareURLMessage(userMsg) {
+		urls := urlExtractRegex.FindAllString(userMsg, 5)
+		var queuedIDs []string
+		for _, u := range urls {
+			if job, _, err := enqueueEspJob(u, "ai_url_filter", "", false); err == nil && job != nil {
+				queuedIDs = append(queuedIDs, "#"+job.ID)
+			}
+		}
+		_, histCopy := getActiveSessionMessages(activeSessID)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"filtered_url": true,
+			"message":      "Đã chuyển thẳng URL sang Host Download (" + strings.Join(queuedIDs, ", ") + ") và lọc khỏi cửa sổ giao tiếp AI.",
+			"history":      histCopy,
+		})
+		return
+	}
+
+	appendMessageToSession(activeSessID, AIChatMessage{
 		Role:      "user",
 		Content:   userMsg,
 		Timestamp: time.Now().Format("15:04:05"),
+		Source:    "web",
 	})
-	saveAIHistory()
-	aiMu.Unlock()
 
-	// Direct root shell command mode (!cmd or /exec cmd) — works anytime even without API key!
+	// Direct root shell command mode (!cmd or /exec cmd)
 	if strings.HasPrefix(userMsg, "!") || strings.HasPrefix(userMsg, "/exec ") {
 		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(userMsg, "!"), "/exec "))
 		t0 := time.Now()
@@ -583,31 +1406,31 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 				out = err.Error()
 			}
 		}
-		reply := fmt.Sprintf("Đã thực thi lệnh trực tiếp trên Router (`root@R3P`):")
+		reply := "Đã thực thi lệnh trực tiếp trên Router (`root@R3P`):"
 		action := AIToolAction{Tool: "root_shell", Command: cmdStr, Output: out, Success: err == nil}
 		cmdLog := AICmdLog{Command: cmdStr, Output: out, ExitCode: exitCode, DurationMs: durMs}
 		replyMsg := AIChatMessage{
 			Role:       "assistant",
 			Content:    reply,
 			Timestamp:  time.Now().Format("15:04:05"),
+			Source:     "web",
 			ToolEvents: []AIToolAction{action},
 			Commands:   []AICmdLog{cmdLog},
 		}
+		histCopy := appendMessageToSession(activeSessID, replyMsg)
 		aiMu.Lock()
-		aiHistory = append(aiHistory, replyMsg)
-		saveAIHistory()
-		histCopy := append([]AIChatMessage{}, aiHistory...)
+		sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
 		aiMu.Unlock()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"reply":       replyMsg,
 			"tool_events": []AIToolAction{action},
 			"commands":    []AICmdLog{cmdLog},
 			"history":     histCopy,
+			"sessions":    sessionsCopy,
 		})
 		return
 	}
 
-	cfg := loadAIConfig()
 	if body.Execute != nil {
 		cfg.AutoExecute = *body.Execute
 	}
@@ -615,19 +1438,16 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		out, _ := runCmd(5, "sh", "-c", "uptime; df -h /overlay /mnt/sda1 2>/dev/null; ip -br addr")
 		durMs := time.Since(t0).Milliseconds()
-		replyText := fmt.Sprintf("Chưa cấu hình **API Key** cho nhà cung cấp AI (**%s**). Hãy nhập API Key ở khung **Cấu Hình Nhúng API Cho AI Agent** ngay phía trên rồi bấm **Lưu Cấu Hình API**.\n\n💡 *Mẹo:* Ngay cả khi chưa có Internet hoặc chưa nhập API Key, bạn vẫn có thể điều khiển toàn bộ hệ thống trong cửa sổ Chat này bằng cách gõ `!<lệnh>` (ví dụ: `!df -h`, `!uci show wireless`, `!ls -la /mnt/sda1`).", strings.ToUpper(cfg.Provider))
+		replyText := fmt.Sprintf("Chưa cấu hình **API Key** cho nhà cung cấp AI (**%s**). Hãy nhập API Key ở khung **Cấu Hình Nhúng API Cho AI Agent** phía trên rồi bấm **Lưu Cấu Hình API**.\n\n💡 *Mẹo:* Ngay cả khi chưa nhập API Key, bạn có thể bấm vào **Bảng Lệnh Kiểm Tra & Cài Đặt Có Sẵn** ở cột bên trái hoặc gõ `!<lệnh>` để chạy lệnh trực tiếp với quyền `root`!", strings.ToUpper(cfg.Provider))
 		cmdLog := AICmdLog{Command: "uptime && df -h && ip -br addr", Output: out, ExitCode: 0, DurationMs: durMs}
 		replyMsg := AIChatMessage{
 			Role:      "assistant",
 			Content:   replyText,
 			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "web",
 			Commands:  []AICmdLog{cmdLog},
 		}
-		aiMu.Lock()
-		aiHistory = append(aiHistory, replyMsg)
-		saveAIHistory()
-		histCopy := append([]AIChatMessage{}, aiHistory...)
-		aiMu.Unlock()
+		histCopy := appendMessageToSession(activeSessID, replyMsg)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"reply":   replyMsg,
 			"history": histCopy,
@@ -635,22 +1455,20 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build conversation messages with full system context
 	sysPrompt := buildSystemArchitecturePrompt(cfg.SystemPromptExtra)
 	llmMsgs := []map[string]string{
 		{"role": "system", "content": sysPrompt},
 	}
-	aiMu.Lock()
+	_, sessMsgs := getActiveSessionMessages(activeSessID)
 	startIdx := 0
-	if len(aiHistory) > 12 {
-		startIdx = len(aiHistory) - 12
+	if len(sessMsgs) > 12 {
+		startIdx = len(sessMsgs) - 12
 	}
-	for _, m := range aiHistory[startIdx:] {
+	for _, m := range sessMsgs[startIdx:] {
 		if m.Role == "user" || m.Role == "assistant" {
 			llmMsgs = append(llmMsgs, map[string]string{"role": m.Role, "content": m.Content})
 		}
 	}
-	aiMu.Unlock()
 
 	var allToolEvents []AIToolAction
 	var allCmdLogs []AICmdLog
@@ -660,8 +1478,6 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		respText, err := callLLMAPI(cfg, llmMsgs)
 		if err != nil {
 			errStr := err.Error()
-			// If router itself has no WAN Internet (DNS lookup / dial tcp failure), instruct the browser
-			// (which has Internet on the user's PC/phone) to bridge the LLM call!
 			if turn == 0 && (strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "lookup ") || strings.Contains(errStr, "server misbehaving") || strings.Contains(errStr, "network is unreachable") || strings.Contains(errStr, "i/o timeout")) {
 				baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 				if baseURL == "" {
@@ -683,76 +1499,38 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			finalReply = "❌ Lỗi kết nối AI API: `" + errStr + "`\nHãy kiểm tra lại kết nối Internet của Router (WAN / Wi-Fi Client / USB Tether) và API Key ở khung cài đặt phía trên."
+			finalReply = "❌ Lỗi kết nối AI API: `" + errStr + "`\nHãy kiểm tra lại kết nối Internet của Router và API Key ở khung cài đặt phía trên."
 			break
 		}
-		finalReply = respText
-		if !cfg.AutoExecute {
-			break
-		}
-		matches := execCmdRegex.FindAllStringSubmatch(respText, -1)
-		if len(matches) == 0 {
-			break
-		}
-		var cmdOutputs []string
-		for _, m := range matches {
-			cmdStr := strings.TrimSpace(m[1])
-			if cmdStr == "" {
-				continue
-			}
-			t0 := time.Now()
-			out, cmdErr := runCmd(25, "sh", "-c", cmdStr)
-			durMs := time.Since(t0).Milliseconds()
-			exitCode := 0
-			if cmdErr != nil {
-				exitCode = 1
-				if out == "" {
-					out = cmdErr.Error()
-				}
-			}
-			if len(out) > 4000 {
-				out = out[:4000] + "\n...(truncated)"
-			}
-			allToolEvents = append(allToolEvents, AIToolAction{
-				Tool:    "exec_cmd",
-				Command: cmdStr,
-				Output:  out,
-				Success: cmdErr == nil,
-			})
-			allCmdLogs = append(allCmdLogs, AICmdLog{
-				Command:    cmdStr,
-				Output:     out,
-				ExitCode:   exitCode,
-				DurationMs: durMs,
-			})
-			cmdOutputs = append(cmdOutputs, fmt.Sprintf("$ %s\n%s", cmdStr, out))
-		}
-		if len(cmdOutputs) == 0 {
+		evts, logs, outputs, cleaned := executeAIToolBlocks(respText, cfg.AutoExecute)
+		allToolEvents = append(allToolEvents, evts...)
+		allCmdLogs = append(allCmdLogs, logs...)
+		finalReply = cleaned
+		if len(outputs) == 0 {
 			break
 		}
 		llmMsgs = append(llmMsgs,
 			map[string]string{"role": "assistant", "content": respText},
-			map[string]string{"role": "user", "content": "Kết quả thực thi lệnh trên Router:\n```\n" + strings.Join(cmdOutputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng cho người dùng (không lặp lại thẻ <exec_cmd> nếu đã xong)."},
+			map[string]string{"role": "user", "content": "Kết quả thực thi công cụ trên Router:\n```\n" + strings.Join(outputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng cho người dùng (không lặp lại thẻ công cụ nếu đã xong)."},
 		)
 	}
 
-	cleanReply := strings.TrimSpace(execCmdRegex.ReplaceAllString(finalReply, ""))
-	if cleanReply == "" {
-		cleanReply = finalReply
+	if strings.TrimSpace(finalReply) == "" {
+		finalReply = "Đã thực thi yêu cầu hệ thống trên Router (`root@R3P`)."
 	}
 
 	replyMsg := AIChatMessage{
 		Role:       "assistant",
-		Content:    cleanReply,
+		Content:    finalReply,
 		Timestamp:  time.Now().Format("15:04:05"),
+		Source:     "web",
 		ToolEvents: allToolEvents,
 		Commands:   allCmdLogs,
 	}
 
+	histCopy := appendMessageToSession(activeSessID, replyMsg)
 	aiMu.Lock()
-	aiHistory = append(aiHistory, replyMsg)
-	saveAIHistory()
-	histCopy := append([]AIChatMessage{}, aiHistory...)
+	sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
 	aiMu.Unlock()
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -760,5 +1538,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		"tool_events": allToolEvents,
 		"commands":    allCmdLogs,
 		"history":     histCopy,
+		"sessions":    sessionsCopy,
+		"memories":    loadAIMemories(),
 	})
 }

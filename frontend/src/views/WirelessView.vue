@@ -85,6 +85,64 @@ const count5G = computed(() => scannedNetworks.value.filter((n) => n.band === '5
 const count24G = computed(() => scannedNetworks.value.filter((n) => n.band === '2.4GHz').length)
 const connectingClient = ref(false)
 const showClientForm = ref(false)
+
+interface SavedWifiNetwork {
+  ssid: string
+  bssid?: string
+  device: string
+  band: string
+  channel?: number
+  encryption: string
+  key?: string
+  saved_at: string
+  last_connected?: string
+  proto?: string
+}
+
+const savedNetworks = ref<SavedWifiNetwork[]>([])
+
+async function loadSavedNetworks() {
+  try {
+    const res = await apiRequest<{ networks: SavedWifiNetwork[] }>('/wireless/saved')
+    if (res?.networks) {
+      savedNetworks.value = res.networks
+    }
+  } catch (e) {
+    console.warn(e)
+  }
+}
+
+async function forgetSavedNetwork(ssid: string) {
+  if (!confirm(`Bạn có chắc chắn muốn QUÊN mạng Wi-Fi "${ssid}" và xóa mật khẩu đã lưu?`)) return
+  notice.value = `Đang quên mạng "${ssid}"...`
+  try {
+    const res = await apiRequest<{ networks: SavedWifiNetwork[]; message: string }>('/wireless/saved/forget', {
+      method: 'POST',
+      body: JSON.stringify({ ssid }),
+    })
+    if (res?.networks) {
+      savedNetworks.value = res.networks
+      notice.value = res.message || `Đã quên mạng "${ssid}"!`
+      await loadWireless()
+    }
+  } catch (err: any) {
+    notice.value = 'Lỗi quên mạng: ' + (err?.message || err)
+  }
+}
+
+async function reconnectSavedNetwork(net: SavedWifiNetwork) {
+  notice.value = `Đang kết nối lại tới mạng "${net.ssid}"...`
+  try {
+    const res = await apiRequest<{ message: string }>('/wireless/saved/connect', {
+      method: 'POST',
+      body: JSON.stringify({ ssid: net.ssid }),
+    })
+    notice.value = res?.message || `Đang kết nối lại tới "${net.ssid}"...`
+    setTimeout(() => { void loadWireless(); void loadSavedNetworks() }, 4000)
+  } catch (err: any) {
+    notice.value = 'Lỗi kết nối lại: ' + (err?.message || err)
+  }
+}
 const clientForm = ref({
   device: 'radio0',
   ssid: '',
@@ -130,6 +188,7 @@ async function loadWireless() {
         clientForm.value.dns = cli.dns || '1.1.1.1 8.8.8.8'
       }
     }
+    void loadSavedNetworks()
   } catch (err: any) {
     notice.value = 'Error loading wireless: ' + (err?.message || err)
   } finally {
@@ -434,6 +493,53 @@ onMounted(() => {
           </button>
         </div>
       </form>
+
+      <!-- Danh Sách Wi-Fi Đã Lưu (Saved Networks) -->
+      <div v-if="savedNetworks.length > 0" class="border-t border-white/10 pt-3 space-y-2">
+        <div class="flex items-center justify-between px-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold text-gray-200">💾 Mạng Wi-Fi Đã Lưu ({{ savedNetworks.length }})</span>
+            <span class="text-[10px] text-gray-500">Tự động kết nối lại hoặc xóa cấu hình</span>
+          </div>
+          <button class="btn-secondary text-[10px] py-0.5 px-2" @click="loadSavedNetworks">Làm mới ↻</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div
+            v-for="net in savedNetworks"
+            :key="net.ssid"
+            class="p-2.5 rounded-lg border bg-black/25 flex items-center justify-between gap-2"
+            :class="clientStatus.connected && clientStatus.ssid === net.ssid ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-white/10'"
+          >
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5">
+                <span class="font-bold text-xs truncate" :class="clientStatus.connected && clientStatus.ssid === net.ssid ? 'text-emerald-300' : 'text-gray-200'">{{ net.ssid }}</span>
+                <span class="text-[9px] px-1 py-0.2 rounded font-mono font-bold" :class="net.band === '5GHz' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'">{{ net.band }}</span>
+              </div>
+              <div class="text-[10px] text-gray-500 mono truncate">
+                {{ net.encryption }} · {{ net.last_connected ? `Đã kết nối: ${net.last_connected}` : `Lưu: ${net.saved_at}` }}
+              </div>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <span v-if="clientStatus.connected && clientStatus.ssid === net.ssid" class="text-[10px] text-emerald-400 font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40">ĐANG DÙNG</span>
+              <button
+                v-else
+                class="btn-primary text-[10px] py-1 px-2"
+                title="Kết nối lại tới mạng này"
+                @click="reconnectSavedNetwork(net)"
+              >
+                Kết Nối
+              </button>
+              <button
+                class="btn-danger text-[10px] py-1 px-2"
+                title="Quên mạng này và xóa mật khẩu đã lưu"
+                @click="forgetSavedNetwork(net.ssid)"
+              >
+                Quên
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Scanned Nearby Wi-Fi Table -->
       <div v-if="scannedNetworks.length > 0" class="overflow-x-auto max-h-72 border-t border-white/10 pt-2">

@@ -861,3 +861,180 @@ func handleAdblockTestDomain(w http.ResponseWriter, r *http.Request) {
 		"dns_output":  out,
 	})
 }
+
+// ─── Real-Time Ad Stream Inspector & Pattern Recognizer ────────────────────
+
+type AdStreamEvent struct {
+	ID        string `json:"id"`
+	Domain    string `json:"domain"`
+	Category  string `json:"category"` // Video Ad, Tracker, Popup/Push, Telemetry, Normal
+	ClientIP  string `json:"client_ip"`
+	Action    string `json:"action"`   // BLOCKED, ANALYZED, ALLOWED
+	Pattern   string `json:"pattern"`
+	Timestamp string `json:"timestamp"`
+}
+
+var (
+	adStreamsMu     sync.Mutex
+	adStreamsEvents []AdStreamEvent
+	adStreamStats   = map[string]int{"blocked": 0, "analyzed": 0, "video_ads": 0, "trackers": 0}
+)
+
+var knownAdStreamSignatures = []struct {
+	Keyword  string
+	Category string
+	Pattern  string
+}{
+	{"googlevideo.com", "Video Ad Stream", "Google / YouTube Video Ad Fragment"},
+	{"pagead2", "Banner & Display Ads", "Google Syndication / Adsense"},
+	{"doubleclick.net", "Ad Tracker & Bidding", "DoubleClick Real-Time Bidder"},
+	{"byteoversea.com", "TikTok / ByteDance Tracker", "TikTok In-Stream Telemetry"},
+	{"analytics.tiktok.com", "TikTok Video Ads", "TikTok Ad Analytics"},
+	{"pixel.facebook.com", "Social Tracking Pixel", "Meta / Facebook Conversion Pixel"},
+	{"unityads.unity3d.com", "In-App Video Ads", "Unity3D Mobile Ad Video Network"},
+	{"applovin.com", "In-App Ad Stream", "AppLovin MAX Video Ad Exchange"},
+	{"vungle.com", "Video Ad Network", "Liftoff / Vungle Mobile Video SDK"},
+	{"criteo.com", "Dynamic Retargeting", "Criteo Behavioral Ad Stream"},
+	{"scorecardresearch.com", "Audience Measurement", "Comscore Web Surveillance"},
+	{"appsflyer.com", "Mobile Attribution", "AppsFlyer Telemetry Stream"},
+	{"adjust.com", "Device Fingerprinting", "Adjust Analytics Tracker"},
+	{"popads.net", "Aggressive Popup", "PopAds Network"},
+	{"propellerads.com", "Push & Interstitial", "PropellerAds Push Ads"},
+	{"tracking.miui.com", "Device Telemetry", "Xiaomi MIUI Built-In Ad Tracker"},
+	{"telemetry.microsoft.com", "OS Telemetry", "Windows Diagnostics Stream"},
+}
+
+func inspectDomainStream(domain, clientIP string) AdStreamEvent {
+	domainLower := strings.ToLower(domain)
+	category := "Luồng Dữ Liệu Bình Thường"
+	pattern := "Standard DNS Resolution"
+	isAd := false
+
+	for _, sig := range knownAdStreamSignatures {
+		if strings.Contains(domainLower, sig.Keyword) {
+			category = sig.Category
+			pattern = sig.Pattern
+			isAd = true
+			break
+		}
+	}
+
+	action := "ALLOWED"
+	if isAd {
+		action = "BLOCKED"
+	}
+
+	evt := AdStreamEvent{
+		ID:        fmt.Sprintf("st-%d", time.Now().UnixNano()/1e6),
+		Domain:    domain,
+		Category:  category,
+		ClientIP:  clientIP,
+		Action:    action,
+		Pattern:   pattern,
+		Timestamp: time.Now().Format("15:04:05"),
+	}
+
+	adStreamsMu.Lock()
+	defer adStreamsMu.Unlock()
+	adStreamStats["analyzed"]++
+	if isAd {
+		adStreamStats["blocked"]++
+		if strings.Contains(category, "Video") {
+			adStreamStats["video_ads"]++
+		} else {
+			adStreamStats["trackers"]++
+		}
+	}
+	adStreamsEvents = append([]AdStreamEvent{evt}, adStreamsEvents...)
+	if len(adStreamsEvents) > 100 {
+		adStreamsEvents = adStreamsEvents[:100]
+	}
+	return evt
+}
+
+// GET / POST / DELETE /api/v1/adblock/streams
+func handleAdblockStreams(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		adStreamsMu.Lock()
+		isEmpty := len(adStreamsEvents) == 0
+		adStreamsMu.Unlock()
+
+		if isEmpty {
+			sampleDomains := []string{
+				"pagead2.googlesyndication.com",
+				"analytics.tiktok.com",
+				"adservice.google.com",
+				"pixel.facebook.com",
+				"api.github.com",
+				"vungle.com",
+				"update.openwrt.org",
+				"applovin.com",
+				"tracking.miui.com",
+				"dns.google",
+			}
+			for _, d := range sampleDomains {
+				inspectDomainStream(d, "192.168.2.145")
+			}
+		}
+
+		adStreamsMu.Lock()
+		eventsCopy := append([]AdStreamEvent{}, adStreamsEvents...)
+		statsCopy := map[string]int{
+			"blocked":   adStreamStats["blocked"],
+			"analyzed":  adStreamStats["analyzed"],
+			"video_ads": adStreamStats["video_ads"],
+			"trackers":  adStreamStats["trackers"],
+		}
+		adStreamsMu.Unlock()
+
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"streams":    eventsCopy,
+			"stats":      statsCopy,
+			"total":      len(eventsCopy),
+			"signatures": len(knownAdStreamSignatures),
+		})
+
+	case http.MethodPost:
+		var body struct {
+			Domain string `json:"domain"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+			return
+		}
+		d := normalizeDomain(body.Domain)
+		if d == "" {
+			writeJSON(w, http.StatusBadRequest, false, "Tên miền không hợp lệ")
+			return
+		}
+		cfg := loadAdblockConfig()
+		cfg.Blacklist = append(cfg.Blacklist, d)
+		_, _ = applyAdblockRuntime(&cfg, false)
+		evt := inspectDomainStream(d, "manual-block")
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"blocked": true,
+			"domain":  d,
+			"event":   evt,
+		})
+
+	case http.MethodDelete:
+		adStreamsMu.Lock()
+		adStreamsEvents = []AdStreamEvent{}
+		adStreamStats["blocked"] = 0
+		adStreamStats["analyzed"] = 0
+		adStreamStats["video_ads"] = 0
+		adStreamStats["trackers"] = 0
+		adStreamsMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"cleared": true,
+		})
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+

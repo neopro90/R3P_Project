@@ -59,6 +59,65 @@ interface GatewaySetupInfo {
   wan_dns_listening: boolean
 }
 
+interface AdStreamEvent {
+  id: string
+  domain: string
+  category: string
+  client_ip: string
+  action: string
+  pattern: string
+  timestamp: string
+}
+
+const streams = ref<AdStreamEvent[]>([])
+const streamStats = ref({ blocked: 0, analyzed: 0, video_ads: 0, trackers: 0 })
+const loadingStreams = ref(false)
+
+async function loadAdStreams() {
+  loadingStreams.value = true
+  try {
+    const res = await apiRequest<{
+      streams: AdStreamEvent[]
+      stats: { blocked: number; analyzed: number; video_ads: number; trackers: number }
+    }>('/adblock/streams')
+    if (res?.streams) {
+      streams.value = res.streams
+    }
+    if (res?.stats) {
+      streamStats.value = res.stats
+    }
+  } catch (e) {
+    console.warn(e)
+  } finally {
+    loadingStreams.value = false
+  }
+}
+
+async function blockDomainFromStream(domain: string) {
+  try {
+    const res = await apiRequest<{ blocked: boolean }>('/adblock/streams', {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    })
+    if (res?.blocked) {
+      notice.value = `Đã nhận diện & thêm tên miền luồng quảng cáo "${domain}" vào Blacklist!`
+      await loadAdStreams()
+      await loadAdblock()
+    }
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi: ' + (err?.message || err)
+  }
+}
+
+async function clearStreamHistory() {
+  try {
+    await apiRequest('/adblock/streams', { method: 'DELETE' })
+    await loadAdStreams()
+  } catch (e) {
+    console.warn(e)
+  }
+}
+
 const gatewaySetup = ref<GatewaySetupInfo>({
   is_client_mode: true,
   r3p_client_ip: '192.168.1.6',
@@ -298,6 +357,7 @@ async function runDomainTest() {
 
 onMounted(() => {
   void loadAdblock()
+  void loadAdStreams()
 })
 </script>
 
@@ -501,6 +561,119 @@ onMounted(() => {
             </code>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Real-Time Ad Stream Inspector & Pattern Recognizer -->
+    <div class="pro-card border border-purple-500/35 bg-gradient-to-r from-purple-500/[0.05] via-black/30 to-sky-500/[0.05] space-y-3">
+      <div class="pro-card-header flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-base">🔍</span>
+          <span class="pro-card-title text-purple-300">
+            Trình Bóc Tách & Nhận Dạng Luồng Quảng Cáo Thời Gian Thực (Ad Stream Inspector)
+          </span>
+          <span class="badge badge-purple">AI PATTERN RECOGNIZER</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary text-[11px] py-1" :disabled="loadingStreams" @click="loadAdStreams">
+            {{ loadingStreams ? 'Đang phân tích…' : 'Làm mới luồng ↻' }}
+          </button>
+          <button class="btn-danger text-[11px] py-1" @click="clearStreamHistory">
+            Xóa lịch sử
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Stream Counters -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+        <div class="p-2.5 rounded bg-black/40 border border-white/5">
+          <div class="text-[10px] text-gray-400 uppercase font-semibold">Đã Nhận Diện & Tự Động Chặn</div>
+          <div class="mono text-lg font-bold text-rose-400">{{ streamStats.blocked }}</div>
+          <div class="text-[9.5px] text-gray-500">Luồng quảng cáo & tracker bị triệt tiêu</div>
+        </div>
+        <div class="p-2.5 rounded bg-black/40 border border-white/5">
+          <div class="text-[10px] text-gray-400 uppercase font-semibold">Luồng Video Ads (YouTube/TikTok)</div>
+          <div class="mono text-lg font-bold text-amber-400">{{ streamStats.video_ads }}</div>
+          <div class="text-[9.5px] text-gray-500">Bóc tách video ad fragments</div>
+        </div>
+        <div class="p-2.5 rounded bg-black/40 border border-white/5">
+          <div class="text-[10px] text-gray-400 uppercase font-semibold">Trình Theo Dõi & Pixel (Trackers)</div>
+          <div class="mono text-lg font-bold text-purple-400">{{ streamStats.trackers }}</div>
+          <div class="text-[9.5px] text-gray-500">Facebook Pixel, Google, ByteDance</div>
+        </div>
+        <div class="p-2.5 rounded bg-black/40 border border-white/5">
+          <div class="text-[10px] text-gray-400 uppercase font-semibold">Tổng Số Luồng Đã Phân Tích</div>
+          <div class="mono text-lg font-bold text-sky-400">{{ streamStats.analyzed }}</div>
+          <div class="text-[9.5px] text-gray-500">Giám sát liên tục qua cổng DNS 53</div>
+        </div>
+      </div>
+
+      <!-- Inspected Streams Table -->
+      <div class="overflow-x-auto max-h-64 border border-white/10 rounded-lg">
+        <table class="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr class="bg-black/50 border-b border-white/10 text-gray-400 text-[10.5px] uppercase font-semibold">
+              <th class="py-2 px-3 w-20">Thời gian</th>
+              <th class="py-2 px-3">Tên miền luồng (Domain)</th>
+              <th class="py-2 px-3 w-40">Phân loại nhận dạng</th>
+              <th class="py-2 px-3 hidden md:table-cell">Mẫu nhận diện (Signature)</th>
+              <th class="py-2 px-3 w-24 text-center">Trạng thái</th>
+              <th class="py-2 px-3 w-28 text-right">Thao tác</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-white/[0.04] text-[11.5px]">
+            <tr v-if="!streams.length">
+              <td colspan="6" class="text-center py-6 text-gray-500">
+                Chưa có luồng dữ liệu nào được ghi nhận.
+              </td>
+            </tr>
+            <tr
+              v-for="st in streams"
+              :key="st.id"
+              class="hover:bg-white/[0.02] transition"
+            >
+              <td class="py-1.5 px-3 mono text-gray-500 text-[10.5px]">{{ st.timestamp }}</td>
+              <td class="py-1.5 px-3 font-semibold text-gray-200 mono">
+                {{ st.domain }}
+              </td>
+              <td class="py-1.5 px-3">
+                <span
+                  class="px-1.5 py-0.5 rounded text-[10px] font-bold"
+                  :class="st.category.includes('Video')
+                    ? 'bg-amber-500/20 text-amber-300'
+                    : st.category.includes('Tracker') || st.category.includes('Pixel')
+                      ? 'bg-purple-500/20 text-purple-300'
+                      : st.category.includes('Ad')
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : 'bg-gray-500/20 text-gray-400'"
+                >
+                  {{ st.category }}
+                </span>
+              </td>
+              <td class="py-1.5 px-3 text-gray-400 text-[10.5px] hidden md:table-cell truncate max-w-xs">
+                {{ st.pattern }}
+              </td>
+              <td class="py-1.5 px-3 text-center">
+                <span
+                  class="px-2 py-0.5 rounded text-[10px] font-bold"
+                  :class="st.action === 'BLOCKED' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'"
+                >
+                  {{ st.action }}
+                </span>
+              </td>
+              <td class="py-1.5 px-3 text-right">
+                <button
+                  v-if="st.action !== 'BLOCKED'"
+                  class="btn-danger text-[10px] py-0.5 px-2"
+                  @click="blockDomainFromStream(st.domain)"
+                >
+                  🚫 Chặn Luồng
+                </button>
+                <span v-else class="text-[10px] text-gray-500 mono">Đã chặn</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 

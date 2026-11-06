@@ -1344,6 +1344,21 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.disabled=%s", disabledVal))
 		_, _ = runCmd(5, "uci", "commit", "wireless")
 
+		bandName := "2.4GHz"
+		if body.Device == "radio1" {
+			bandName = "5GHz"
+		}
+		addOrUpdateSavedWifi(SavedWifiNetwork{
+			SSID:       ssid,
+			BSSID:      body.BSSID,
+			Device:     body.Device,
+			Band:       bandName,
+			Channel:    body.Channel,
+			Encryption: enc,
+			Key:        body.Key,
+			Proto:      proto,
+		})
+
 		go func() {
 			_, _ = runCmd(8, "/etc/init.d/firewall", "reload")
 			_, _ = runCmd(12, "wifi", "reload")
@@ -1356,7 +1371,8 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			"connected_ssid": ssid,
 			"device":         body.Device,
 			"enabled":        body.Enabled,
-			"message":        "Đã cấu hình thu sóng Wi-Fi Client (WWAN) và đang kết nối...",
+			"saved_list":     loadSavedWifiList(),
+			"message":        "Đã cấu hình thu sóng Wi-Fi Client (WWAN), lưu mạng và đang kết nối...",
 		})
 
 	case http.MethodDelete:
@@ -1376,3 +1392,238 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
 }
+
+// ─── Saved Wi-Fi Networks Management (/api/v1/wireless/saved) ──────────────
+
+const savedWifiFile = "/etc/r3p/saved-wifi.json"
+
+type SavedWifiNetwork struct {
+	SSID          string `json:"ssid"`
+	BSSID         string `json:"bssid,omitempty"`
+	Device        string `json:"device"` // "radio0" or "radio1"
+	Band          string `json:"band"`   // "2.4GHz" or "5GHz"
+	Channel       int    `json:"channel,omitempty"`
+	Encryption    string `json:"encryption"`
+	Key           string `json:"key,omitempty"`
+	SavedAt       string `json:"saved_at"`
+	LastConnected string `json:"last_connected,omitempty"`
+	Proto         string `json:"proto,omitempty"`
+}
+
+var savedWifiMu sync.Mutex
+
+func loadSavedWifiList() []SavedWifiNetwork {
+	savedWifiMu.Lock()
+	defer savedWifiMu.Unlock()
+	var list []SavedWifiNetwork
+	if b, err := os.ReadFile(savedWifiFile); err == nil {
+		_ = json.Unmarshal(b, &list)
+	}
+	if len(list) == 0 {
+		// Populate initial known Wi-Fi client if active in UCI
+		uciMap := parseUCIConfigMap("wireless")
+		activeSSID := uciMap["wireless.wwan_sta.ssid"]
+		if activeSSID != "" {
+			dev := uciMap["wireless.wwan_sta.device"]
+			if dev == "" {
+				dev = "radio0"
+			}
+			band := "2.4GHz"
+			if dev == "radio1" {
+				band = "5GHz"
+			}
+			list = []SavedWifiNetwork{
+				{
+					SSID:          activeSSID,
+					Device:        dev,
+					Band:          band,
+					Encryption:    uciMap["wireless.wwan_sta.encryption"],
+					Key:           uciMap["wireless.wwan_sta.key"],
+					SavedAt:       time.Now().Format("2006-01-02 15:04"),
+					LastConnected: time.Now().Format("2006-01-02 15:04"),
+					Proto:         "dhcp",
+				},
+			}
+			_ = os.MkdirAll("/etc/r3p", 0755)
+			if b, err := json.MarshalIndent(list, "", "  "); err == nil {
+				_ = os.WriteFile(savedWifiFile, b, 0600)
+			}
+		}
+	}
+	if list == nil {
+		list = []SavedWifiNetwork{}
+	}
+	return list
+}
+
+func addOrUpdateSavedWifi(net SavedWifiNetwork) {
+	savedWifiMu.Lock()
+	defer savedWifiMu.Unlock()
+	var list []SavedWifiNetwork
+	if b, err := os.ReadFile(savedWifiFile); err == nil {
+		_ = json.Unmarshal(b, &list)
+	}
+	idx := -1
+	for i, item := range list {
+		if strings.EqualFold(item.SSID, net.SSID) {
+			idx = i
+			break
+		}
+	}
+	net.LastConnected = time.Now().Format("2006-01-02 15:04")
+	if net.SavedAt == "" {
+		net.SavedAt = net.LastConnected
+	}
+	if idx >= 0 {
+		if net.Key == "" {
+			net.Key = list[idx].Key
+		}
+		list[idx] = net
+	} else {
+		list = append([]SavedWifiNetwork{net}, list...)
+	}
+	_ = os.MkdirAll("/etc/r3p", 0755)
+	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
+		_ = os.WriteFile(savedWifiFile, b, 0600)
+	}
+}
+
+// GET /api/v1/wireless/saved
+func handleWirelessSaved(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{
+		"networks": loadSavedWifiList(),
+	})
+}
+
+// POST /api/v1/wireless/saved/forget
+func handleWirelessSavedForget(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	var body struct {
+		SSID string `json:"ssid"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || strings.TrimSpace(body.SSID) == "" {
+		writeJSON(w, http.StatusBadRequest, false, "SSID is required")
+		return
+	}
+	targetSSID := strings.TrimSpace(body.SSID)
+
+	savedWifiMu.Lock()
+	var list []SavedWifiNetwork
+	if b, err := os.ReadFile(savedWifiFile); err == nil {
+		_ = json.Unmarshal(b, &list)
+	}
+	var kept []SavedWifiNetwork
+	for _, item := range list {
+		if !strings.EqualFold(item.SSID, targetSSID) {
+			kept = append(kept, item)
+		}
+	}
+	if kept == nil {
+		kept = []SavedWifiNetwork{}
+	}
+	_ = os.MkdirAll("/etc/r3p", 0755)
+	if b, err := json.MarshalIndent(kept, "", "  "); err == nil {
+		_ = os.WriteFile(savedWifiFile, b, 0600)
+	}
+	savedWifiMu.Unlock()
+
+	// If the forgotten network is currently configured in UCI wwan_sta, remove it
+	uciMap := parseUCIConfigMap("wireless")
+	if strings.EqualFold(uciMap["wireless.wwan_sta.ssid"], targetSSID) {
+		_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.disabled=1")
+		_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta")
+		_, _ = runCmd(5, "uci", "commit", "wireless")
+		go func() {
+			_, _ = runCmd(6, "ifdown", "wwan")
+			_, _ = runCmd(10, "wifi", "reload")
+		}()
+	}
+
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{
+		"forgotten": true,
+		"ssid":      targetSSID,
+		"networks":  loadSavedWifiList(),
+		"message":   fmt.Sprintf("Đã quên mạng Wi-Fi '%s' và xóa dữ liệu mật khẩu thành công!", targetSSID),
+	})
+}
+
+// POST /api/v1/wireless/saved/connect
+func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	var body struct {
+		SSID string `json:"ssid"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || strings.TrimSpace(body.SSID) == "" {
+		writeJSON(w, http.StatusBadRequest, false, "SSID is required")
+		return
+	}
+	targetSSID := strings.TrimSpace(body.SSID)
+	savedList := loadSavedWifiList()
+	var matched *SavedWifiNetwork
+	for _, item := range savedList {
+		if strings.EqualFold(item.SSID, targetSSID) {
+			m := item
+			matched = &m
+			break
+		}
+	}
+	if matched == nil {
+		writeJSON(w, http.StatusNotFound, false, "Không tìm thấy thông tin mạng đã lưu")
+		return
+	}
+
+	dev := matched.Device
+	if dev != "radio0" && dev != "radio1" {
+		dev = "radio0"
+	}
+	enc := matched.Encryption
+	if enc == "" {
+		enc = "psk2"
+	}
+
+	_, _ = runCmd(4, "uci", "set", "network.wwan=interface")
+	_, _ = runCmd(4, "uci", "set", "network.wwan.proto=dhcp")
+	_, _ = runCmd(4, "uci", "set", "network.wwan.metric=20")
+	_, _ = runCmd(4, "uci", "commit", "network")
+	ensureFirewallWanNetwork("wwan")
+
+	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta=wifi-iface")
+	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.device=%s", dev))
+	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.network=wwan")
+	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.mode=sta")
+	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.ssid=%s", matched.SSID))
+	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.encryption=%s", enc))
+	if enc != "none" && matched.Key != "" {
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.key=%s", matched.Key))
+	}
+	if matched.BSSID != "" && safeWirelessVal.MatchString(matched.BSSID) {
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.bssid=%s", matched.BSSID))
+	}
+	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.disabled=0", dev))
+	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.disabled=0")
+	_, _ = runCmd(5, "uci", "commit", "wireless")
+
+	go func() {
+		_, _ = runCmd(8, "/etc/init.d/firewall", "reload")
+		_, _ = runCmd(12, "wifi", "reload")
+		_, _ = runCmd(6, "ifup", "wwan")
+		time.Sleep(4 * time.Second)
+		refreshInternetStatus(true)
+	}()
+
+	addOrUpdateSavedWifi(*matched)
+
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{
+		"connected_ssid": matched.SSID,
+		"device":         dev,
+		"message":        fmt.Sprintf("Đang kết nối lại tới mạng '%s'...", matched.SSID),
+	})
+}
+

@@ -39,6 +39,11 @@ const router = createRouter({
       component: () => import('@/views/NasView.vue'),
     },
     {
+      path: '/files',
+      name: 'files',
+      component: () => import('@/views/FileExplorerView.vue'),
+    },
+    {
       path: '/ai',
       name: 'ai',
       component: () => import('@/views/AiAssistantView.vue'),

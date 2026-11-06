@@ -1,137 +1,15 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>R3P Firmware — Phase 0 Test Page</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: #0d1117;
-      color: #e6edf3;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-    }
-    .container {
-      max-width: 640px;
-      width: 100%;
-      padding: 32px;
-    }
-    .card {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 16px;
-      padding: 28px;
-      margin-bottom: 16px;
-    }
-    .badge {
-      display: inline-block;
-      background: rgba(99,179,237,0.15);
-      border: 1px solid rgba(99,179,237,0.3);
-      color: #90cdf4;
-      border-radius: 999px;
-      padding: 3px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-    }
-    h1 { font-size: 24px; font-weight: 700; color: #f0f6fc; margin-bottom: 6px; }
-    p { color: rgba(255,255,255,0.5); font-size: 14px; line-height: 1.6; margin-bottom: 12px; }
-    .stat-row { display: flex; justify-content: space-between; align-items: center;
-                padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 13px; }
-    .stat-row:last-child { border-bottom: none; }
-    .stat-label { color: rgba(255,255,255,0.45); }
-    .stat-val { color: #90cdf4; font-weight: 600; font-family: monospace; }
-    .green { color: #68d391; }
-    .pulse { display: inline-block; width: 8px; height: 8px; background: #68d391;
-             border-radius: 50%; margin-right: 6px; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-    button {
-      background: rgba(99,179,237,0.15);
-      border: 1px solid rgba(99,179,237,0.3);
-      color: #90cdf4;
-      border-radius: 10px;
-      padding: 8px 18px;
-      cursor: pointer;
-      font-size: 13px;
-      margin-top: 12px;
-      transition: all 0.2s;
-    }
-    button:hover { background: rgba(99,179,237,0.25); }
-    pre { background: rgba(0,0,0,0.3); border-radius: 8px; padding: 12px;
-          font-size: 12px; overflow-x: auto; color: #7ee787; margin-top: 12px;
-          white-space: pre-wrap; word-break: break-all; }
-    footer { text-align: center; font-size: 11px; color: rgba(255,255,255,0.2); margin-top: 16px; }
-  </style>
-</head>
-<body>
-<div class="container">
-  <div class="card">
-    <div style="margin-bottom:16px;">
-      <span class="badge">PHASE 0 — BUILD TEST</span>
-    </div>
-    <h1>🛰 R3P Firmware</h1>
-    <p>Xiaomi Mi Router 3 Pro · OpenWrt 25.12.5 · Custom UI Test Page</p>
-    <p>This static page is served by <strong>uhttpd</strong> on the router — no LuCI installed.</p>
-    <div class="stat-row">
-      <span class="stat-label">Build Target</span>
-      <span class="stat-val">ramips/mt7621</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Device Profile</span>
-      <span class="stat-val">xiaomi_mi-router-3-pro</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">OpenWrt Version</span>
-      <span class="stat-val">25.12.5 (r33051)</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Web Server</span>
-      <span class="stat-val">uhttpd (no LuCI)</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Status</span>
-      <span class="stat-val green"><span class="pulse"></span>RUNNING</span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h1 style="font-size:16px;margin-bottom:12px;">📡 API Test</h1>
-    <p>Test the Go API backend (Phase 0 build):</p>
-    <button onclick="testApi()">Fetch /api/v1/health</button>
-    <button onclick="testSys()" style="margin-left:8px;">Fetch /api/v1/system</button>
-    <pre id="output">// Click a button to test the API...</pre>
-  </div>
-
-  <footer>R3P Firmware v0.1.0-phase0 · Build verified · No flash performed</footer>
-</div>
-
-<script>
-async function testApi() {
-  const pre = document.getElementById('output');
-  pre.textContent = '// Fetching...';
-  try {
-    const r = await fetch('/api/v1/health');
-    const j = await r.json();
-    pre.textContent = JSON.stringify(j, null, 2);
-  } catch(e) {
-    pre.textContent = '// Error: ' + e.message + '\n// (API server may not be running in this environment)';
-  }
-}
-async function testSys() {
-  const pre = document.getElementById('output');
-  pre.textContent = '// Fetching...';
-  try {
-    const r = await fetch('/api/v1/system');
-    const j = await r.json();
-    pre.textContent = JSON.stringify(j, null, 2);
-  } catch(e) {
-    pre.textContent = '// Error: ' + e.message + '\n// (API server may not be running in this environment)';
-  }
-}
-</script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+    <script type="module" crossorigin src="/assets/index-tuKMcH-t.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/runtime-core.esm-bundler-dsDGKRPa.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-DvbW4Alz.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
 </html>

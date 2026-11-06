@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import { useAuthStore } from '@/stores/auth'
-import { useUiPreferences, type HassThemeStyle, type LangCode } from '@/composables/useUiPreferences'
+import { useUiPreferences, type HassThemeStyle } from '@/composables/useUiPreferences'
 
 const route = useRoute()
 const system = useSystemStore()
@@ -23,6 +23,7 @@ const routeTitleKeys: Record<string, string> = {
   '/config': 'title_config',
   '/downloads': 'title_downloads',
   '/nas': 'title_nas',
+  '/files': 'title_explorer',
   '/apps': 'title_apps',
   '/automation': 'title_automation',
   '/iot': 'title_iot',
@@ -50,11 +51,19 @@ const hassThemes: Array<{ id: HassThemeStyle; icon: string; labelKey: string }> 
   { id: 'hass-neon', icon: '⚡', labelKey: 'hass_neon' },
 ]
 
-const langs: Array<{ code: LangCode; label: string }> = [
-  { code: 'vi', label: 'VI' },
-  { code: 'en', label: 'EN' },
-  { code: 'cn', label: 'CN' },
-]
+const currentLangBadge = computed(() => {
+  const l = prefs.state.lang
+  if (l === 'cn') return 'CN'
+  if (l === 'en') return 'EN'
+  return 'VI'
+})
+
+function rotateLang() {
+  const cur = prefs.state.lang
+  if (cur === 'vi') prefs.setLang('en')
+  else if (cur === 'en') prefs.setLang('cn')
+  else prefs.setLang('vi')
+}
 
 async function recheckInternet() {
   if (checkingNet.value) return
@@ -124,21 +133,16 @@ function signOut() {
         <span class="hidden sm:inline text-[10.5px]">{{ prefs.state.theme === 'light' ? prefs.t('theme_light') : prefs.t('theme_dark') }}</span>
       </button>
 
-      <!-- 3. 1-Click Language Switcher (VI / EN / CN) -->
-      <div class="flex items-center bg-black/25 border border-white/10 rounded-lg p-0.5 gap-0.5" title="Đổi ngôn ngữ 1-Click (VI / EN / CN)">
-        <button
-          v-for="l in langs"
-          :key="l.code"
-          type="button"
-          class="px-2 py-0.5 rounded-md text-[10.5px] mono font-bold transition cursor-pointer"
-          :class="prefs.state.lang === l.code
-            ? 'bg-emerald-500 text-white shadow-sm'
-            : 'text-gray-400 hover:text-gray-200'"
-          @click="prefs.setLang(l.code)"
-        >
-          {{ l.label }}
-        </button>
-      </div>
+      <!-- 3. Single 1-Click Rotating Language Button (VI ➔ EN ➔ CN ➔ VI) -->
+      <button
+        type="button"
+        class="px-2.5 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-[10.5px] font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+        title="Nhấn để đổi ngôn ngữ (Xoay vòng: VI ➔ EN ➔ CN)"
+        @click="rotateLang"
+      >
+        <span>🌐</span>
+        <span class="mono tracking-wider font-extrabold">{{ currentLangBadge }}</span>
+      </button>
 
       <!-- Internet Connectivity Status -->
       <button

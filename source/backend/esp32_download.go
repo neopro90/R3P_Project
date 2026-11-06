@@ -262,9 +262,12 @@ func initEsp32DownloadRuntime() {
 	_ = os.MkdirAll(filepath.Join(root, "public"), 0755)
 	_ = os.MkdirAll(filepath.Join(root, "releases"), 0755)
 
-	cfgPath := filepath.Join(dataDir, "local-config.json")
+	cfgPath := "/etc/r3p/esp32-local-config.json"
+	legacyCfgPath := filepath.Join(dataDir, "local-config.json")
 	espConfig = defaultEspConfig()
 	if b, err := os.ReadFile(cfgPath); err == nil {
+		_ = json.Unmarshal(b, &espConfig)
+	} else if b, err := os.ReadFile(legacyCfgPath); err == nil {
 		_ = json.Unmarshal(b, &espConfig)
 	}
 	// Ensure Linux paths if migrated from Windows
@@ -283,8 +286,10 @@ func initEsp32DownloadRuntime() {
 	if strings.Contains(espConfig.WorkerName, "DESKTOP-") || espConfig.WorkerName == "" {
 		espConfig.WorkerName = "R3P-Linux-Runtime"
 	}
-	if espConfig.RuntimeBaseUrl == "" || strings.Contains(espConfig.RuntimeBaseUrl, "192.168.1.") {
+	if espConfig.RuntimeBaseUrl == "" {
 		espConfig.RuntimeBaseUrl = "http://192.168.2.1:8787"
+	} else if !strings.HasPrefix(espConfig.RuntimeBaseUrl, "http://") && !strings.HasPrefix(espConfig.RuntimeBaseUrl, "https://") {
+		espConfig.RuntimeBaseUrl = "http://" + espConfig.RuntimeBaseUrl
 	}
 	_ = os.MkdirAll(espConfig.OutputDirectory, 0755)
 	saveEspConfig()
@@ -328,9 +333,11 @@ func initEsp32DownloadRuntime() {
 }
 
 func saveEspConfig() {
+	_ = os.MkdirAll("/etc/r3p", 0755)
 	dataDir := filepath.Join(getEspHostRoot(), "data")
 	_ = os.MkdirAll(dataDir, 0755)
 	if b, err := json.MarshalIndent(espConfig, "", "  "); err == nil {
+		_ = os.WriteFile("/etc/r3p/esp32-local-config.json", b, 0600)
 		_ = os.WriteFile(filepath.Join(dataDir, "local-config.json"), b, 0600)
 	}
 }
@@ -618,10 +625,15 @@ func buildEspLocalStatus() map[string]interface{} {
 		device["runtimeOnline"] = true
 	}
 
+	hostAddress := cfg.RuntimeBaseUrl
+	if hostAddress == "" {
+		hostAddress = fmt.Sprintf("http://192.168.2.1:%d", espHostPort)
+	}
+
 	return map[string]interface{}{
 		"host": map[string]interface{}{
-			"address":             fmt.Sprintf("http://192.168.2.1:%d", espHostPort),
-			"lanAddresses":        []string{"192.168.2.1"},
+			"address":             hostAddress,
+			"lanAddresses":        []string{"192.168.2.1", "192.168.1.6"},
 			"runtimeBaseUrl":      cfg.RuntimeBaseUrl,
 			"workerId":            cfg.WorkerName,
 			"activeJobs":          activeCount,
@@ -711,9 +723,11 @@ func publicEspConfig() map[string]interface{} {
 		"deviceTokenLast4":           devTail,
 		"telegramTokenConfigured":    cfg.TelegramBotToken != "",
 		"telegramTokenLast4":         tgTail,
+		"telegramBotToken":           cfg.TelegramBotToken,
 		"telegramEnabled":            cfg.TelegramEnabled,
 		"telegramChatIdConfigured":   cfg.TelegramAllowedChatId != "",
 		"telegramAllowedChatIdLast4": chatTail,
+		"telegramAllowedChatId":      cfg.TelegramAllowedChatId,
 		"integrationsSyncPending":    false,
 		"ytDlpPath":                  cfg.YtDlpPath,
 		"ffmpegPath":                 cfg.FfmpegPath,
@@ -1186,8 +1200,11 @@ func espTelegramPollerLoop() {
 			}
 			chatStr := strconv.FormatInt(upd.Message.Chat.ID, 10)
 			text := strings.TrimSpace(upd.Message.Text)
+			if text == "" {
+				continue
+			}
 			if strings.HasPrefix(text, "/start") || strings.HasPrefix(text, "/id") {
-				_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("🤖 R3P Linux ESP32-Download Bot sẵn sàng!\nChat ID của bạn: %s\nHãy gửi link TikTok, YouTube hoặc Facebook vào đây để tự động tải về ổ cứng 500GB (/mnt/sda1/esp32-downloads).", chatStr))
+				_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("🤖 R3P Linux ESP32-Download & Root AI Bot sẵn sàng!\nChat ID của bạn: %s\n- Gửi URL (TikTok, YouTube, Facebook...) để tự động tải về ổ cứng.\n- Gửi văn bản hoặc lệnh !<lệnh> để giao tiếp trực tiếp với Trợ Lý AI Root R3P!", chatStr))
 				continue
 			}
 			if allowedChat != "" && !strings.Contains(allowedChat, chatStr) {
@@ -1204,6 +1221,15 @@ func espTelegramPollerLoop() {
 				} else {
 					_ = sendEspTelegramMsg(chatStr, "📥 Đã thêm vào hàng đợi R3P Linux: #"+job.ID)
 				}
+			}
+			// If message has text beyond just bare URLs, forward to Root AI Agent and reply on Telegram!
+			if !isBareURLMessage(text) {
+				go func(msgText, cid string) {
+					aiReply := processTelegramAIChat(msgText, cid)
+					if strings.TrimSpace(aiReply) != "" {
+						_ = sendEspTelegramMsg(cid, aiReply)
+					}
+				}(text, chatStr)
 			}
 		}
 	}
@@ -1417,7 +1443,11 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 			espConfig.DeviceBaseUrl = strings.TrimSpace(v)
 		}
 		if v, ok := body["runtimeBaseUrl"].(string); ok && strings.TrimSpace(v) != "" {
-			espConfig.RuntimeBaseUrl = strings.TrimSpace(v)
+			rtUrl := strings.TrimSpace(v)
+			if !strings.HasPrefix(rtUrl, "http://") && !strings.HasPrefix(rtUrl, "https://") {
+				rtUrl = "http://" + rtUrl
+			}
+			espConfig.RuntimeBaseUrl = rtUrl
 		}
 		if v, ok := body["workerName"].(string); ok && strings.TrimSpace(v) != "" {
 			espConfig.WorkerName = strings.TrimSpace(v)
@@ -1957,7 +1987,7 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 	// 6. Static Assets from /mnt/sda1/esp32-download-host/public or /overlay/esp32-download-host/public
 	pubRoot := filepath.Join(getEspHostRoot(), "public")
 	wanted := p
-	if wanted == "/" {
+	if wanted == "/" || wanted == "/login" || wanted == "/login/" || wanted == "/login.html" {
 		wanted = "/index.html"
 	}
 	cleanRel := filepath.Clean(strings.TrimPrefix(wanted, "/"))
@@ -1977,6 +2007,9 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 			if cleanRel == "index.html" {
 				if raw, rErr := os.ReadFile(fullPath); rErr == nil {
 					modified := strings.ReplaceAll(string(raw), "WINDOWS LOCAL HOST", "R3P LINUX LOCAL HOST")
+					modified = strings.ReplaceAll(modified, `href="/"`, `href="javascript:void(0)"`)
+					modified = strings.ReplaceAll(modified, `href="/login"`, `href="javascript:void(0)"`)
+					modified = strings.ReplaceAll(modified, `href="/login.html"`, `href="javascript:void(0)"`)
 					w.Header().Set("Cache-Control", "no-store")
 					_, _ = w.Write([]byte(modified))
 					return
@@ -1986,6 +2019,30 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		case ".js":
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			if cleanRel == "app.js" {
+				if raw, rErr := os.ReadFile(fullPath); rErr == nil {
+					modified := string(raw)
+					// Prevent embedded iframe from ever redirecting or nesting R3P Dashboard
+					modified = strings.ReplaceAll(modified, `window.location.replace("/login")`, `void(0)`)
+					modified = strings.ReplaceAll(modified, `window.location.replace("/")`, `void(0)`)
+					modified = strings.ReplaceAll(modified, `window.location.href = "/"`, `void(0)`)
+					// Keep Telegram Bot Token & Chat ID visibly populated in the inputs after loading & saving
+					modified = strings.Replace(modified, `$("#telegram-chat-id").value = "";`, `$("#telegram-token").value = config.telegramBotToken || ""; $("#telegram-chat-id").value = config.telegramAllowedChatId || "";`, 1)
+					modified = strings.ReplaceAll(modified, `$("#telegram-token").value = "";`, `$("#telegram-token").value = saved.telegramBotToken || "";`)
+					modified = strings.ReplaceAll(modified, `$("#telegram-chat-id").value = "";`, `$("#telegram-chat-id").value = saved.telegramAllowedChatId || "";`)
+					w.Header().Set("Cache-Control", "no-store")
+					_, _ = w.Write([]byte(modified))
+					return
+				}
+			} else if cleanRel == "login.js" {
+				if raw, rErr := os.ReadFile(fullPath); rErr == nil {
+					modified := string(raw)
+					modified = strings.ReplaceAll(modified, `window.location.replace("/")`, `window.location.replace("/esp32-download/")`)
+					w.Header().Set("Cache-Control", "no-store")
+					_, _ = w.Write([]byte(modified))
+					return
+				}
+			}
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, fullPath)
