@@ -64,7 +64,7 @@ func loadAIConfig() AIConfig {
 		Provider:    "gemini",
 		APIKey:      "",
 		BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
-		Model:       "gemini-2.5-flash",
+		Model:       "gemini-3-flash-preview",
 		AutoExecute: true,
 		AllowExec:   true,
 	}
@@ -75,7 +75,7 @@ func loadAIConfig() AIConfig {
 	if def.BaseURL == "" {
 		def.BaseURL = defaultBaseURLForProvider(def.Provider)
 	}
-	if def.Model == "" {
+	if def.Model == "" || (strings.ToLower(def.Provider) == "gemini" && def.Model == "gemini-2.5-flash") {
 		def.Model = defaultModelForProvider(def.Provider)
 	}
 	if def.SystemNote != "" && def.SystemPromptExtra == "" {
@@ -95,6 +95,8 @@ func loadAIConfig() AIConfig {
 }
 
 func saveAIConfig(cfg AIConfig) {
+	cfg.HasAPIKey = cfg.APIKey != ""
+	cfg.APIKeyConfigured = cfg.APIKey != ""
 	_ = os.MkdirAll("/etc/r3p", 0755)
 	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
 		_ = os.WriteFile(aiConfigFile, b, 0600)
@@ -155,7 +157,7 @@ func defaultBaseURLForProvider(provider string) string {
 func defaultModelForProvider(provider string) string {
 	switch strings.ToLower(provider) {
 	case "gemini":
-		return "gemini-2.5-flash"
+		return "gemini-3-flash-preview"
 	case "openai":
 		return "gpt-4o-mini"
 	case "deepseek":
@@ -284,40 +286,58 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
 		endpoint += "/chat/completions"
 	}
-	payload := map[string]interface{}{
-		"model":       model,
-		"messages":    messages,
-		"temperature": 0.2,
+
+	modelsToTry := []string{model}
+	if strings.ToLower(cfg.Provider) == "gemini" {
+		for _, fb := range []string{"gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.1-flash-lite"} {
+			if fb != model {
+				modelsToTry = append(modelsToTry, fb)
+			}
+		}
 	}
-	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(b))
-	if err != nil {
-		return "", err
+
+	var lastErr error
+	for _, tryModel := range modelsToTry {
+		payload := map[string]interface{}{
+			"model":       tryModel,
+			"messages":    messages,
+			"temperature": 0.2,
+		}
+		b, _ := json.Marshal(payload)
+		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(b))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		respBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("API HTTP %d (%s): %s", resp.StatusCode, tryModel, string(respBytes))
+			if resp.StatusCode == 404 || resp.StatusCode == 503 {
+				continue
+			}
+			return "", lastErr
+		}
+		var parsed struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
+			return "", fmt.Errorf("invalid API response: %s", string(respBytes))
+		}
+		return parsed.Choices[0].Message.Content, nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	respBytes, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("API HTTP %d: %s", resp.StatusCode, string(respBytes))
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("invalid API response: %s", string(respBytes))
-	}
-	return parsed.Choices[0].Message.Content, nil
+	return "", lastErr
 }
 
 // GET / PUT /api/v1/ai/config
@@ -437,13 +457,103 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Message string `json:"message"`
-		Execute *bool  `json:"execute"`
+		Message      string     `json:"message"`
+		Execute      *bool      `json:"execute"`
+		BrowserReply string     `json:"browser_reply"`
+		PrevCommands []AICmdLog `json:"prev_commands"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 32768)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 		return
 	}
+
+	// Browser-Bridged AI Continuation: when the router has no WAN Internet, the user's browser
+	// calls the LLM API directly and sends the raw AI response here so the router can execute
+	// <exec_cmd> blocks as root and persist the conversation!
+	if strings.TrimSpace(body.BrowserReply) != "" {
+		respText := strings.TrimSpace(body.BrowserReply)
+		cfg := loadAIConfig()
+		if body.Execute != nil {
+			cfg.AutoExecute = *body.Execute
+		}
+		var allToolEvents []AIToolAction
+		var allCmdLogs []AICmdLog
+		allCmdLogs = append(allCmdLogs, body.PrevCommands...)
+		var cmdOutputs []string
+
+		if cfg.AutoExecute {
+			matches := execCmdRegex.FindAllStringSubmatch(respText, -1)
+			for _, m := range matches {
+				cmdStr := strings.TrimSpace(m[1])
+				if cmdStr == "" {
+					continue
+				}
+				t0 := time.Now()
+				out, cmdErr := runCmd(25, "sh", "-c", cmdStr)
+				durMs := time.Since(t0).Milliseconds()
+				exitCode := 0
+				if cmdErr != nil {
+					exitCode = 1
+					if out == "" {
+						out = cmdErr.Error()
+					}
+				}
+				if len(out) > 4000 {
+					out = out[:4000] + "\n...(truncated)"
+				}
+				allToolEvents = append(allToolEvents, AIToolAction{
+					Tool:    "exec_cmd",
+					Command: cmdStr,
+					Output:  out,
+					Success: cmdErr == nil,
+				})
+				allCmdLogs = append(allCmdLogs, AICmdLog{
+					Command:    cmdStr,
+					Output:     out,
+					ExitCode:   exitCode,
+					DurationMs: durMs,
+				})
+				cmdOutputs = append(cmdOutputs, fmt.Sprintf("$ %s\n%s", cmdStr, out))
+			}
+		}
+
+		// If commands were executed in this turn and prev_commands was empty, let browser do 1 follow-up synthesis turn
+		if len(cmdOutputs) > 0 && len(body.PrevCommands) == 0 {
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"needs_browser_followup": true,
+				"commands":               allCmdLogs,
+				"tool_events":            allToolEvents,
+				"followup_user_prompt":   "Kết quả thực thi lệnh trên Router:\n```\n" + strings.Join(cmdOutputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng bằng tiếng Việt cho người dùng (không lặp lại thẻ <exec_cmd>).",
+			})
+			return
+		}
+
+		cleanReply := strings.TrimSpace(execCmdRegex.ReplaceAllString(respText, ""))
+		if cleanReply == "" {
+			cleanReply = "Đã thực thi lệnh hệ thống trên Router (`root@R3P`)."
+		}
+		replyMsg := AIChatMessage{
+			Role:       "assistant",
+			Content:    cleanReply,
+			Timestamp:  time.Now().Format("15:04:05"),
+			ToolEvents: allToolEvents,
+			Commands:   allCmdLogs,
+		}
+		aiMu.Lock()
+		aiHistory = append(aiHistory, replyMsg)
+		saveAIHistory()
+		histCopy := append([]AIChatMessage{}, aiHistory...)
+		aiMu.Unlock()
+
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"reply":       replyMsg,
+			"tool_events": allToolEvents,
+			"commands":    allCmdLogs,
+			"history":     histCopy,
+		})
+		return
+	}
+
 	userMsg := strings.TrimSpace(body.Message)
 	if userMsg == "" {
 		writeJSON(w, http.StatusBadRequest, false, "empty message")
@@ -549,7 +659,31 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	for turn := 0; turn < 3; turn++ {
 		respText, err := callLLMAPI(cfg, llmMsgs)
 		if err != nil {
-			finalReply = "❌ Lỗi kết nối AI API: `" + err.Error() + "`\nHãy kiểm tra lại kết nối Internet của Router (WAN / Wi-Fi Client / USB Tether) và API Key ở khung cài đặt phía trên."
+			errStr := err.Error()
+			// If router itself has no WAN Internet (DNS lookup / dial tcp failure), instruct the browser
+			// (which has Internet on the user's PC/phone) to bridge the LLM call!
+			if turn == 0 && (strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "lookup ") || strings.Contains(errStr, "server misbehaving") || strings.Contains(errStr, "network is unreachable") || strings.Contains(errStr, "i/o timeout")) {
+				baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+				if baseURL == "" {
+					baseURL = defaultBaseURLForProvider(cfg.Provider)
+				}
+				endpoint := baseURL
+				if !strings.HasSuffix(endpoint, "/chat/completions") {
+					endpoint += "/chat/completions"
+				}
+				writeJSON(w, http.StatusOK, true, map[string]interface{}{
+					"needs_browser_bridge": true,
+					"bridge": map[string]interface{}{
+						"provider": cfg.Provider,
+						"endpoint": endpoint,
+						"api_key":  cfg.APIKey,
+						"model":    cfg.Model,
+						"messages": llmMsgs,
+					},
+				})
+				return
+			}
+			finalReply = "❌ Lỗi kết nối AI API: `" + errStr + "`\nHãy kiểm tra lại kết nối Internet của Router (WAN / Wi-Fi Client / USB Tether) và API Key ở khung cài đặt phía trên."
 			break
 		}
 		finalReply = respText

@@ -80,11 +80,14 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
 
     cmds = [
         "mkdir -p /etc/r3p /www",
-        "rm -f /usr/bin/r3p-api.old && mv /usr/bin/r3p-api /usr/bin/r3p-api.old 2>/dev/null || true",
+        "/etc/init.d/r3p-api stop 2>/dev/null || true",
+        "killall -9 r3p-api 2>/dev/null || true",
+        "rm -f /usr/bin/r3p-api",
         "tar -xzf /tmp/r3p-update-bundle.tar.gz -C /",
-        "rm -f /usr/bin/r3p-api.old /tmp/r3p-update-bundle.tar.gz",
+        "rm -f /tmp/r3p-update-bundle.tar.gz",
         "chmod 755 /usr/bin/r3p-api",
-        "/etc/init.d/r3p-api restart",
+        "sync",
+        "/etc/init.d/r3p-api start",
         "sleep 2",
         "netstat -tlpn | grep r3p-api",
     ]

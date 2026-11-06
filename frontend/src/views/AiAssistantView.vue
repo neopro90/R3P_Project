@@ -40,7 +40,7 @@ const config = ref<AIConfig>({
   provider: 'gemini',
   api_key: '',
   base_url: '',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3-flash-preview',
   allow_exec: true,
   system_note: '',
 })
@@ -52,7 +52,7 @@ const promptInput = ref('')
 const chatContainer = ref<HTMLElement | null>(null)
 
 const providerModels: Record<string, string[]> = {
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  gemini: ['gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
   openai: ['gpt-4o-mini', 'gpt-4o', 'o3-mini'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
   anthropic: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
@@ -130,6 +130,46 @@ async function saveConfiguration(clearKey = false) {
   }
 }
 
+async function callBrowserLLMBridge(
+  endpoint: string,
+  apiKey: string,
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  provider: string,
+): Promise<string> {
+  const modelsToTry = [model]
+  if (provider === 'gemini') {
+    for (const fb of ['gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']) {
+      if (!modelsToTry.includes(fb)) modelsToTry.push(fb)
+    }
+  }
+  let lastError = 'Unknown LLM error'
+  for (const tryModel of modelsToTry) {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: tryModel,
+        messages,
+        temperature: 0.2,
+      }),
+    })
+    const text = await resp.text()
+    if (!resp.ok) {
+      lastError = `HTTP ${resp.status} (${tryModel}): ${text.slice(0, 240)}`
+      if (resp.status === 404 || resp.status === 503) continue
+      throw new Error(lastError)
+    }
+    const parsed = JSON.parse(text)
+    const content = parsed?.choices?.[0]?.message?.content
+    if (content) return content
+  }
+  throw new Error(lastError)
+}
+
 async function sendMessage(customText?: string) {
   const msg = (customText ?? promptInput.value).trim()
   if (!msg || sending.value) return
@@ -146,8 +186,16 @@ async function sendMessage(customText?: string) {
 
   try {
     const res = await apiRequest<{
-      reply: AIChatMessage
-      history: AIChatMessage[]
+      reply?: AIChatMessage
+      history?: AIChatMessage[]
+      needs_browser_bridge?: boolean
+      bridge?: {
+        provider: string
+        endpoint: string
+        api_key: string
+        model: string
+        messages: Array<{ role: string; content: string }>
+      }
     }>('/ai/chat', {
       method: 'POST',
       body: JSON.stringify({
@@ -155,6 +203,54 @@ async function sendMessage(customText?: string) {
         execute: config.value.allow_exec,
       }),
     })
+
+    // Browser-Bridged AI Mode when Router has no direct WAN Internet yet
+    if (res.needs_browser_bridge && res.bridge) {
+      const b = res.bridge
+      const aiRawText = await callBrowserLLMBridge(b.endpoint, b.api_key, b.model, b.messages, b.provider)
+      const step1 = await apiRequest<{
+        reply?: AIChatMessage
+        history?: AIChatMessage[]
+        needs_browser_followup?: boolean
+        commands?: AICmdLog[]
+        followup_user_prompt?: string
+      }>('/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          browser_reply: aiRawText,
+          execute: config.value.allow_exec,
+        }),
+      })
+
+      if (step1.needs_browser_followup && step1.followup_user_prompt) {
+        const nextMessages = [
+          ...b.messages,
+          { role: 'assistant', content: aiRawText },
+          { role: 'user', content: step1.followup_user_prompt },
+        ]
+        const finalAiText = await callBrowserLLMBridge(b.endpoint, b.api_key, b.model, nextMessages, b.provider)
+        const step2 = await apiRequest<{
+          reply?: AIChatMessage
+          history?: AIChatMessage[]
+        }>('/ai/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            browser_reply: finalAiText,
+            prev_commands: step1.commands || [],
+            execute: false,
+          }),
+        })
+        if (step2.history) history.value = step2.history
+        else if (step2.reply) history.value.push(step2.reply)
+      } else if (step1.history) {
+        history.value = step1.history
+      } else if (step1.reply) {
+        history.value.push(step1.reply)
+      }
+      await scrollToBottom()
+      return
+    }
+
     if (res.history) {
       history.value = res.history
     } else if (res.reply) {
