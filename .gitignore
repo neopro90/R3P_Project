@@ -1,0 +1,28 @@
+# Dependencies & build caches
+frontend/node_modules/
+frontend/.vite/
+source/esp32-download/.venv/
+source/esp32-download/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Heavy local SDK / WSL / Go caches & old build outputs
+Supplementary Files/
+build/wsl-runtime/
+build/go-cache/
+build/output/
+build/firmware/
+build/files/
+build/artifacts/*.bin
+releases/
+miwifi.bin
+R3P-Firmware-PB-Boot.bin
+
+# Temporary / local files
+.tmp/
+tmp/
+*.tmp
+*.log
+*.swp
+.DS_Store
+Thumbs.db

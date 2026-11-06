@@ -1,0 +1,254 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { apiRequest } from '@/services/api'
+
+interface IoTDevice {
+  id: string
+  name: string
+  ip: string
+  mac: string
+  protocol: string
+  topic: string
+  online: boolean
+  latency: string
+  last_seen: string
+}
+
+interface IoTBroker {
+  host: string
+  port: number
+  username: string
+  topic_prefix: string
+  enabled: boolean
+}
+
+const devices = ref<IoTDevice[]>([])
+const broker = ref<IoTBroker>({
+  host: '192.168.2.1',
+  port: 1883,
+  username: '',
+  topic_prefix: 'r3p/home',
+  enabled: true,
+})
+const loading = ref(false)
+const probing = ref(false)
+const notice = ref<string | null>(null)
+
+const showAddDevice = ref(false)
+const newDev = ref({
+  name: '',
+  ip: '192.168.2.',
+  mac: '',
+  protocol: 'MQTT / ICMP',
+  topic: '',
+})
+
+async function loadIoT() {
+  loading.value = true
+  try {
+    const res = await apiRequest<{ devices: IoTDevice[]; broker: IoTBroker }>('/iot')
+    if (res) {
+      devices.value = res.devices || []
+      if (res.broker) broker.value = res.broker
+    }
+  } catch (err: any) {
+    notice.value = 'Error loading IoT: ' + (err?.message || err)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function addDevice() {
+  if (!newDev.value.name || !newDev.value.ip) return
+  try {
+    const res = await apiRequest<{ devices: IoTDevice[] }>('/iot', {
+      method: 'POST',
+      body: JSON.stringify(newDev.value),
+    })
+    if (res?.devices) devices.value = res.devices
+    showAddDevice.value = false
+    newDev.value = { name: '', ip: '192.168.2.', mac: '', protocol: 'MQTT / ICMP', topic: '' }
+    notice.value = 'IoT device registered and probed!'
+    setTimeout(() => { notice.value = null }, 3000)
+  } catch (err: any) {
+    notice.value = 'Add device failed: ' + (err?.message || err)
+  }
+}
+
+async function probeAllDevices() {
+  probing.value = true
+  notice.value = 'Probing all registered IoT endpoints via ICMP…'
+  try {
+    const res = await apiRequest<{ devices: IoTDevice[] }>('/iot/ping', { method: 'POST' })
+    if (res?.devices) devices.value = res.devices
+    notice.value = 'Reachability probe completed!'
+    setTimeout(() => { notice.value = null }, 3000)
+  } catch (err: any) {
+    notice.value = 'Probe failed: ' + (err?.message || err)
+  } finally {
+    probing.value = false
+  }
+}
+
+async function deleteDevice(id: string) {
+  try {
+    const res = await apiRequest<{ devices: IoTDevice[] }>(`/iot?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+    if (res?.devices) devices.value = res.devices
+    notice.value = 'Device removed from registry!'
+    setTimeout(() => { notice.value = null }, 3000)
+  } catch (err: any) {
+    notice.value = 'Delete failed: ' + (err?.message || err)
+  }
+}
+
+async function saveBroker() {
+  try {
+    await apiRequest('/iot', {
+      method: 'PUT',
+      body: JSON.stringify(broker.value),
+    })
+    notice.value = 'MQTT Bridge configuration saved!'
+    setTimeout(() => { notice.value = null }, 3000)
+  } catch (err: any) {
+    notice.value = 'Broker save error: ' + (err?.message || err)
+  }
+}
+
+onMounted(() => {
+  void loadIoT()
+})
+</script>
+
+<template>
+  <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Top Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div class="stat-mini">
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">MQTT Bridge</div>
+        <div class="mono text-sm font-bold text-emerald-400">{{ broker.enabled ? 'ENABLED' : 'DISABLED' }}</div>
+        <div class="text-[10px] text-gray-500">{{ broker.host }}:{{ broker.port }}</div>
+      </div>
+      <div class="stat-mini">
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Topic Namespace</div>
+        <div class="mono text-sm font-bold text-sky-400">{{ broker.topic_prefix }}/#</div>
+        <div class="text-[10px] text-gray-500">Home Assistant / MQTT</div>
+      </div>
+      <div class="stat-mini">
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Registered Devices</div>
+        <div class="mono text-sm font-bold text-purple-400">{{ devices.length }} Endpoints</div>
+        <div class="text-[10px] text-gray-500">{{ devices.filter(d => d.online).length }} Online</div>
+      </div>
+      <div class="stat-mini">
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Health Probe</div>
+        <button class="btn-primary text-[11px] w-full justify-center py-1 mt-0.5" :disabled="probing" @click="probeAllDevices">
+          {{ probing ? 'Pinging All…' : '⚡ Probe All Devices' }}
+        </button>
+      </div>
+    </div>
+
+    <div v-if="notice" class="px-3 py-1.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 text-[11.5px] font-medium">
+      {{ notice }}
+    </div>
+
+    <!-- Connected IoT Device Registry -->
+    <div class="pro-card">
+      <div class="pro-card-header">
+        <span class="pro-card-title">IoT & Smart Device Registry ({{ devices.length }})</span>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadIoT">Refresh ↻</button>
+          <button class="btn-primary text-[11px] py-1" @click="showAddDevice = !showAddDevice">
+            {{ showAddDevice ? 'Cancel' : '+ Register Device' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Add Device Form -->
+      <form v-if="showAddDevice" class="mb-3 p-2.5 rounded bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-5 gap-2 items-end" @submit.prevent="addDevice">
+        <div>
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">Device Name</label>
+          <input v-model="newDev.name" type="text" required class="w-full pro-input" placeholder="ESP32-Sensor" />
+        </div>
+        <div>
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">IPv4 Address</label>
+          <input v-model="newDev.ip" type="text" required class="w-full pro-input mono" placeholder="192.168.2.150" />
+        </div>
+        <div>
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">MAC (Optional)</label>
+          <input v-model="newDev.mac" type="text" class="w-full pro-input mono" placeholder="aa:bb:cc:11:22:33" />
+        </div>
+        <div>
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">MQTT Topic</label>
+          <input v-model="newDev.topic" type="text" class="w-full pro-input mono" placeholder="r3p/home/sensor1" />
+        </div>
+        <button type="submit" class="btn-primary justify-center py-1.5">Add & Probe</button>
+      </form>
+
+      <div class="overflow-x-auto">
+        <table class="pro-table">
+          <thead>
+            <tr>
+              <th>Device ID</th>
+              <th>Name</th>
+              <th>IPv4 Address</th>
+              <th>MQTT Topic / Endpoint</th>
+              <th>Status</th>
+              <th>Latency</th>
+              <th>Last Seen</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!devices.length">
+              <td colspan="8" class="text-center text-gray-500 py-4">
+                No IoT devices registered. Click "+ Register Device" to add an endpoint.
+              </td>
+            </tr>
+            <tr v-for="d in devices" :key="d.id">
+              <td class="mono font-semibold text-sky-400">{{ d.id }}</td>
+              <td class="font-medium text-gray-200">{{ d.name }}</td>
+              <td class="mono text-gray-300">{{ d.ip }}</td>
+              <td class="mono text-purple-400">{{ d.topic }}</td>
+              <td>
+                <span :class="d.online ? 'badge badge-green' : 'badge badge-red'">
+                  {{ d.online ? 'ONLINE' : 'OFFLINE' }}
+                </span>
+              </td>
+              <td class="mono text-emerald-400">{{ d.latency }}</td>
+              <td class="mono text-gray-400">{{ d.last_seen }}</td>
+              <td>
+                <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteDevice(d.id)">
+                  Remove
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- MQTT Broker Configuration -->
+    <form class="pro-card" @submit.prevent="saveBroker">
+      <div class="pro-card-header">
+        <span class="pro-card-title">MQTT Broker / Home Assistant Bridge Settings</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end text-[12px]">
+        <div>
+          <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Broker Host / IP</label>
+          <input v-model="broker.host" type="text" required class="w-full pro-input mono" />
+        </div>
+        <div>
+          <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Broker Port</label>
+          <input v-model="broker.port" type="number" required class="w-full pro-input mono" />
+        </div>
+        <div>
+          <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Topic Prefix</label>
+          <input v-model="broker.topic_prefix" type="text" required class="w-full pro-input mono" />
+        </div>
+        <button type="submit" class="btn-primary justify-center py-1.5">Save Bridge Settings</button>
+      </div>
+    </form>
+  </div>
+</template>
