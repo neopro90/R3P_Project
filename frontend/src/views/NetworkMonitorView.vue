@@ -414,22 +414,22 @@ onMounted(() => {
           </div>
 
           <!-- Summary Read View -->
-          <div v-if="editingIface !== cfg.name" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+          <div v-if="editingIface !== cfg.name" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
             <div>
-              <div class="text-gray-500 text-[10px] uppercase">Chế Độ (Proto)</div>
-              <div class="mono font-semibold text-sky-300 uppercase">{{ cfg.proto }}</div>
+              <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">Chế Độ (Proto)</div>
+              <div class="mono font-bold text-[13px] text-sky-400 uppercase mt-0.5">{{ cfg.proto }}</div>
             </div>
             <div>
-              <div class="text-gray-500 text-[10px] uppercase">IPv4 Address</div>
-              <div class="mono font-semibold text-gray-100">{{ cfg.live_ipv4 || cfg.ipaddr || 'DHCP Auto' }}</div>
+              <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">IPv4 Address</div>
+              <div class="mono font-bold text-[13px] text-gray-100 mt-0.5">{{ cfg.live_ipv4 || cfg.ipaddr || 'DHCP Auto' }}</div>
             </div>
             <div>
-              <div class="text-gray-500 text-[10px] uppercase">Gateway</div>
-              <div class="mono text-emerald-400">{{ cfg.gateway || defaultGateway || 'Auto' }}</div>
+              <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">Gateway</div>
+              <div class="mono font-bold text-[13px] text-emerald-400 mt-0.5">{{ cfg.gateway || defaultGateway || 'Auto' }}</div>
             </div>
             <div>
-              <div class="text-gray-500 text-[10px] uppercase">DNS / DHCP</div>
-              <div class="mono text-purple-300 truncate">
+              <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">DNS / DHCP</div>
+              <div class="mono font-bold text-[13px] text-purple-300 truncate mt-0.5">
                 {{ cfg.name === 'lan' ? (cfg.dhcp_enabled ? `DHCP .${cfg.dhcp_start}` : 'DHCP OFF') : ((cfg.dns || []).join(', ') || 'Auto DNS') }}
               </div>
             </div>

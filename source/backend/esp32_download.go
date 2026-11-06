@@ -967,19 +967,40 @@ func startEspJobDownload(job *EspRuntimeJob) {
 			"-o", fullTemplate,
 			"--print", "after_move:__OUTPUT__%(filepath)s",
 		}
-		formatSel := "bv*+ba/b"
-		switch settings.VideoQuality {
-		case "1080p":
-			formatSel = "bv*[height<=1080]+ba/b[height<=1080]/best"
-		case "720p":
-			formatSel = "bv*[height<=720]+ba/b[height<=720]/best"
-		case "audio":
-			formatSel = "bestaudio/best"
+		hasFfmpeg := false
+		if _, err := os.Stat("/usr/bin/ffmpeg"); err == nil {
+			hasFfmpeg = true
+		} else if _, err := exec.LookPath("ffmpeg"); err == nil {
+			hasFfmpeg = true
+		}
+
+		formatSel := "b/best"
+		if hasFfmpeg {
+			formatSel = "bv*+ba/b"
+			switch settings.VideoQuality {
+			case "1080p":
+				formatSel = "bv*[height<=1080]+ba/b[height<=1080]/best"
+			case "720p":
+				formatSel = "bv*[height<=720]+ba/b[height<=720]/best"
+			case "audio":
+				formatSel = "bestaudio/best"
+			}
+		} else {
+			// When ffmpeg is not installed, select progressive stream (both video & audio combined)
+			// Avoids "ERROR: Postprocessing: ffmpeg not found" completely!
+			switch settings.VideoQuality {
+			case "audio":
+				formatSel = "ba/b"
+			case "720p":
+				formatSel = "best[height<=720]/b/best"
+			default:
+				formatSel = "b/best"
+			}
 		}
 		args = append(args, "--format", formatSel)
-		if settings.VideoQuality == "audio" {
+		if settings.VideoQuality == "audio" && hasFfmpeg {
 			args = append(args, "--extract-audio", "--audio-format", "mp3")
-		} else if settings.MergeAudioVideo && settings.MergeOutputFormat != "" && settings.MergeOutputFormat != "best" {
+		} else if hasFfmpeg && settings.MergeAudioVideo && settings.MergeOutputFormat != "" && settings.MergeOutputFormat != "best" {
 			args = append(args, "--remux-video", settings.MergeOutputFormat)
 		}
 		frag := settings.FragmentConcurrency

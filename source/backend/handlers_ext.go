@@ -1136,6 +1136,8 @@ func handleAccessGet(w http.ResponseWriter, r *http.Request) {
 		"static_leases": staticLeases,
 		"active_leases": leases,
 		"now_unix":      time.Now().Unix(),
+		"ddns":          loadDDNSConfig(),
+		"external_ip":   fetchPublicIPv4(),
 	})
 }
 

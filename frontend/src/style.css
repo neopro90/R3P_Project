@@ -28,9 +28,9 @@ html[data-theme="dark"] {
   --bg-input: #0c121e;
   --border-subtle: rgba(255, 255, 255, 0.085);
   --border-focus: #03a9f4;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
   --accent-primary: #03a9f4;
   --accent-primary-hover: #0288d1;
   --accent-success: #34d399;
@@ -273,39 +273,42 @@ html[data-theme="light"] .stat-mini {
 
 .pro-table th {
   text-align: left;
-  padding: 7px 10px;
-  font-size: 10.5px;
+  padding: 8px 12px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
+  color: #cbd5e1;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.28);
   white-space: nowrap;
 }
 html[data-theme="light"] .pro-table th {
   background: #f1f5f9;
+  color: #334155;
 }
 
 .pro-table td {
-  padding: 7px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
+  font-size: 13px;
+  color: var(--text-primary);
 }
 
 .pro-table tr:hover td {
-  background: rgba(56, 189, 248, 0.04);
+  background: rgba(56, 189, 248, 0.06);
 }
 
 /* Compact status badges */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1.5px 7px;
+  gap: 5px;
+  padding: 2.5px 8.5px;
   border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 700;
   line-height: 1.4;
   letter-spacing: 0.02em;
 }
@@ -462,4 +465,21 @@ html[data-theme="dark"] .btn-danger {
   height: 100%;
   border-radius: 999px;
   transition: width 0.3s ease;
+}
+
+/* High-Legibility & Contrast Overrides for Dark Mode */
+html[data-theme="dark"] .text-gray-500 {
+  color: #94a3b8 !important;
+}
+html[data-theme="dark"] .text-gray-600 {
+  color: #718096 !important;
+}
+html[data-theme="dark"] .text-gray-400 {
+  color: #cbd5e1 !important;
+}
+html[data-theme="dark"] .subtle,
+html[data-theme="dark"] small {
+  font-size: 11.5px !important;
+  color: #94a3b8 !important;
+  font-weight: 500 !important;
 }

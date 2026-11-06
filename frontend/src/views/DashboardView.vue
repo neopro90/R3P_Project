@@ -54,6 +54,20 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 const overlayVol = computed(() => volumes.value.find((v) => v.mount_point === '/overlay') || volumes.value[0])
 const usbHddVol = computed(() => volumes.value.find((v) => v.mount_point === '/mnt/sda1' || v.mount_point.startsWith('/mnt/sd')))
 
+const overlayPercent = computed(() => {
+  if (!overlayVol.value) return 1
+  const p = Number(overlayVol.value.percent)
+  if (isNaN(p) || p <= 0) return 1
+  return Math.min(100, Math.max(1, Math.round(p)))
+})
+
+const usbHddPercent = computed(() => {
+  if (!usbHddVol.value) return 1
+  const p = Number(usbHddVol.value.percent)
+  if (isNaN(p) || p <= 0) return 1
+  return Math.min(100, Math.max(1, Math.round(p)))
+})
+
 const totalRxRate = computed(() => {
   return network.interfaces
     .filter((i) => i.name !== 'lo')
@@ -338,69 +352,69 @@ onUnmounted(() => {
           <RouterLink to="/nas" class="text-[10px] text-sky-400 hover:underline">Chi tiết →</RouterLink>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 my-1">
+        <div class="grid grid-cols-2 gap-2.5 my-1">
           <!-- Graph 1: NAND /overlay -->
-          <div class="flex items-center gap-2 p-1.5 rounded-lg bg-black/25 border border-white/5">
-            <div class="relative w-11 h-11 shrink-0 flex items-center justify-center">
+          <div class="flex items-center gap-2.5 p-2 rounded-lg bg-black/30 border border-white/10">
+            <div class="relative w-12 h-12 shrink-0 flex items-center justify-center">
               <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
                 <path
                   class="text-white/10"
-                  stroke-width="4"
+                  stroke-width="3.5"
                   stroke="currentColor"
                   fill="none"
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
                 <path
                   class="text-purple-400 transition-all duration-500 ease-out"
-                  stroke-width="4"
-                  :stroke-dasharray="`${Math.min(100, overlayVol ? overlayVol.percent : 4)}, 100`"
+                  stroke-width="3.5"
+                  :stroke-dasharray="`${overlayPercent}, 100`"
                   stroke-linecap="round"
                   stroke="currentColor"
                   fill="none"
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
               </svg>
-              <span class="absolute text-[10px] font-bold text-purple-300 mono">{{ overlayVol ? overlayVol.percent : 4 }}%</span>
+              <span class="absolute text-[11px] font-extrabold text-purple-300 mono">{{ overlayPercent }}%</span>
             </div>
-            <div class="min-w-0 flex-1 text-[10px] space-y-0.5">
-              <div class="font-bold text-gray-200 truncate">NAND (/overlay)</div>
-              <div class="text-purple-300 font-semibold truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '214 MB' }} trống</div>
-              <div class="text-gray-500 truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '15 MB' }}</div>
+            <div class="min-w-0 flex-1 space-y-0.5">
+              <div class="font-bold text-[12px] text-gray-200 truncate">NAND (/overlay)</div>
+              <div class="text-purple-300 font-semibold text-[11.5px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '214 MB' }} trống</div>
+              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '2.1 MB' }}</div>
             </div>
           </div>
 
           <!-- Graph 2: USB 3.0 HDD /mnt/sda1 -->
-          <div class="flex items-center gap-2 p-1.5 rounded-lg bg-black/25 border border-white/5">
-            <div class="relative w-11 h-11 shrink-0 flex items-center justify-center">
+          <div class="flex items-center gap-2.5 p-2 rounded-lg bg-black/30 border border-white/10">
+            <div class="relative w-12 h-12 shrink-0 flex items-center justify-center">
               <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
                 <path
                   class="text-white/10"
-                  stroke-width="4"
+                  stroke-width="3.5"
                   stroke="currentColor"
                   fill="none"
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
                 <path
                   class="text-emerald-400 transition-all duration-500 ease-out"
-                  stroke-width="4"
-                  :stroke-dasharray="`${Math.min(100, usbHddVol ? usbHddVol.percent : 2)}, 100`"
+                  stroke-width="3.5"
+                  :stroke-dasharray="`${usbHddPercent}, 100`"
                   stroke-linecap="round"
                   stroke="currentColor"
                   fill="none"
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
               </svg>
-              <span class="absolute text-[10px] font-bold text-emerald-300 mono">{{ usbHddVol ? usbHddVol.percent : 2 }}%</span>
+              <span class="absolute text-[11px] font-extrabold text-emerald-300 mono">{{ usbHddPercent }}%</span>
             </div>
-            <div class="min-w-0 flex-1 text-[10px] space-y-0.5">
-              <div class="font-bold text-gray-200 truncate">USB (/mnt/sda1)</div>
-              <div class="text-emerald-300 font-semibold truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : 'Ổ Cứng 500GB' }} trống</div>
-              <div class="text-gray-500 truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '1 GB' }}</div>
+            <div class="min-w-0 flex-1 space-y-0.5">
+              <div class="font-bold text-[12px] text-gray-200 truncate">USB (/mnt/sda1)</div>
+              <div class="text-emerald-300 font-semibold text-[11.5px] truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : '234.7 GB' }} trống</div>
+              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '0.3 MB' }}</div>
             </div>
           </div>
         </div>
 
-        <div class="flex justify-between text-[10px] text-gray-500 pt-1 border-t border-white/5 mono">
+        <div class="flex justify-between text-[11.5px] text-gray-400 pt-1.5 border-t border-white/10 mono font-medium">
           <span>SLC Flash 256MB</span>
           <span>USB 3.0 ext4 Fast I/O</span>
         </div>

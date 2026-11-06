@@ -402,35 +402,35 @@ onMounted(() => {
       </div>
 
       <!-- Summary KPI Strip -->
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-2.5 mt-1">
-        <div class="p-2.5 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-400 uppercase">Tổng Tên Miền Đang Chặn</div>
-          <div class="mono text-lg font-bold text-emerald-400">{{ (activeRules || config.total_blocked).toLocaleString() }}</div>
-          <div class="text-[10px] text-gray-500">Nạp trong /tmp/r3p-adblock.hosts</div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mt-1.5">
+        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
+          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Tổng Tên Miền Đang Chặn</div>
+          <div class="mono text-xl font-black text-emerald-400">{{ (activeRules || config.total_blocked).toLocaleString() }}</div>
+          <div class="text-[12px] text-gray-400 font-medium">Nạp trong /tmp/r3p-adblock.hosts</div>
         </div>
-        <div class="p-2.5 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-400 uppercase">Nguồn Blocklist Đang Bật</div>
-          <div class="mono text-lg font-bold text-sky-400">
+        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
+          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Nguồn Blocklist Đang Bật</div>
+          <div class="mono text-xl font-black text-sky-400">
             {{ config.sources.filter(s => s.enabled).length }} / {{ config.sources.length }}
           </div>
-          <div class="text-[10px] text-gray-500">Hỗ trợ thêm URL tùy chỉnh</div>
+          <div class="text-[12px] text-gray-400 font-medium">Hỗ trợ thêm URL tùy chỉnh</div>
         </div>
-        <div class="p-2.5 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-400 uppercase">Danh Sách Đen / Trắng</div>
-          <div class="mono text-lg font-bold text-purple-400">
+        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
+          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Danh Sách Đen / Trắng</div>
+          <div class="mono text-xl font-black text-purple-400">
             {{ config.blacklist.length }} Chặn · {{ config.whitelist.length }} Cho phép
           </div>
-          <div class="text-[10px] text-gray-500">Quy tắc tùy chỉnh của Admin</div>
+          <div class="text-[12px] text-gray-400 font-medium">Quy tắc tùy chỉnh của Admin</div>
         </div>
-        <div class="p-2.5 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-400 uppercase">Upstream DNS</div>
-          <div class="mono text-sm font-bold text-amber-400 truncate">{{ (config.upstream_dns || []).join(' · ') }}</div>
-          <div class="text-[10px] text-gray-500">Máy chủ phân giải DNS gốc</div>
+        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
+          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Upstream DNS</div>
+          <div class="mono text-base font-bold text-amber-400 truncate">{{ (config.upstream_dns || []).join(' · ') }}</div>
+          <div class="text-[12px] text-gray-400 font-medium">Máy chủ phân giải DNS gốc</div>
         </div>
-        <div class="p-2.5 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-400 uppercase">Cập Nhật Lần Cuối</div>
-          <div class="mono text-xs font-bold text-gray-200">{{ config.last_rebuild || '—' }}</div>
-          <div class="text-[10px] text-gray-500">Auto Cron: {{ config.auto_update ? config.update_schedule : 'Tắt' }}</div>
+        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
+          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Cập Nhật Lần Cuối</div>
+          <div class="mono text-sm font-bold text-gray-200">{{ config.last_rebuild || '—' }}</div>
+          <div class="text-[12px] text-gray-400 font-medium">Auto Cron: {{ config.auto_update ? config.update_schedule : 'Tắt' }}</div>
         </div>
       </div>
     </div>

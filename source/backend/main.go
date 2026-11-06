@@ -1565,6 +1565,8 @@ func main() {
 	mux.HandleFunc("/api/v1/access/dhcp", cors(handleAccessDHCP, "PUT"))
 	mux.HandleFunc("/api/v1/access/static-lease", cors(handleAccessStaticLease, "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/access/password", cors(handleAccessPassword, "POST"))
+	mux.HandleFunc("/api/v1/access/ddns", cors(handleAccessDDNS, "GET", "PUT"))
+	mux.HandleFunc("/api/v1/access/ddns/update", cors(handleAccessDDNSUpdate, "POST"))
 	mux.HandleFunc("/api/v1/automation/cron", cors(handleAutomationCron, "GET", "POST", "PATCH", "DELETE"))
 	mux.HandleFunc("/api/v1/automation/run", cors(handleAutomationRun, "POST"))
 	mux.HandleFunc("/api/v1/files", cors(handleFiles, "GET"))
@@ -1611,6 +1613,8 @@ func main() {
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	initDDNSBackgroundRunner()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
