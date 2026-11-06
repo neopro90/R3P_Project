@@ -842,8 +842,16 @@ func handleNASOverview(w http.ResponseWriter, r *http.Request) {
 			}
 			dev := f[0]
 			mp := f[5]
-			if mp == "/" || mp == "/dev" {
+			if mp == "/dev" {
 				continue
+			}
+			// In OpenWrt, the rootfs overlay is mounted at "/" with device "overlayfs:/overlay" or "ubi0:rootfs_data"
+			if mp == "/" {
+				if strings.Contains(dev, "overlay") || strings.Contains(dev, "ubi") {
+					mp = "/overlay" // Map to /overlay so UI and charts identify NAND Flash accurately
+				} else {
+					continue
+				}
 			}
 			tot, _ := strconv.ParseUint(f[1], 10, 64)
 			used, _ := strconv.ParseUint(f[2], 10, 64)
@@ -855,7 +863,7 @@ func handleNASOverview(w http.ResponseWriter, r *http.Request) {
 			label := "System Partition"
 			switch {
 			case mp == "/overlay":
-				label = "Internal UBI NAND Storage (/overlay)"
+				label = "NAND Flash System (/overlay)"
 			case mp == "/tmp":
 				label = "RAM Disk (tmpfs /tmp)"
 			case mp == "/rom":
@@ -2074,7 +2082,13 @@ func handleSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = runCmd(4, "uci", "set", "system.@system[0].hostname="+hn)
 	if body.Timezone != "" && !strings.ContainsAny(body.Timezone, "\r\n'\"\\") {
-		_, _ = runCmd(4, "uci", "set", "system.@system[0].timezone="+body.Timezone)
+		tz := strings.TrimSpace(body.Timezone)
+		_, _ = runCmd(4, "uci", "set", "system.@system[0].timezone="+tz)
+		if tz == "ICT-7" {
+			_, _ = runCmd(4, "uci", "set", "system.@system[0].zonename=Asia/Ho_Chi_Minh")
+		}
+		_ = os.WriteFile("/tmp/TZ", []byte(tz+"\n"), 0644)
+		_ = os.WriteFile("/etc/TZ", []byte(tz+"\n"), 0644)
 	}
 	_, _ = runCmd(5, "uci", "commit", "system")
 	_ = os.WriteFile("/proc/sys/kernel/hostname", []byte(hn+"\n"), 0644)
@@ -2091,6 +2105,19 @@ func handleSystemDropCaches(w http.ResponseWriter, r *http.Request) {
 	_, _ = runCmd(4, "sync")
 	_ = os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0644)
 	writeJSON(w, http.StatusOK, true, map[string]bool{"flushed": true})
+}
+
+// POST /api/v1/system/logs/clear or DELETE /api/v1/logs
+func handleSystemLogsClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	// Clear both kernel dmesg ringbuffer and restart logd / syslog daemon
+	_, _ = runCmd(5, "sh", "-c", "/etc/init.d/log restart; dmesg -c >/dev/null 2>&1")
+	writeJSON(w, http.StatusOK, true, map[string]string{
+		"message": "Đã xóa sạch bộ đệm nhật ký hệ thống (logread & dmesg) thành công!",
+	})
 }
 
 // ─── 11. UCI Config File Editor (/etc/config/*) ───────────────────────────

@@ -1265,6 +1265,13 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	if r.Method == http.MethodDelete || (r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/clear")) {
+		_, _ = runCmd(5, "sh", "-c", "/etc/init.d/log restart; dmesg -c >/dev/null 2>&1")
+		writeJSON(w, http.StatusOK, true, map[string]string{
+			"message": "Đã xóa sạch bộ đệm nhật ký hệ thống thành công!",
+		})
+		return
+	}
 	// Try /var/log/messages first
 	lines := readFileLines("/var/log/messages", 100)
 	source := "/var/log/messages"
@@ -1592,7 +1599,8 @@ func main() {
 	mux.HandleFunc("/api/v1/iot/ping", cors(handleIoTPing, "POST"))
 	mux.HandleFunc("/api/v1/plugins", cors(handlePlugins, "GET", "POST"))
 	mux.HandleFunc("/api/v1/config", cors(handleUCIConfig, "GET", "PUT"))
-	mux.HandleFunc("/api/v1/logs", cors(handleLogs, "GET"))
+	mux.HandleFunc("/api/v1/logs", cors(handleLogs, "GET", "POST", "DELETE"))
+	mux.HandleFunc("/api/v1/system/logs/clear", cors(handleSystemLogsClear, "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/monitor/stream", cors(handleMonitorStream, "GET"))
 
 	// Static file server — catch-all; must be last

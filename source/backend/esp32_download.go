@@ -964,6 +964,8 @@ func startEspJobDownload(job *EspRuntimeJob) {
 
 		args := []string{
 			"--newline", "--no-warnings", "--progress",
+			"--extractor-args", "youtube:player_client=android,web",
+			"--http-chunk-size", "10M",
 			"-o", fullTemplate,
 			"--print", "after_move:__OUTPUT__%(filepath)s",
 		}
@@ -974,7 +976,7 @@ func startEspJobDownload(job *EspRuntimeJob) {
 			hasFfmpeg = true
 		}
 
-		formatSel := "b/best"
+		formatSel := "22/18/b/best"
 		if hasFfmpeg {
 			formatSel = "bv*+ba/b"
 			switch settings.VideoQuality {
@@ -986,15 +988,16 @@ func startEspJobDownload(job *EspRuntimeJob) {
 				formatSel = "bestaudio/best"
 			}
 		} else {
-			// When ffmpeg is not installed, select progressive stream (both video & audio combined)
-			// Avoids "ERROR: Postprocessing: ffmpeg not found" completely!
+			// When ffmpeg is not installed, select progressive combined stream (single file with video & audio)
+			// Format 22 = 720p MP4, Format 18 = 360p MP4, b/best = combined progressive stream
+			// Strictly avoids separate video & audio files (*.f400.mp4 and *.f251.webm)
 			switch settings.VideoQuality {
 			case "audio":
 				formatSel = "ba/b"
 			case "720p":
-				formatSel = "best[height<=720]/b/best"
+				formatSel = "22/best[height<=720]/b/best"
 			default:
-				formatSel = "b/best"
+				formatSel = "22/18/b/best"
 			}
 		}
 		args = append(args, "--format", formatSel)
@@ -1086,6 +1089,20 @@ func startEspJobDownload(job *EspRuntimeJob) {
 		wg.Wait()
 
 		err := cmd.Wait()
+
+		// Clean up any fragmented leftover files from failed/aborted streams (*.f[0-9]*.webm, *.f[0-9]*.mp4, *.part)
+		targetDir := filepath.Join(outDir, subFolder)
+		if entries, readErr := os.ReadDir(targetDir); readErr == nil {
+			for _, entry := range entries {
+				name := entry.Name()
+				if strings.HasSuffix(name, ".part") || (strings.Contains(name, ".f") && (strings.HasSuffix(name, ".webm") || strings.HasSuffix(name, ".mp4"))) {
+					if m, _ := filepath.Match("*.f[0-9]*.*", name); m {
+						_ = os.Remove(filepath.Join(targetDir, name))
+					}
+				}
+			}
+		}
+
 		if ctx.Err() != nil {
 			finishEspJob(job, false, true, "", nil, "Cancelled by user")
 			return

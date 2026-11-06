@@ -165,6 +165,21 @@ const testResult = ref<{
   dns_output: string
 } | null>(null)
 
+const clearingDnsLogs = ref(false)
+async function clearDnsLogs() {
+  if (!confirm('Bạn có muốn xóa sạch toàn bộ nhật ký truy vấn DNS?')) return
+  clearingDnsLogs.value = true
+  try {
+    await apiRequest('/logs', { method: 'DELETE' })
+    recentLogs.value = []
+    await loadAdblock()
+  } catch (err: any) {
+    alert('Lỗi xóa log: ' + (err?.message || err))
+  } finally {
+    clearingDnsLogs.value = false
+  }
+}
+
 const filteredLogs = computed(() => {
   const q = logFilter.value.trim().toLowerCase()
   if (!q) return recentLogs.value
@@ -958,16 +973,27 @@ onMounted(() => {
 
     <!-- Live Dnsmasq Query & AdBlock Log -->
     <div class="pro-card">
-      <div class="pro-card-header">
-        <span class="pro-card-title">📜 Nhật Ký Phân Giải & Chặn DNS (dnsmasq log · {{ filteredLogs.length }} dòng)</span>
+      <div class="pro-card-header flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span class="pro-card-title">📜 Nhật Ký Phân Giải & Chặn DNS (dnsmasq log · {{ filteredLogs.length }} dòng)</span>
+          <span class="text-[11px] text-gray-400 hidden sm:inline">(Mới nhất ở trên cùng)</span>
+        </div>
         <div class="flex items-center gap-2">
           <input
             v-model="logFilter"
             type="search"
-            class="pro-input w-56 mono text-[11px]"
+            class="pro-input w-52 mono text-[11px]"
             placeholder="Lọc theo tên miền hoặc IP…"
           />
-          <button class="btn-secondary text-[11px] py-1" @click="loadAdblock">↻ Tải lại Log</button>
+          <button class="btn-secondary text-[11px] py-1" @click="loadAdblock">↻ Tải lại</button>
+          <button
+            type="button"
+            class="px-2.5 py-1 text-[11px] rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition font-semibold cursor-pointer"
+            :disabled="clearingDnsLogs"
+            @click="clearDnsLogs"
+          >
+            {{ clearingDnsLogs ? 'Đang xóa...' : '🗑 Xóa Log' }}
+          </button>
         </div>
       </div>
 

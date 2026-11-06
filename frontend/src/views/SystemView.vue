@@ -259,6 +259,23 @@ async function fetchLogs() {
   }
 }
 
+const clearingLogs = ref(false)
+async function clearAllLogs() {
+  if (!confirm('Bạn có chắc chắn muốn xóa sạch toàn bộ bộ đệm nhật ký hệ thống (logread & dmesg)?')) return
+  clearingLogs.value = true
+  try {
+    await apiRequest('/logs', { method: 'DELETE' })
+    notice.value = 'Đã xóa sạch bộ đệm nhật ký hệ thống thành công!'
+    logs.value = []
+    await fetchLogs()
+    setTimeout(() => { notice.value = null }, 3000)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi xóa log: ' + (err?.message || err)
+  } finally {
+    clearingLogs.value = false
+  }
+}
+
 async function saveSystemSettings() {
   savingSettings.value = true
   try {
@@ -570,12 +587,12 @@ onMounted(async () => {
               <input v-model="editHostname" type="text" required class="w-full pro-input mono" />
             </div>
             <div>
-              <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Timezone String</label>
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Múi Giờ Hệ Thống (Timezone POSIX)</label>
               <select v-model="editTimezone" class="w-full pro-input mono">
-                <option value="ICT-7">Asia/Ho_Chi_Minh (ICT-7)</option>
-                <option value="UTC">UTC (Coordinated Universal Time)</option>
-                <option value="CST-8">Asia/Singapore (UTC+8)</option>
-                <option value="JST-9">Asia/Tokyo (UTC+9)</option>
+                <option value="ICT-7">Asia/Ho_Chi_Minh (GMT+7 · Việt Nam / Indochina)</option>
+                <option value="UTC">UTC (GMT+0 · Giờ Quốc Tế Phối Hợp)</option>
+                <option value="CST-8">Asia/Singapore / Thượng Hải (GMT+8)</option>
+                <option value="JST-9">Asia/Tokyo (GMT+9)</option>
               </select>
             </div>
           </div>
@@ -613,6 +630,15 @@ onMounted(async () => {
         </button>
 
         <button
+          type="button"
+          class="px-3 py-1.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 font-semibold text-[11.5px] transition cursor-pointer"
+          :disabled="clearingLogs"
+          @click="clearAllLogs"
+        >
+          {{ clearingLogs ? 'Đang xóa...' : '🗑 Xóa Sạch Log (Clear)' }}
+        </button>
+
+        <button
           v-if="!rebootConfirm"
           class="btn-danger text-[11.5px] ml-auto"
           @click="rebootConfirm = true"
@@ -641,14 +667,27 @@ onMounted(async () => {
 
     <!-- 4. Kernel & System Log Terminal -->
     <div class="pro-card">
-      <div class="pro-card-header">
-        <span class="pro-card-title">System & Kernel Log Buffer (/sbin/logread · {{ filteredLogs.length }} lines)</span>
-        <input
-          v-model="logFilter"
-          type="search"
-          class="pro-input w-56 mono text-[11px]"
-          placeholder="Search log entries…"
-        />
+      <div class="pro-card-header flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span class="pro-card-title">System & Kernel Log Buffer (/sbin/logread · {{ filteredLogs.length }} dòng)</span>
+          <span class="text-[11px] text-gray-400 hidden sm:inline">(Mới nhất ở trên cùng)</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="px-2.5 py-1 text-[11px] rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition font-semibold cursor-pointer"
+            :disabled="clearingLogs"
+            @click="clearAllLogs"
+          >
+            {{ clearingLogs ? 'Đang xóa...' : '🗑 Xóa Log' }}
+          </button>
+          <input
+            v-model="logFilter"
+            type="search"
+            class="pro-input w-56 mono text-[11px]"
+            placeholder="Tìm kiếm dòng log…"
+          />
+        </div>
       </div>
 
       <div class="bg-black/60 rounded border border-white/5 p-2 font-mono text-[10.5px] text-gray-300 h-64 overflow-y-auto space-y-0.5">

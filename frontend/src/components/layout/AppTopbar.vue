@@ -98,7 +98,7 @@ function signOut() {
   <header class="h-[72px] px-5 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-3 overflow-x-auto">
     <!-- Breadcrumb / Title -->
     <div class="flex items-center gap-3 min-w-0">
-      <span class="text-[16px] font-bold text-sky-400 uppercase tracking-wider shrink-0">HASS·R3P</span>
+      <span class="text-[16px] font-bold text-sky-400 uppercase tracking-wider shrink-0">R3P·SERVER</span>
       <span class="text-[17px] text-gray-500 shrink-0">/</span>
       <h1 class="text-[21px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
     </div>

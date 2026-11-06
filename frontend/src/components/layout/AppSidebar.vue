@@ -89,7 +89,7 @@ function navigate(to: string) {
         </div>
         <div>
           <div class="text-[17px] font-bold text-white tracking-tight flex items-center gap-2">
-            R3P HASS.IO
+            R3P MINI SERVER
             <span class="text-[11px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 font-bold border border-sky-500/30">OS</span>
           </div>
         </div>

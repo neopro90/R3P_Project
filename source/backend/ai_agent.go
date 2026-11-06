@@ -117,7 +117,7 @@ const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOM
   - Cổng HTTP: 80 (Web UI & REST API v1)
   - Cổng HTTPS: 8443 (TLS Web UI & REST API v1)
   - Cổng Localhost Runtime: 8787 (ESP32-Download Linux Runtime & Telegram Poller)
-- **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 Hass.io Dashboard)
+- **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 R3P MINI SERVER OS Dashboard)
 - **Thư Mục Cấu Hình Bền Vững (/etc/r3p/)**:
   - /etc/r3p/SYSTEM_BLUEPRINT.md : Tài liệu cấu trúc hệ thống này
   - /etc/r3p/version.json        : Thông tin phiên bản Firmware & Revision GitHub

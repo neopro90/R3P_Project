@@ -41,6 +41,20 @@ const services = ref<ServiceItem[]>([])
 const radios = ref<RadioItem[]>([])
 const volumes = ref<DiskVolume[]>([])
 const recentLogs = ref<string[]>([])
+const clearingLogs = ref(false)
+
+const clearLogs = async () => {
+  if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ bộ đệm nhật ký hệ thống (logread & kernel dmesg)?')) return
+  clearingLogs.value = true
+  try {
+    await apiRequest('/logs', { method: 'DELETE' })
+    recentLogs.value = []
+  } catch (err: any) {
+    alert('Lỗi xóa nhật ký: ' + (err?.message || err))
+  } finally {
+    clearingLogs.value = false
+  }
+}
 const loading = ref(false)
 const actionNotice = ref<string | null>(null)
 
@@ -51,13 +65,17 @@ const txHistory = ref<number[]>([8, 12, 10, 15, 20, 25, 18, 16, 22, 35, 40, 30, 
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const overlayVol = computed(() => volumes.value.find((v) => v.mount_point === '/overlay') || volumes.value[0])
+const overlayVol = computed(() => {
+  return volumes.value.find((v) => v.mount_point === '/overlay' || (v.device && v.device.includes('overlay'))) ||
+         volumes.value.find((v) => v.mount_point === '/') ||
+         null
+})
 const usbHddVol = computed(() => volumes.value.find((v) => v.mount_point === '/mnt/sda1' || v.mount_point.startsWith('/mnt/sd')))
 
 const overlayPercent = computed(() => {
-  if (!overlayVol.value) return 1
+  if (!overlayVol.value) return 89
   const p = Number(overlayVol.value.percent)
-  if (isNaN(p) || p <= 0) return 1
+  if (isNaN(p) || p <= 0) return 89
   return Math.min(100, Math.max(1, Math.round(p)))
 })
 
@@ -378,8 +396,8 @@ onUnmounted(() => {
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
               <div class="font-bold text-[12px] text-gray-200 truncate">NAND (/overlay)</div>
-              <div class="text-purple-300 font-semibold text-[11.5px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '214 MB' }} trống</div>
-              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '2.1 MB' }}</div>
+              <div class="text-purple-300 font-semibold text-[11.5px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '22.4 MB' }} trống</div>
+              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '180 MB' }}</div>
             </div>
           </div>
 
@@ -578,12 +596,25 @@ onUnmounted(() => {
       <!-- Live Kernel & Daemon Log Feed -->
       <div class="pro-card flex flex-col">
         <div class="pro-card-header">
-          <span class="pro-card-title">Live System Log (logread)</span>
-          <RouterLink to="/system" class="text-[11px] text-sky-400 hover:underline">Xem Tất Cả →</RouterLink>
+          <div class="flex items-center gap-2">
+            <span class="pro-card-title">Live System Log (logread)</span>
+            <span class="text-[11px] text-gray-400 hidden sm:inline">(Mới nhất ở trên cùng)</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="px-2.5 py-0.5 text-[11px] rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition font-semibold cursor-pointer"
+              :disabled="clearingLogs"
+              @click="clearLogs"
+            >
+              {{ clearingLogs ? 'Đang xóa...' : '🗑 Xóa Log' }}
+            </button>
+            <RouterLink to="/system" class="text-[11px] text-sky-400 hover:underline">Xem Tất Cả →</RouterLink>
+          </div>
         </div>
 
-        <div class="bg-black/50 rounded border border-white/5 p-2 font-mono text-[10.5px] text-gray-300 overflow-y-auto max-h-48 space-y-1">
-          <div v-if="!recentLogs.length" class="text-gray-500">Chưa có nhật ký ghi nhận.</div>
+        <div class="bg-black/50 rounded border border-white/5 p-2 font-mono text-[11px] text-gray-300 overflow-y-auto max-h-48 space-y-1">
+          <div v-if="!recentLogs.length" class="text-gray-500 py-3 text-center">Bộ đệm log trống sạch sẽ.</div>
           <div v-for="(line, idx) in recentLogs" :key="idx" class="leading-relaxed hover:bg-white/[0.03] px-1 rounded truncate">
             <span class="text-sky-400 select-none">›</span> {{ line }}
           </div>
