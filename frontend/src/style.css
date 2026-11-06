@@ -63,7 +63,7 @@ html[data-theme="light"] {
 
 /* ─── 3 Home Assistant (Hass.io) Signature Theme Presets ──────────────── */
 
-/* Preset 1: Hass.io Classic Lovelace (Home Assistant Official Cyan #03a9f4 & Crisp Lovelace Cards) */
+/* Preset 1: Hass.io Classic Lovelace (Home Assistant Official Refined Cyan/Azure & Crisp Lovelace Cards) */
 html[data-hass="hass-classic"][data-theme="dark"] {
   --bg-base: #111111;
   --bg-sidebar: #1c1c1c;
@@ -71,17 +71,18 @@ html[data-hass="hass-classic"][data-theme="dark"] {
   --bg-card: #1c1c1c;
   --bg-card-hover: #242424;
   --bg-input: #141414;
-  --accent-primary: #03a9f4;
-  --accent-primary-hover: #0288d1;
+  --accent-primary: #0284c7;
+  --accent-primary-hover: #0369a1;
   --border-subtle: rgba(255, 255, 255, 0.1);
   --card-radius: 12px;
 }
 html[data-hass="hass-classic"][data-theme="light"] {
   --bg-base: #fafafa;
   --bg-sidebar: #ffffff;
-  --bg-topbar: #03a9f4;
+  --bg-topbar: #0284c7;
   --bg-card: #ffffff;
-  --accent-primary: #03a9f4;
+  --accent-primary: #0284c7;
+  --accent-primary-hover: #0369a1;
   --card-radius: 12px;
 }
 
@@ -93,8 +94,8 @@ html[data-hass="hass-mushroom"][data-theme="dark"] {
   --bg-card: rgba(22, 31, 50, 0.88);
   --bg-card-hover: rgba(28, 40, 64, 0.95);
   --bg-input: #0d1320;
-  --accent-primary: #38bdf8;
-  --accent-primary-hover: #0284c7;
+  --accent-primary: #2563eb;
+  --accent-primary-hover: #1d4ed8;
   --border-subtle: rgba(148, 163, 184, 0.14);
   --card-radius: 16px;
   --card-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.5);
@@ -104,12 +105,13 @@ html[data-hass="hass-mushroom"][data-theme="light"] {
   --bg-sidebar: #ffffff;
   --bg-topbar: #ffffff;
   --bg-card: rgba(255, 255, 255, 0.95);
-  --accent-primary: #0284c7;
+  --accent-primary: #2563eb;
+  --accent-primary-hover: #1d4ed8;
   --card-radius: 16px;
   --card-shadow: 0 6px 20px -4px rgba(15, 23, 42, 0.07);
 }
 
-/* Preset 3: Hass.io Energy / Cyber Neon (High-Contrast Telemetry Matrix with Cyan/Emerald Glow) */
+/* Preset 3: Hass.io Energy / Cyber Matrix (Sleek Cyber Teal & Emerald Matrix - Soft & Eye-Friendly) */
 html[data-hass="hass-neon"][data-theme="dark"] {
   --bg-base: #050811;
   --bg-sidebar: #080d1a;
@@ -117,11 +119,11 @@ html[data-hass="hass-neon"][data-theme="dark"] {
   --bg-card: #0c1426;
   --bg-card-hover: #111c35;
   --bg-input: #060b16;
-  --accent-primary: #00e5ff;
-  --accent-primary-hover: #00b8d4;
-  --border-subtle: rgba(0, 229, 255, 0.22);
+  --accent-primary: #0891b2;
+  --accent-primary-hover: #0e7490;
+  --border-subtle: rgba(8, 145, 178, 0.22);
   --card-radius: 10px;
-  --card-shadow: 0 0 18px -4px rgba(0, 229, 255, 0.16);
+  --card-shadow: 0 0 16px -4px rgba(8, 145, 178, 0.14);
 }
 html[data-hass="hass-neon"][data-theme="light"] {
   --bg-base: #ecfeff;
@@ -129,6 +131,7 @@ html[data-hass="hass-neon"][data-theme="light"] {
   --bg-topbar: #ffffff;
   --bg-card: #ffffff;
   --accent-primary: #0891b2;
+  --accent-primary-hover: #0e7490;
   --border-subtle: rgba(8, 145, 178, 0.22);
   --card-radius: 10px;
 }
@@ -363,19 +366,32 @@ html[data-theme="dark"] .badge-purple {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  background: var(--accent-primary);
+  gap: 6px;
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-primary-hover) 100%);
   color: #ffffff !important;
-  border: 1px solid transparent;
-  padding: 5px 12px;
-  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+  padding: 6px 13px;
+  font-size: 12.5px;
   font-weight: 600;
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .btn-primary:hover {
-  background: var(--accent-primary-hover);
+  filter: brightness(1.12);
+  box-shadow: 0 4px 14px -2px rgba(2, 132, 199, 0.4);
+  transform: translateY(-0.5px);
+}
+.btn-primary:active {
+  filter: brightness(0.92);
+  transform: translateY(0);
+}
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
 }
 
 .btn-secondary {

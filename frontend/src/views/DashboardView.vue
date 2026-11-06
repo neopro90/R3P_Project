@@ -331,38 +331,71 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 4. Storage & Partitions Gauge (NAND + USB 500GB) -->
+      <!-- 4. Storage & Partitions Gauge (NAND + USB 500GB) Each with its own Circular Donut Ring -->
       <div class="pro-card p-3 flex flex-col justify-between">
         <div class="flex items-center justify-between text-xs mb-1">
           <span class="font-bold text-purple-300">💾 Lưu Trữ & Phân Vùng</span>
           <RouterLink to="/nas" class="text-[10px] text-sky-400 hover:underline">Chi tiết →</RouterLink>
         </div>
 
-        <div class="space-y-2 my-1">
-          <!-- NAND /overlay -->
-          <div>
-            <div class="flex justify-between text-[10.5px] mb-0.5">
-              <span class="font-medium text-gray-300 mono">/overlay (NAND)</span>
-              <span class="mono text-purple-300 font-bold">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '202 MB' }} trống</span>
+        <div class="grid grid-cols-2 gap-2 my-1">
+          <!-- Graph 1: NAND /overlay -->
+          <div class="flex items-center gap-2 p-1.5 rounded-lg bg-black/25 border border-white/5">
+            <div class="relative w-11 h-11 shrink-0 flex items-center justify-center">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                <path
+                  class="text-white/10"
+                  stroke-width="4"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+                <path
+                  class="text-purple-400 transition-all duration-500 ease-out"
+                  stroke-width="4"
+                  :stroke-dasharray="`${Math.min(100, overlayVol ? overlayVol.percent : 4)}, 100`"
+                  stroke-linecap="round"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+              </svg>
+              <span class="absolute text-[10px] font-bold text-purple-300 mono">{{ overlayVol ? overlayVol.percent : 4 }}%</span>
             </div>
-            <div class="progress-bar-bg">
-              <div class="progress-bar-fill bg-purple-400" :style="{ width: `${overlayVol ? Math.max(3, overlayVol.percent) : 3}%` }"></div>
+            <div class="min-w-0 flex-1 text-[10px] space-y-0.5">
+              <div class="font-bold text-gray-200 truncate">NAND (/overlay)</div>
+              <div class="text-purple-300 font-semibold truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '214 MB' }} trống</div>
+              <div class="text-gray-500 truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '15 MB' }}</div>
             </div>
           </div>
 
-          <!-- USB 3.0 HDD -->
-          <div>
-            <div class="flex justify-between text-[10.5px] mb-0.5">
-              <span class="font-medium text-gray-300 mono">/mnt/sda1 (USB 3.0)</span>
-              <span class="mono text-emerald-300 font-bold">
-                {{ usbHddVol ? formatMB(usbHddVol.avail_kb) : 'Ổ Cứng 500GB' }}
-              </span>
+          <!-- Graph 2: USB 3.0 HDD /mnt/sda1 -->
+          <div class="flex items-center gap-2 p-1.5 rounded-lg bg-black/25 border border-white/5">
+            <div class="relative w-11 h-11 shrink-0 flex items-center justify-center">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                <path
+                  class="text-white/10"
+                  stroke-width="4"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+                <path
+                  class="text-emerald-400 transition-all duration-500 ease-out"
+                  stroke-width="4"
+                  :stroke-dasharray="`${Math.min(100, usbHddVol ? usbHddVol.percent : 2)}, 100`"
+                  stroke-linecap="round"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+              </svg>
+              <span class="absolute text-[10px] font-bold text-emerald-300 mono">{{ usbHddVol ? usbHddVol.percent : 2 }}%</span>
             </div>
-            <div class="progress-bar-bg">
-              <div
-                class="progress-bar-fill bg-emerald-400"
-                :style="{ width: `${usbHddVol ? Math.max(3, usbHddVol.percent) : 2}%` }"
-              ></div>
+            <div class="min-w-0 flex-1 text-[10px] space-y-0.5">
+              <div class="font-bold text-gray-200 truncate">USB (/mnt/sda1)</div>
+              <div class="text-emerald-300 font-semibold truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : 'Ổ Cứng 500GB' }} trống</div>
+              <div class="text-gray-500 truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '1 GB' }}</div>
             </div>
           </div>
         </div>

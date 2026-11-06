@@ -1,9 +1,9 @@
-﻿{
-    "version":  "v1.0.5",
-    "revision":  6,
-    "released_at":  "2026-11-06 23:26:53",
+{
+    "version":  "v1.0.6",
+    "revision":  7,
+    "released_at":  "2026-11-06 23:59:23",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.0.5",
-    "changelog":  "v1.0.5: Pure Download Monitor UI, sync IP/Telegram/DDNS/Path parameters, font-size +50%, left sidebar font +100% and width +30%"
+    "commit_sha":  "v1.0.6",
+    "changelog":  "v1.0.6: Soften theme button colors, dashboard dual storage ring gauges, topbar +30% size, downloadbot debug sync tool \u0026 header removal, fix UTF-8 BOM in release updater"
 }

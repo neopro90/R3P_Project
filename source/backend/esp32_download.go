@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -447,7 +448,22 @@ func isTerminalEspJob(status string) bool {
 	return status == "COMPLETED" || status == "FAILED" || status == "ERROR1" || status == "ERROR2" || status == "CANCELLED"
 }
 
+var (
+	cachedYtVer  string
+	cachedYtErr  string
+	cachedYtTime time.Time
+	cachedYtMu   sync.Mutex
+)
+
 func getYtDlpVer() (string, string) {
+	cachedYtMu.Lock()
+	if time.Since(cachedYtTime) < 10*time.Minute && cachedYtVer != "" {
+		v, e := cachedYtVer, cachedYtErr
+		cachedYtMu.Unlock()
+		return v, e
+	}
+	cachedYtMu.Unlock()
+
 	bin := espConfig.YtDlpPath
 	if bin == "" {
 		bin = "/usr/bin/yt-dlp"
@@ -457,12 +473,20 @@ func getYtDlpVer() (string, string) {
 			bin = p
 		}
 	}
-	out, err := runCmd(5, bin, "--version")
+	// On MT7621 MIPSLE @ 880MHz, python3 yt-dlp initialization takes ~6s, so allow 15s
+	out, err := runCmd(15, bin, "--version")
+	cachedYtMu.Lock()
+	defer cachedYtMu.Unlock()
+	cachedYtTime = time.Now()
 	if err != nil || strings.TrimSpace(out) == "" {
+		cachedYtVer = ""
+		cachedYtErr = "yt-dlp not found"
 		return "", "yt-dlp not found"
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	return strings.TrimSpace(lines[0]), ""
+	cachedYtVer = strings.TrimSpace(lines[0])
+	cachedYtErr = ""
+	return cachedYtVer, ""
 }
 
 func callEspDevice(apiPath, method string, body interface{}, timeoutMs int) (int, map[string]interface{}, error) {
@@ -873,7 +897,13 @@ func checkEspSystemTools() []map[string]interface{} {
 		if d.ID == "node" {
 			installed = true
 			ver = "R3P-Linux-Native-v2.0"
-		} else if out, err := runCmd(4, binPath, d.Args...); err == nil && strings.TrimSpace(out) != "" {
+		} else if d.ID == "yt-dlp" {
+			v, _ := getYtDlpVer()
+			if v != "" {
+				installed = true
+				ver = v
+			}
+		} else if out, err := runCmd(10, binPath, d.Args...); err == nil && strings.TrimSpace(out) != "" {
 			installed = true
 			ver = strings.Split(strings.TrimSpace(out), "\n")[0]
 		}
@@ -1849,6 +1879,59 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/api/local/system/check" && r.Method == http.MethodGet {
 		espWriteJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "tools": checkEspSystemTools()})
+		return
+	}
+	if p == "/api/local/debug-sync" {
+		syncEspAndRouterSettings()
+		ytVer, _ := getYtDlpVer()
+		lanIP := getRouterLanIP()
+		storage := espOutputStorageStatus(espConfig.OutputDirectory)
+		tools := checkEspSystemTools()
+
+		// Test port 8787 listening
+		port8787OK := false
+		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", espHostPort), 500*time.Millisecond); err == nil {
+			_ = conn.Close()
+			port8787OK = true
+		}
+
+		// Test ESP32 device reachable
+		devReachable := false
+		devStatus := "ESP32 Ngoại tuyến (R3P Linux hoạt động độc lập 100%)"
+		if status, _, err := callEspDevice("/api/v1/system", http.MethodGet, nil, 800); err == nil && status >= 200 && status < 300 {
+			devReachable = true
+			devStatus = "ESP32 Trực tuyến & Đã kết nối"
+		}
+
+		// Check writability on OutputDirectory
+		testFile := filepath.Join(espConfig.OutputDirectory, ".write_test")
+		writeOK := false
+		if err := os.WriteFile(testFile, []byte("ok"), 0666); err == nil {
+			_ = os.Remove(testFile)
+			writeOK = true
+		}
+
+		report := map[string]interface{}{
+			"ok":                  true,
+			"timestamp":           time.Now().Format("2006-01-02 15:04:05"),
+			"lan_ip":              lanIP,
+			"runtime_base_url":    espConfig.RuntimeBaseUrl,
+			"port_8787":           espHostPort,
+			"port_8787_listening": port8787OK,
+			"output_dir":          espConfig.OutputDirectory,
+			"output_dir_writable": writeOK,
+			"storage":             storage,
+			"yt_dlp_version":      ytVer,
+			"device_url":          espConfig.DeviceBaseUrl,
+			"device_reachable":    devReachable,
+			"device_status":       devStatus,
+			"telegram_enabled":    espConfig.TelegramEnabled,
+			"telegram_token_set":  len(espConfig.TelegramBotToken) > 10,
+			"telegram_chat_id":    espConfig.TelegramAllowedChatId,
+			"tools":               tools,
+			"message":             "Đã kiểm tra và đồng bộ toàn bộ thông số IP, Cổng 8787, Thư mục USB và yt-dlp thành công!",
+		}
+		espWriteJSON(w, http.StatusOK, report)
 		return
 	}
 	if (p == "/api/local/system/install" || p == "/api/local/pc/check") && r.Method == http.MethodPost {

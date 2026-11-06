@@ -95,25 +95,25 @@ function signOut() {
 </script>
 
 <template>
-  <header class="h-14 px-4 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-2 overflow-x-auto">
+  <header class="h-[72px] px-5 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-3 overflow-x-auto">
     <!-- Breadcrumb / Title -->
-    <div class="flex items-center gap-2.5 min-w-0">
-      <span class="text-[13px] font-bold text-sky-400 uppercase tracking-wider shrink-0">HASS·R3P</span>
-      <span class="text-gray-500 shrink-0">/</span>
-      <h1 class="text-[16px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
+    <div class="flex items-center gap-3 min-w-0">
+      <span class="text-[16px] font-bold text-sky-400 uppercase tracking-wider shrink-0">HASS·R3P</span>
+      <span class="text-[17px] text-gray-500 shrink-0">/</span>
+      <h1 class="text-[21px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
     </div>
 
     <!-- Live Telemetry, Hass.io Style Switcher, Theme Toggle & 1-Click Language Switcher -->
-    <div class="flex items-center gap-1.5 text-[11px] shrink-0">
+    <div class="flex items-center gap-2 text-[13.5px] shrink-0">
       <!-- 1. 3 Home Assistant (Hass.io) Theme Presets -->
-      <div class="flex items-center bg-black/25 border border-white/10 rounded-lg p-0.5 gap-0.5" title="Chọn 1 trong 3 bộ giao diện phong cách Home Assistant (Hass.io)">
+      <div class="flex items-center bg-black/25 border border-white/10 rounded-lg p-1 gap-1" title="Chọn 1 trong 3 bộ giao diện phong cách Home Assistant (Hass.io)">
         <button
           v-for="ht in hassThemes"
           :key="ht.id"
           type="button"
-          class="px-2 py-0.5 rounded-md text-[10.5px] font-semibold transition flex items-center gap-1 cursor-pointer"
+          class="px-3 py-1.5 rounded-lg text-[13px] font-semibold transition flex items-center gap-1.5 cursor-pointer"
           :class="prefs.state.hassStyle === ht.id
-            ? 'bg-sky-500 text-white shadow-sm'
+            ? 'bg-sky-600/80 text-sky-100 border border-sky-400/30 shadow-sm'
             : 'text-gray-400 hover:text-gray-200'"
           @click="prefs.setHassStyle(ht.id)"
         >
@@ -125,18 +125,18 @@ function signOut() {
       <!-- 2. 1-Click Light / Dark Mode Button -->
       <button
         type="button"
-        class="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer"
+        class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer"
         title="Đổi giao diện Sáng / Tối (Light / Dark Mode)"
         @click="prefs.toggleTheme()"
       >
         <span>{{ prefs.state.theme === 'light' ? '☀️' : '🌙' }}</span>
-        <span class="hidden sm:inline text-[10.5px]">{{ prefs.state.theme === 'light' ? prefs.t('theme_light') : prefs.t('theme_dark') }}</span>
+        <span class="hidden sm:inline text-[13px]">{{ prefs.state.theme === 'light' ? prefs.t('theme_light') : prefs.t('theme_dark') }}</span>
       </button>
 
       <!-- 3. Single 1-Click Rotating Language Button (VI ➔ EN ➔ CN ➔ VI) -->
       <button
         type="button"
-        class="px-2.5 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-[10.5px] font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+        class="px-3.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-[13px] font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
         title="Nhấn để đổi ngôn ngữ (Xoay vòng: VI ➔ EN ➔ CN)"
         @click="rotateLang"
       >
@@ -146,7 +146,7 @@ function signOut() {
 
       <!-- Internet Connectivity Status -->
       <button
-        class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition cursor-pointer"
+        class="flex items-center gap-2 px-3 py-1.5 rounded-lg border transition cursor-pointer"
         :class="system.internet?.online
           ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
           : 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'"
@@ -156,16 +156,16 @@ function signOut() {
         @click="recheckInternet"
       >
         <span
-          class="w-1.5 h-1.5 rounded-full"
+          class="w-2 h-2 rounded-full"
           :class="[
             system.internet?.online ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400',
             checkingNet ? 'animate-ping' : ''
           ]"
         ></span>
-        <span class="font-semibold tracking-wide text-[10.5px]">
+        <span class="font-semibold tracking-wide text-[13px]">
           {{ checkingNet ? prefs.t('checking') : (system.internet?.online ? prefs.t('internet_online') : prefs.t('internet_offline')) }}
         </span>
-        <span v-if="system.internet?.online" class="mono text-[10px] opacity-90 hidden sm:inline">
+        <span v-if="system.internet?.online" class="mono text-[12px] opacity-90 hidden sm:inline">
           · {{ wanModeLabel }}
           <template v-if="system.internet.latency_ms > 0">({{ system.internet.latency_ms }}ms)</template>
         </span>
@@ -173,34 +173,34 @@ function signOut() {
 
       <!-- External Public IP -->
       <button
-        class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/25 border border-white/10 text-gray-300 hover:border-sky-500/40 transition cursor-pointer"
+        class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/25 border border-white/10 text-gray-300 hover:border-sky-500/40 transition cursor-pointer"
         :title="system.internet?.isp ? `ISP: ${system.internet.isp} (${system.internet.country || ''}) · Click to copy External IP` : 'External Public IP · Click to copy'"
         @click="copyExternalIp"
       >
-        <span class="text-gray-500 text-[10px] font-semibold">{{ prefs.t('ext_ip') }}</span>
-        <span class="mono font-medium" :class="system.internet?.external_ip && system.internet.external_ip !== '—' ? 'text-sky-400' : 'text-gray-500'">
+        <span class="text-gray-500 text-[12px] font-semibold">{{ prefs.t('ext_ip') }}</span>
+        <span class="mono font-medium text-[13px]" :class="system.internet?.external_ip && system.internet.external_ip !== '—' ? 'text-sky-400' : 'text-gray-500'">
           {{ copiedIp ? prefs.t('copied') : (system.internet?.external_ip || '—') }}
         </span>
       </button>
 
       <!-- CPU & RAM -->
-      <div class="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/20 border border-white/5 text-gray-400">
-        <span class="text-gray-500 text-[10px]">CPU</span>
+      <div class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/20 border border-white/5 text-gray-400 text-[13px]">
+        <span class="text-gray-500 text-[12px]">CPU</span>
         <span class="mono text-sky-400 font-medium">{{ (system.cpu || 0).toFixed(0) }}%</span>
         <span class="text-gray-600">·</span>
-        <span class="text-gray-500 text-[10px]">RAM</span>
+        <span class="text-gray-500 text-[12px]">RAM</span>
         <span class="mono text-emerald-400 font-medium">{{ (system.ram || 0).toFixed(0) }}%</span>
       </div>
 
       <!-- User Chip & Logout -->
-      <div class="flex items-center gap-1 pl-1 border-l border-white/10">
-        <span class="mono text-[11px] text-gray-300 font-medium hidden sm:inline">root</span>
+      <div class="flex items-center gap-1.5 pl-2 border-l border-white/10">
+        <span class="mono text-[13.5px] text-gray-300 font-medium hidden sm:inline">root</span>
         <button
-          class="p-1 rounded text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer"
+          class="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer"
           title="Sign out"
           @click="signOut"
         >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
         </button>

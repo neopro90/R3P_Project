@@ -49,8 +49,6 @@ Write-Host " Preparing R3P_Project Release: $ver (Revision #$rev)" -ForegroundCo
 Write-Host "======================================================" -ForegroundColor Cyan
 
 # 2. Write updated VERSION & release.json
-Set-Content -Path $VersionFile -Value $ver -Encoding UTF8
-
 $newRelease = [ordered]@{
     version     = $ver
     revision    = $rev
@@ -60,7 +58,9 @@ $newRelease = [ordered]@{
     commit_sha  = $ver
     changelog   = $Message
 }
-$newRelease | ConvertTo-Json -Depth 4 | Set-Content -Path $ReleaseFile -Encoding UTF8
+$jsonStr = $newRelease | ConvertTo-Json -Depth 4
+[System.IO.File]::WriteAllText($ReleaseFile, $jsonStr, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText($VersionFile, $ver, [System.Text.UTF8Encoding]::new($false))
 
 # 3. Rebuild r3p-update-bundle.tar.gz so the bundle on GitHub has the exact new version.json
 python "$RootDir\scripts\package-and-deploy.py"

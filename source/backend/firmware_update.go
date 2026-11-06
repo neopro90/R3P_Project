@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -84,7 +85,7 @@ func getCurrentSystemVersion() SystemVersionInfo {
 		def.ReleasedAt = time.Now().Format("2006-01-02")
 	}
 	if b, err := os.ReadFile(versionConfigFile); err == nil {
-		_ = json.Unmarshal(b, &def)
+		_ = json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &def)
 	}
 	if def.RepoURL == "" {
 		def.RepoURL = "https://github.com/neopro90/R3P_Project.git"
@@ -216,7 +217,9 @@ func handleFirmwareGitHubCheck(w http.ResponseWriter, r *http.Request) {
 						ReleasedAt string `json:"released_at"`
 						Changelog  string `json:"changelog"`
 					}
-					if json.NewDecoder(resp.Body).Decode(&relData) == nil && relData.Version != "" {
+					rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+					rawBody = bytes.TrimPrefix(rawBody, []byte("\xef\xbb\xbf"))
+					if json.Unmarshal(rawBody, &relData) == nil && relData.Version != "" {
 						remoteVer = relData.Version
 						if relData.Revision > 0 {
 							remoteRev = relData.Revision
@@ -455,8 +458,10 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 8 * time.Second}
 	if resp, err := client.Get(relURL); err == nil {
 		if resp.StatusCode == http.StatusOK {
+			rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+			rawBody = bytes.TrimPrefix(rawBody, []byte("\xef\xbb\xbf"))
 			var rel SystemVersionInfo
-			if json.NewDecoder(resp.Body).Decode(&rel) == nil && rel.Version != "" {
+			if json.Unmarshal(rawBody, &rel) == nil && rel.Version != "" {
 				rel.RepoURL = repoURL
 				rel.Branch = branch
 				saveCurrentSystemVersion(rel)

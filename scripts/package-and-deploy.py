@@ -42,7 +42,7 @@ def build_bundle() -> Path:
 
         # 2. Add etc/r3p/version.json
         if RELEASE_JSON.exists():
-            ver_bytes = RELEASE_JSON.read_bytes()
+            ver_bytes = RELEASE_JSON.read_bytes().lstrip(b"\xef\xbb\xbf")
             ti_ver = tarfile.TarInfo(name="etc/r3p/version.json")
             ti_ver.size = len(ver_bytes)
             ti_ver.mode = 0o644
@@ -100,6 +100,8 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
         "rm -f /usr/bin/r3p-api",
         "tar -xzf /tmp/r3p-update-bundle.tar.gz -C /",
         "rm -f /tmp/r3p-update-bundle.tar.gz",
+        "mkdir -p /mnt/sda1/esp32-download-host/public",
+        "[ -d /mnt/sda1/esp32-download-host/public ] && cp -rf /overlay/esp32-download-host/public/* /mnt/sda1/esp32-download-host/public/ 2>/dev/null || true",
         "chmod 755 /usr/bin/r3p-api",
         "sync",
         "/etc/init.d/r3p-api start",
