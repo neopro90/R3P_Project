@@ -191,7 +191,7 @@ func loadAIConfig() AIConfig {
 		Provider:          "gemini",
 		APIKey:            "",
 		BaseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
-		Model:             "gemini-3-flash-preview",
+		Model:             "gemini-3.1-flash-lite",
 		AutoExecute:       true,
 		AllowExec:         true,
 		TelegramAIEnabled: true,
@@ -205,7 +205,7 @@ func loadAIConfig() AIConfig {
 	if def.BaseURL == "" {
 		def.BaseURL = defaultBaseURLForProvider(def.Provider)
 	}
-	if def.Model == "" || (strings.ToLower(def.Provider) == "gemini" && def.Model == "gemini-2.5-flash") {
+	if def.Model == "" || (strings.ToLower(def.Provider) == "gemini" && (def.Model == "gemini-3-flash-preview" || def.Model == "gemini-3.5-flash" || def.Model == "gemini-2.5-flash")) {
 		def.Model = defaultModelForProvider(def.Provider)
 	}
 	if def.SystemNote != "" && def.SystemPromptExtra == "" {
@@ -439,7 +439,7 @@ func defaultBaseURLForProvider(provider string) string {
 func defaultModelForProvider(provider string) string {
 	switch strings.ToLower(provider) {
 	case "gemini":
-		return "gemini-3-flash-preview"
+		return "gemini-3.1-flash-lite"
 	case "openai":
 		return "gpt-4o-mini"
 	case "deepseek":
@@ -759,7 +759,13 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 
 	modelsToTry := []string{model}
 	if strings.ToLower(cfg.Provider) == "gemini" {
-		for _, fb := range []string{"gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.1-flash-lite"} {
+		geminiCandidates := []string{
+			"gemini-3.1-flash-lite",
+			"gemini-3.1-flash-lite-preview",
+			"gemini-flash-latest",
+			"gemini-3-flash-preview",
+		}
+		for _, fb := range geminiCandidates {
 			if fb != model {
 				modelsToTry = append(modelsToTry, fb)
 			}
@@ -790,7 +796,8 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			lastErr = fmt.Errorf("API HTTP %d (%s): %s", resp.StatusCode, tryModel, string(respBytes))
-			if resp.StatusCode == 404 || resp.StatusCode == 503 {
+			if resp.StatusCode == 404 || resp.StatusCode == 503 || resp.StatusCode == 429 {
+				// 429: Free Tier quota exceeded for model; continue to next fallback candidate
 				continue
 			}
 			return "", lastErr
@@ -804,6 +811,11 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		}
 		if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
 			return "", fmt.Errorf("invalid API response: %s", string(respBytes))
+		}
+		// If a fallback candidate succeeded, update system config so next calls use working model
+		if tryModel != model && strings.ToLower(cfg.Provider) == "gemini" {
+			cfg.Model = tryModel
+			saveAIConfig(cfg)
 		}
 		return parsed.Choices[0].Message.Content, nil
 	}

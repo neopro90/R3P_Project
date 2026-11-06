@@ -407,7 +407,7 @@ func netRates(sampleMs int) []map[string]interface{} {
 func runCmd(timeoutSec int, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 

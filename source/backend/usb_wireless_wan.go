@@ -812,15 +812,24 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 
 	appendLog(fmt.Sprintf("Bắt đầu chuẩn bị Format thiết bị %s (Định dạng: %s, Nhãn: %s)...", rawDev, strings.ToUpper(fsType), label))
 
-	// 1. Unmount all partitions on this disk
+	// 1. Unmount all partitions and terminate any processes holding files on this disk
 	_, _ = runCmd(4, "sync")
-	for i := 1; i <= 4; i++ {
+	killCmd := `for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+		if ls -l /proc/$pid/fd 2>/dev/null | grep -q '/mnt/sd'; then
+			kill -9 $pid 2>/dev/null
+		fi
+	done`
+	_, _ = runCmd(5, "sh", "-c", killCmd)
+	_, _ = runCmd(4, "swapoff", "-a")
+	for i := 1; i <= 8; i++ {
 		pDev := fmt.Sprintf("/dev/%s%d", diskName, i)
 		pMnt := fmt.Sprintf("/mnt/%s%d", diskName, i)
-		_, _ = runCmd(5, "umount", pDev)
+		_, _ = runCmd(5, "umount", "-f", pDev)
 		_, _ = runCmd(5, "umount", "-l", pMnt)
+		_, _ = runCmd(5, "umount", "-f", pMnt)
 	}
-	_, _ = runCmd(5, "umount", diskDev)
+	_, _ = runCmd(5, "umount", "-f", diskDev)
+	_, _ = runCmd(5, "umount", "-l", diskDev)
 	appendLog("Đã ngắt kết nối (unmount) các phân vùng đang sử dụng.")
 
 	targetPart := rawDev
@@ -832,6 +841,8 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		if out != "" {
 			appendLog("fdisk: hoàn tất chia 1 phân vùng toàn bộ dung lượng.")
 		}
+		_, _ = runCmd(5, "partprobe", diskDev)
+		_, _ = runCmd(5, "blockdev", "--rereadpt", diskDev)
 		time.Sleep(1500 * time.Millisecond)
 	}
 
@@ -843,13 +854,26 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Ensure target partition is completely unmounted before formatting
+	for attempt := 0; attempt < 5; attempt++ {
+		mounts, _ := os.ReadFile("/proc/mounts")
+		if !strings.Contains(string(mounts), targetPart) && !strings.Contains(string(mounts), "/mnt/"+diskName) {
+			break
+		}
+		_, _ = runCmd(4, "umount", "-f", targetPart)
+		_, _ = runCmd(4, "umount", "-l", targetPart)
+		_, _ = runCmd(4, "umount", "-f", "/mnt/"+diskName+"1")
+		_, _ = runCmd(4, "umount", "-l", "/mnt/"+diskName+"1")
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	// 2. Format with chosen filesystem
 	var fmtOut string
 	var fmtErr error
 	switch fsType {
 	case "ext4":
 		appendLog(fmt.Sprintf("Đang chạy mkfs.ext4 tốc độ cao (no-journal, extent, dir_index) trên %s...", targetPart))
-		fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
+		fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
 	case "exfat":
 		appendLog(fmt.Sprintf("Đang chạy mkfs.exfat trên %s...", targetPart))
 		if _, err := os.Stat("/usr/sbin/mkfs.exfat"); err != nil {
@@ -895,7 +919,13 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	partBase := strings.TrimPrefix(targetPart, "/dev/")
 	mntPoint := "/mnt/" + partBase
 	_ = os.MkdirAll(mntPoint, 0755)
-	_, mErr := runCmd(8, "mount", "-o", "noatime,nodiratime", targetPart, mntPoint)
+	var mErr error
+	if fsType == "ext4" {
+		_, mErr = runCmd(8, "mount", "-t", "ext4", "-o", "noatime,nodiratime,barrier=0", targetPart, mntPoint)
+	}
+	if mErr != nil || fsType != "ext4" {
+		_, mErr = runCmd(8, "mount", "-o", "noatime,nodiratime", targetPart, mntPoint)
+	}
 	if mErr != nil {
 		_, mErr = runCmd(8, "mount", targetPart, mntPoint)
 	}

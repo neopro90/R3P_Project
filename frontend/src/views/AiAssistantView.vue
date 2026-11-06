@@ -67,7 +67,7 @@ const config = ref<AIConfig>({
   provider: 'gemini',
   api_key: '',
   base_url: '',
-  model: 'gemini-3-flash-preview',
+  model: 'gemini-3.1-flash-lite',
   allow_exec: true,
   auto_execute: true,
   telegram_ai_enabled: true,
@@ -91,7 +91,7 @@ const chatContainer = ref<HTMLElement | null>(null)
 const activeCommandTab = ref<'quick' | 'network' | 'storage' | 'adblock' | 'download' | 'maintenance'>('quick')
 
 const providerModels: Record<string, string[]> = {
-  gemini: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+  gemini: ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite-preview', 'gemini-flash-latest', 'gemini-3-flash-preview'],
   openai: ['gpt-4o-mini', 'gpt-4o', 'o3-mini'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
   anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-haiku-latest'],
@@ -488,12 +488,57 @@ onMounted(() => {
 
           <div>
             <label class="block text-[10px] text-gray-400 uppercase font-semibold mb-1">Mô Hình (Model)</label>
-            <input
-              v-model="config.model"
-              type="text"
-              class="w-full pro-input mono text-xs"
-              placeholder="gemini-3-flash-preview..."
-            />
+            <div class="flex items-center gap-1.5">
+              <input
+                v-model="config.model"
+                type="text"
+                list="ai-models-list"
+                class="w-full pro-input mono text-xs"
+                placeholder="gemini-3.1-flash-lite..."
+              />
+              <datalist id="ai-models-list">
+                <option v-for="m in (providerModels[config.provider] || [])" :key="m" :value="m">{{ m }}</option>
+              </datalist>
+            </div>
+            <!-- Quick model pills for Gemini -->
+            <div v-if="config.provider === 'gemini'" class="flex flex-wrap gap-1 mt-1 text-[9.5px]">
+              <button
+                type="button"
+                class="px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                :class="config.model === 'gemini-3.1-flash-lite' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40 font-bold' : 'bg-white/5 text-gray-400 hover:text-white'"
+                @click="config.model = 'gemini-3.1-flash-lite'"
+                title="Khuyên dùng cho Free Tier: Không bị giới hạn 20 req/ngày"
+              >
+                ⭐ 3.1-flash-lite (Khuyên dùng)
+              </button>
+              <button
+                type="button"
+                class="px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                :class="config.model === 'gemini-3.1-flash-lite-preview' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40 font-bold' : 'bg-white/5 text-gray-400 hover:text-white'"
+                @click="config.model = 'gemini-3.1-flash-lite-preview'"
+                title="Bản preview 3.1-flash-lite"
+              >
+                3.1-flash-lite-preview
+              </button>
+              <button
+                type="button"
+                class="px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                :class="config.model === 'gemini-flash-latest' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40 font-bold' : 'bg-white/5 text-gray-400 hover:text-white'"
+                @click="config.model = 'gemini-flash-latest'"
+                title="Bản Flash mới nhất"
+              >
+                flash-latest
+              </button>
+              <button
+                type="button"
+                class="px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                :class="config.model === 'gemini-3-flash-preview' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold' : 'bg-white/5 text-gray-400 hover:text-white'"
+                @click="config.model = 'gemini-3-flash-preview'"
+                title="Hạn mức thấp: chỉ 20 lượt/ngày trên Free Tier"
+              >
+                3-flash-preview (20 req)
+              </button>
+            </div>
           </div>
 
           <div class="md:col-span-2">
