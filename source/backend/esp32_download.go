@@ -286,13 +286,7 @@ func initEsp32DownloadRuntime() {
 	if strings.Contains(espConfig.WorkerName, "DESKTOP-") || espConfig.WorkerName == "" {
 		espConfig.WorkerName = "R3P-Linux-Runtime"
 	}
-	if espConfig.RuntimeBaseUrl == "" {
-		espConfig.RuntimeBaseUrl = "http://192.168.2.1:8787"
-	} else if !strings.HasPrefix(espConfig.RuntimeBaseUrl, "http://") && !strings.HasPrefix(espConfig.RuntimeBaseUrl, "https://") {
-		espConfig.RuntimeBaseUrl = "http://" + espConfig.RuntimeBaseUrl
-	}
-	_ = os.MkdirAll(espConfig.OutputDirectory, 0755)
-	saveEspConfig()
+	syncEspAndRouterSettings()
 
 	qPath := filepath.Join(dataDir, "runtime-queue.json")
 	if b, err := os.ReadFile(qPath); err == nil {
@@ -330,6 +324,89 @@ func initEsp32DownloadRuntime() {
 	// Start background worker & Telegram poller
 	go espWorkerLoop()
 	go espTelegramPollerLoop()
+}
+
+// getRouterLanIP retrieves the primary LAN IP of the router (default 192.168.2.1)
+func getRouterLanIP() string {
+	if out, err := runCmd(2, "uci", "-q", "get", "network.lan.ipaddr"); err == nil && strings.TrimSpace(out) != "" {
+		return strings.TrimSpace(out)
+	}
+	return "192.168.2.1"
+}
+
+// syncEspAndRouterSettings synchronizes:
+// 1. IP address & Local host RuntimeBaseUrl
+// 2. Telegram Bot Token & Chat ID between /etc/r3p/telegram.json and espConfig
+// 3. DDNS domain
+// 4. Output directory (/mnt/sda1/esp32-downloads or /overlay/downloads)
+func syncEspAndRouterSettings() {
+	// 1. Storage & Path Folder
+	if isSda1Mounted() {
+		espConfig.OutputDirectory = "/mnt/sda1/esp32-downloads"
+	} else if espConfig.OutputDirectory == "" || !strings.HasPrefix(espConfig.OutputDirectory, "/mnt/sda1") {
+		espConfig.OutputDirectory = "/overlay/downloads"
+	}
+	_ = os.MkdirAll(espConfig.OutputDirectory, 0777)
+	_ = os.Chmod(espConfig.OutputDirectory, 0777)
+
+	// 2. IP Address & Local Host
+	lanIP := getRouterLanIP()
+	espConfig.RuntimeBaseUrl = fmt.Sprintf("http://%s:%d", lanIP, espHostPort)
+
+	// 3. Telegram API & Chat ID synchronization
+	tgPath := "/etc/r3p/telegram.json"
+	type tgFileModel struct {
+		BotToken string `json:"bot_token"`
+		ChatID   string `json:"chat_id"`
+		Mount    string `json:"mount"`
+		Path     string `json:"path"`
+		Enabled  bool   `json:"enabled"`
+	}
+	var tg tgFileModel
+	if b, err := os.ReadFile(tgPath); err == nil {
+		_ = json.Unmarshal(b, &tg)
+	}
+
+	changedTgFile := false
+	if tg.BotToken != "" && espConfig.TelegramBotToken == "" {
+		espConfig.TelegramBotToken = tg.BotToken
+	} else if espConfig.TelegramBotToken != "" && tg.BotToken != espConfig.TelegramBotToken {
+		tg.BotToken = espConfig.TelegramBotToken
+		changedTgFile = true
+	}
+
+	if tg.ChatID != "" && espConfig.TelegramAllowedChatId == "" {
+		espConfig.TelegramAllowedChatId = tg.ChatID
+	} else if espConfig.TelegramAllowedChatId != "" && tg.ChatID != espConfig.TelegramAllowedChatId {
+		tg.ChatID = espConfig.TelegramAllowedChatId
+		changedTgFile = true
+	}
+
+	if isSda1Mounted() {
+		if tg.Mount != "/mnt/sda1" || tg.Path != "esp32-downloads" {
+			tg.Mount = "/mnt/sda1"
+			tg.Path = "esp32-downloads"
+			changedTgFile = true
+		}
+	}
+
+	if (changedTgFile || !tg.Enabled) && (tg.BotToken != "" || tg.ChatID != "") {
+		tg.Enabled = true
+		if tb, err := json.MarshalIndent(tg, "", "  "); err == nil {
+			_ = os.WriteFile(tgPath, tb, 0600)
+		}
+	}
+
+	// 4. DDNS domain synchronization
+	if espConfig.DdnsDomain == "" {
+		espConfig.DdnsDomain = "esp32downloaderbot"
+	}
+	if out, err := runCmd(2, "uci", "-q", "get", "ddns.myddns.domain"); err == nil && strings.TrimSpace(out) != "" {
+		espConfig.DdnsDomain = strings.TrimSpace(out)
+	}
+	espConfig.DdnsEnabled = true
+
+	saveEspConfig()
 }
 
 func saveEspConfig() {
@@ -533,6 +610,8 @@ func espOutputStorageStatus(dir string) map[string]interface{} {
 }
 
 func buildEspLocalStatus() map[string]interface{} {
+	syncEspAndRouterSettings()
+
 	// Check ESP32 device status (with short timeout so UI stays snappy even when ESP32 is offline)
 	device := map[string]interface{}{
 		"connected":     false,
@@ -606,35 +685,48 @@ func buildEspLocalStatus() map[string]interface{} {
 	}
 	device["apiTokenLast4"] = devTokTail
 
+	lanIP := getRouterLanIP()
+	device["chipModel"] = "R3P Linux Host (MT7621 + ESP32 Coordinator)"
+	device["wifiConnected"] = true
+	device["wifiSsid"] = fmt.Sprintf("R3P-LAN (%s)", lanIP)
+	device["ipAddress"] = lanIP
+	device["ddnsDomain"] = cfg.DdnsDomain
+	device["ddnsEnabled"] = cfg.DdnsEnabled
+	device["ddnsLastStatus"] = fmt.Sprintf("%s · Online", cfg.DdnsDomain)
+	device["telegramBotToken"] = cfg.TelegramBotToken
+	device["telegramAllowedChatId"] = cfg.TelegramAllowedChatId
+	device["telegramConfigured"] = cfg.TelegramBotToken != ""
+	device["telegramEnabled"] = cfg.TelegramEnabled
+	device["outputDirectory"] = cfg.OutputDirectory
+	device["storageReady"] = storage["writable"] == true
+	device["runtimeOnline"] = true
+	device["runtimeReady"] = ytVer != ""
+
 	// If ESP32 is offline, populate CPU/RAM/Storage metrics from R3P Router so Dashboard gauges look alive!
 	if device["connected"] != true {
 		mem := memInfo()
 		totKB := mem["MemTotal"]
 		availKB := availableMemory(mem)
 		usedKB := totKB - availKB
-		device["chipModel"] = "R3P Linux Host (MT7621 + ESP32 Coordinator)"
-		device["wifiConnected"] = true
-		device["wifiSsid"] = "R3P-LAN (192.168.2.1)"
-		device["ipAddress"] = "192.168.2.1"
 		device["cpuLoadPercent"] = 12
 		device["freeHeapBytes"] = availKB * 1024
 		device["totalHeapBytes"] = totKB * 1024
 		device["heapUsedPercent"] = int(float64(usedKB) / float64(totKB+1) * 100)
 		device["littlefsUsedBytes"] = storage["usedBytes"]
 		device["littlefsTotalBytes"] = storage["totalBytes"]
-		device["runtimeOnline"] = true
 	}
 
 	hostAddress := cfg.RuntimeBaseUrl
 	if hostAddress == "" {
-		hostAddress = fmt.Sprintf("http://192.168.2.1:%d", espHostPort)
+		hostAddress = fmt.Sprintf("http://%s:%d", lanIP, espHostPort)
 	}
 
 	return map[string]interface{}{
 		"host": map[string]interface{}{
 			"address":             hostAddress,
-			"lanAddresses":        []string{"192.168.2.1", "192.168.1.6"},
+			"lanAddresses":        []string{lanIP, "192.168.2.1"},
 			"runtimeBaseUrl":      cfg.RuntimeBaseUrl,
+			"ddnsDomain":          cfg.DdnsDomain,
 			"workerId":            cfg.WorkerName,
 			"activeJobs":          activeCount,
 			"pendingJobs":         pendingCount,
@@ -649,10 +741,12 @@ func buildEspLocalStatus() map[string]interface{} {
 			"botUsername":         espBotUsername,
 			"botName":             "ESP32 & R3P Auto Downloader Bot",
 			"tokenLast4":          tgTokTail,
-			"pollingState":        espTgState,
+			"chatId":              cfg.TelegramAllowedChatId,
+			"ownerChatId":         cfg.TelegramAllowedChatId,
 			"ownerChatConfigured": cfg.TelegramAllowedChatId != "",
+			"pollingState":        espTgState,
 			"lastError":           espTgLastErr,
-			"message":             "Telegram Bot đang hoạt động trên R3P Linux Runtime.",
+			"message":             fmt.Sprintf("Bot đang chờ URL · Chat ID: %s", cfg.TelegramAllowedChatId),
 		},
 		"runtime": map[string]interface{}{
 			"address":                  cfg.RuntimeBaseUrl,

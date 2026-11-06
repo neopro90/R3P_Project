@@ -147,11 +147,21 @@ AI có toàn quyền thực thi và chỉnh sửa hệ thống bằng cách xu�
    <memory_save>Ghi chú hoặc cài đặt cần nhớ lâu dài</memory_save>
 5. Đẩy link video/file vào hàng đợi tải xuống ESP32-Download:
    <download_url>https://...</download_url>
+
+## 5. Quy Chuẩn Lệnh Phù Hợp Với BusyBox / OpenWrt
+- **Đo Tốc Độ Đọc / Ghi USB (/mnt/sda1)**:
+  BusyBox dd KHÔNG hỗ trợ conv=fdatasync. Khi test tốc độ USB, LUÔN dùng cú pháp:
+  dd if=/dev/zero of=/mnt/sda1/test_speed.bin bs=1M count=30 2>&1
+  sync
+  dd if=/mnt/sda1/test_speed.bin of=/dev/null bs=1M 2>&1
+  rm -f /mnt/sda1/test_speed.bin
+- **Kiểm Tra Dung Lượng & Bộ Nhớ**:
+  df -h /mnt/sda1 /overlay 2>/dev/null; free; uptime
 `
 
 func ensureSystemBlueprintFile() string {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 {
+	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") {
 		return string(b)
 	}
 	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)

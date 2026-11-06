@@ -95,12 +95,12 @@ function signOut() {
 </script>
 
 <template>
-  <header class="h-11 px-3.5 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-2 overflow-x-auto">
+  <header class="h-14 px-4 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-2 overflow-x-auto">
     <!-- Breadcrumb / Title -->
-    <div class="flex items-center gap-2 min-w-0">
-      <span class="text-[11px] font-bold text-sky-400 uppercase tracking-wider shrink-0">HASS·R3P</span>
+    <div class="flex items-center gap-2.5 min-w-0">
+      <span class="text-[13px] font-bold text-sky-400 uppercase tracking-wider shrink-0">HASS·R3P</span>
       <span class="text-gray-500 shrink-0">/</span>
-      <h1 class="text-[12.5px] font-semibold text-gray-200 truncate">{{ currentTitle }}</h1>
+      <h1 class="text-[16px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
     </div>
 
     <!-- Live Telemetry, Hass.io Style Switcher, Theme Toggle & 1-Click Language Switcher -->

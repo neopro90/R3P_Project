@@ -60,10 +60,12 @@ def build_bundle() -> Path:
                 ti_web.mtime = now
                 tar.addfile(ti_web, io.BytesIO(data))
 
-        # 4. Add overlay/esp32-download-host/public/* from D:\Source_Tools\Esp32-Download\local-host\public
+        # 4. Add overlay/esp32-download-host/public/* (EXCLUDING .apk and media files to protect NAND flash)
         if ESP_PUBLIC_DIR.exists():
             for fpath in sorted(ESP_PUBLIC_DIR.rglob("*")):
                 if fpath.is_file():
+                    if fpath.suffix.lower() in [".apk", ".mp4", ".mkv", ".zip", ".bin", ".tar", ".gz"]:
+                        continue
                     rel = fpath.relative_to(ESP_PUBLIC_DIR).as_posix()
                     data = fpath.read_bytes()
                     ti_esp = tarfile.TarInfo(name=f"overlay/esp32-download-host/public/{rel}")

@@ -77,63 +77,63 @@ function navigate(to: string) {
 <template>
   <aside
     class="flex flex-col h-full bg-[#0b0f19] border-r border-[var(--border-subtle)] select-none shrink-0 transition-all duration-150"
-    :class="collapsed ? 'w-14' : 'w-56'"
+    :class="collapsed ? 'w-16' : 'w-[312px]'"
   >
     <!-- Brand / Home Assistant Style Header -->
-    <div class="h-11 px-3 flex items-center justify-between border-b border-[var(--border-subtle)]">
-      <div v-if="!collapsed" class="flex items-center gap-2">
-        <div class="w-7 h-7 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-xs tracking-wider shadow">
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+    <div class="h-14 px-3.5 flex items-center justify-between border-b border-[var(--border-subtle)]">
+      <div v-if="!collapsed" class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
           </svg>
         </div>
         <div>
-          <div class="text-[12.5px] font-bold text-white tracking-tight flex items-center gap-1.5">
+          <div class="text-[17px] font-bold text-white tracking-tight flex items-center gap-2">
             R3P HASS.IO
-            <span class="text-[9px] px-1.5 py-0.2 rounded-full bg-sky-500/20 text-sky-400 font-semibold border border-sky-500/30">OS</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 font-bold border border-sky-500/30">OS</span>
           </div>
         </div>
       </div>
       <div v-else class="w-full flex justify-center">
-        <div class="w-7 h-7 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-xs">
+        <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm">
           R
         </div>
       </div>
       <button
-        class="text-gray-400 hover:text-white p-1 rounded hover:bg-white/5 transition cursor-pointer"
+        class="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition cursor-pointer"
         :title="collapsed ? 'Expand' : 'Collapse'"
         @click="emit('toggle')"
       >
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="collapsed ? 'M13 5l7 7-7 7M5 5l7 7-7 7' : 'M11 19l-7-7 7-7m8 14l-7-7 7-7'" />
         </svg>
       </button>
     </div>
 
     <!-- Navigation Scroll Area -->
-    <nav class="flex-1 overflow-y-auto px-2 py-2.5 space-y-3.5">
+    <nav class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4">
       <div v-for="group in navGroups" :key="group.titleKey">
-        <div v-if="!collapsed" class="px-2 mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+        <div v-if="!collapsed" class="px-2.5 mb-1.5 text-[13.5px] font-bold text-gray-400 uppercase tracking-wider">
           {{ prefs.t(group.titleKey) }}
         </div>
-        <div class="space-y-1">
+        <div class="space-y-1.5">
           <button
             v-for="item in group.items"
             :key="item.to"
-            class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition group relative text-left cursor-pointer"
+            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[17px] font-medium transition group relative text-left cursor-pointer"
             :class="isActive(item.to)
-              ? 'bg-sky-500/15 text-sky-400 border border-sky-500/35 shadow-sm font-semibold'
-              : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04] border border-transparent'"
+              ? 'bg-sky-500/15 text-sky-400 border border-sky-500/35 shadow-sm font-bold'
+              : 'text-gray-300 hover:text-white hover:bg-white/[0.06] border border-transparent'"
             :title="collapsed ? prefs.t(item.labelKey) : undefined"
             @click="navigate(item.to)"
           >
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" :d="item.icon" />
             </svg>
             <span v-if="!collapsed" class="truncate flex-1">{{ prefs.t(item.labelKey) }}</span>
             <span
               v-if="!collapsed && item.badge"
-              class="badge text-[9px] px-1.5 py-0"
+              class="badge text-[12px] px-2 py-0.5 font-bold"
               :class="item.id === 'ai' ? 'badge-purple' : 'badge-blue'"
             >
               {{ item.badge }}
@@ -144,18 +144,18 @@ function navigate(to: string) {
     </nav>
 
     <!-- Footer System Status -->
-    <div class="p-2.5 border-t border-[var(--border-subtle)] bg-[#090d16] text-[11px]">
+    <div class="p-3 border-t border-[var(--border-subtle)] bg-[#090d16] text-[13px]">
       <div v-if="!collapsed" class="space-y-1.5">
-        <div class="flex items-center justify-between text-gray-400">
-          <span class="flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" :class="system.connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"></span>
+        <div class="flex items-center justify-between text-gray-300">
+          <span class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full" :class="system.connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"></span>
             {{ system.connected ? '192.168.2.1' : prefs.t('disconnected') }}
           </span>
-          <span class="mono text-gray-500 text-[10px]">MT7621 · v1.0</span>
+          <span class="mono text-gray-400 text-[12px]">MT7621 · v1.0</span>
         </div>
       </div>
       <div v-else class="flex justify-center">
-        <span class="w-2 h-2 rounded-full" :class="system.connected ? 'bg-emerald-400' : 'bg-red-400'"></span>
+        <span class="w-2.5 h-2.5 rounded-full" :class="system.connected ? 'bg-emerald-400' : 'bg-red-400'"></span>
       </div>
     </div>
   </aside>

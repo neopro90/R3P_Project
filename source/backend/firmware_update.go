@@ -402,6 +402,7 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	bundleURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/build/artifacts/r3p-update-bundle.tar.gz", owner, repo, branch)
 	tmpBundle := "/tmp/r3p-github-update.tar.gz"
 	_ = os.Remove(tmpBundle)
+	defer func() { _ = os.Remove(tmpBundle) }()
 	appendFwLog("Đang tải gói cập nhật R3P OS Bundle: " + bundleURL)
 	_, err := runCmd(60, "curl", "-L", "-f", "-s", "-o", tmpBundle, bundleURL)
 	if err == nil {
@@ -429,6 +430,7 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 		binURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/build/artifacts/r3p-api", owner, repo, branch)
 		tmpBin := "/tmp/r3p-api.new"
 		_ = os.Remove(tmpBin)
+		defer func() { _ = os.Remove(tmpBin) }()
 		appendFwLog("Đang tải trực tiếp binary r3p-api từ GitHub: " + binURL)
 		_, binErr := runCmd(60, "curl", "-L", "-f", "-s", "-o", tmpBin, binURL)
 		if binErr != nil {
@@ -438,7 +440,9 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		if st, sErr := os.Stat(tmpBin); sErr == nil && st.Size() > 1024*1024 {
 			_ = os.Chmod(tmpBin, 0755)
-			_ = os.Rename(tmpBin, "/usr/bin/r3p-api")
+			// Use cp -f because /tmp and /usr/bin are on different filesystems (cross-device link)
+			_, _ = runCmd(10, "cp", "-f", tmpBin, "/usr/bin/r3p-api")
+			_ = os.Remove(tmpBin)
 			appendFwLog(fmt.Sprintf("Đã cập nhật /usr/bin/r3p-api (%.2f MB) thành công!", float64(st.Size())/(1024*1024)))
 		} else {
 			writeJSON(w, http.StatusBadGateway, false, "File r3p-api tải từ GitHub không hợp lệ")
