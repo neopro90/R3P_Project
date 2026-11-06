@@ -495,3 +495,44 @@ html[data-theme="dark"] small {
 .text-\[11px\], .text-\[11\.5px\] {
   font-size: 12.5px !important;
 }
+
+/* ─── Mobile Portrait (9:16 Ratio) Responsive Touch & Layout Engine ────── */
+@media (max-width: 1023px) {
+  html, body {
+    overflow-x: hidden !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Compact padding for cards on narrow 9:16 phone screens */
+  .pro-card {
+    padding: 0.75rem !important;
+    border-radius: 12px !important;
+  }
+
+  /* Tables wrap horizontally inside cards without stretching the phone viewport */
+  .table-responsive,
+  table {
+    display: block !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  /* Touch-friendly inputs and buttons */
+  .pro-input, select.pro-input {
+    font-size: 13.5px !important;
+    min-height: 38px !important;
+  }
+
+  .btn-primary, .btn-secondary, .btn-danger {
+    padding: 0.5rem 0.75rem !important;
+    font-size: 12.5px !important;
+  }
+
+  /* Make sure flex headers wrap cleanly if needed on 360-400px width */
+  .mobile-wrap {
+    flex-wrap: wrap !important;
+  }
+}

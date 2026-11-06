@@ -1,9 +1,9 @@
 {
     "version":  "v1.1.0",
-    "revision":  13,
-    "released_at":  "2026-11-07 02:04:53",
+    "revision":  14,
+    "released_at":  "2026-11-07 02:27:01",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
     "commit_sha":  "v1.1.0",
-    "changelog":  "Auto-trim DDNS token/domain whitespace and add WAN firewall rules for port 8443 and 8787"
+    "changelog":  "Mobile 9:16 responsive layout with bottom quick nav bar \u0026 default 2.4GHz onboarding AP"
 }

@@ -4,8 +4,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import { useUiPreferences } from '@/composables/useUiPreferences'
 
-defineProps<{ collapsed: boolean }>()
-const emit = defineEmits<{ toggle: [] }>()
+const props = withDefaults(defineProps<{
+  collapsed?: boolean
+  isMobile?: boolean
+}>(), {
+  collapsed: false,
+  isMobile: false,
+})
+const emit = defineEmits<{
+  toggle: []
+  close: []
+}>()
 
 const route = useRoute()
 const router = useRouter()
@@ -71,17 +80,23 @@ function isActive(to: string) {
 
 function navigate(to: string) {
   void router.push(to)
+  if (props.isMobile) {
+    emit('close')
+  }
 }
 </script>
 
 <template>
   <aside
-    class="flex flex-col h-full bg-[#0b0f19] border-r border-[var(--border-subtle)] select-none shrink-0 transition-all duration-150"
-    :class="collapsed ? 'w-16' : 'w-[312px]'"
+    class="flex flex-col h-full bg-[#0b0f19] select-none shrink-0 transition-all duration-150"
+    :class="[
+      isMobile ? 'w-full' : (collapsed ? 'w-16' : 'w-[312px]'),
+      !isMobile ? 'border-r border-[var(--border-subtle)]' : '',
+    ]"
   >
     <!-- Brand / Home Assistant Style Header -->
     <div class="h-14 px-3.5 flex items-center justify-between border-b border-[var(--border-subtle)]">
-      <div v-if="!collapsed" class="flex items-center gap-2.5">
+      <div v-if="!collapsed || isMobile" class="flex items-center gap-2.5">
         <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
@@ -99,7 +114,18 @@ function navigate(to: string) {
           R
         </div>
       </div>
+
+      <!-- Close button on Mobile vs Collapse button on Desktop -->
       <button
+        v-if="isMobile"
+        type="button"
+        class="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition cursor-pointer text-base font-bold"
+        @click="emit('close')"
+      >
+        ✕
+      </button>
+      <button
+        v-else
         class="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition cursor-pointer"
         :title="collapsed ? 'Expand' : 'Collapse'"
         @click="emit('toggle')"
@@ -113,7 +139,7 @@ function navigate(to: string) {
     <!-- Navigation Scroll Area -->
     <nav class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4">
       <div v-for="group in navGroups" :key="group.titleKey">
-        <div v-if="!collapsed" class="px-2.5 mb-1.5 text-[13.5px] font-bold text-gray-400 uppercase tracking-wider">
+        <div v-if="!collapsed || isMobile" class="px-2.5 mb-1.5 text-[13.5px] font-bold text-gray-400 uppercase tracking-wider">
           {{ prefs.t(group.titleKey) }}
         </div>
         <div class="space-y-1.5">
@@ -124,15 +150,15 @@ function navigate(to: string) {
             :class="isActive(item.to)
               ? 'bg-sky-500/15 text-sky-400 border border-sky-500/35 shadow-sm font-bold'
               : 'text-gray-300 hover:text-white hover:bg-white/[0.06] border border-transparent'"
-            :title="collapsed ? prefs.t(item.labelKey) : undefined"
+            :title="collapsed && !isMobile ? prefs.t(item.labelKey) : undefined"
             @click="navigate(item.to)"
           >
             <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" :d="item.icon" />
             </svg>
-            <span v-if="!collapsed" class="truncate flex-1">{{ prefs.t(item.labelKey) }}</span>
+            <span v-if="!collapsed || isMobile" class="truncate flex-1">{{ prefs.t(item.labelKey) }}</span>
             <span
-              v-if="!collapsed && item.badge"
+              v-if="(!collapsed || isMobile) && item.badge"
               class="badge text-[12px] px-2 py-0.5 font-bold"
               :class="item.id === 'ai' ? 'badge-purple' : 'badge-blue'"
             >
@@ -145,7 +171,7 @@ function navigate(to: string) {
 
     <!-- Footer System Status -->
     <div class="p-3 border-t border-[var(--border-subtle)] bg-[#090d16] text-[13px]">
-      <div v-if="!collapsed" class="space-y-1.5">
+      <div v-if="!collapsed || isMobile" class="space-y-1.5">
         <div class="flex items-center justify-between text-gray-300">
           <span class="flex items-center gap-2">
             <span class="w-2.5 h-2.5 rounded-full" :class="system.connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"></span>

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+CONFIG_DIR=/etc/r3p
+TOKEN_FILE="$CONFIG_DIR/aria2-rpc-token"
+CONFIG="$CONFIG_DIR/aria2.conf"
+
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+if [ ! -s "$TOKEN_FILE" ]; then
+	token="$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | hexdump -v -e '1/1 "%02x"')"
+	[ "${#token}" -eq 64 ] || exit 1
+	umask 077
+	printf '%s\n' "$token" > "$TOKEN_FILE"
+fi
+chmod 600 "$TOKEN_FILE"
+
+if [ ! -s "$CONFIG" ]; then
+	{
+		printf 'enable-rpc=true\n'
+		printf 'rpc-listen-all=false\n'
+		printf 'rpc-listen-port=6800\n'
+		printf 'rpc-secret=%s\n' "$(cat "$TOKEN_FILE")"
+		printf 'dir=/tmp\n'
+		printf 'max-concurrent-downloads=2\n'
+		printf 'max-connection-per-server=4\n'
+		printf 'max-redirect=0\n'
+		printf 'continue=true\n'
+		printf 'file-allocation=none\n'
+	} > "$CONFIG"
+fi
+chmod 600 "$CONFIG"
+/etc/init.d/r3p-aria2 enable
+/etc/init.d/r3p-aria2 start
+exit 0

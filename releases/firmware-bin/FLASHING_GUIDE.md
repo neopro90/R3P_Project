@@ -18,7 +18,19 @@
 
 ---
 
-## 2. Hướng Dẫn Chi Tiết Từng Phương Pháp Flash
+## 2. Thông Số Đăng Nhập & Wi-Fi Mặc Định Lần Đầu Flash Xong
+Sau khi flash OS thành công, hệ thống tự động thiết lập và phát sóng:
+- **IP Host Mặc Định**: `192.168.2.1` (Cổng Web: `https://192.168.2.1:8443` hoặc `http://192.168.2.1`)
+- **Tài khoản Root**: `root` / Mật khẩu: `root`
+- **Wi-Fi 2.4GHz Mặc Định (Không cần dây cáp LAN)**:
+  - **Tên Wi-Fi (SSID)**: `r3pminisever`
+  - **Mật khẩu (Password)**: `admin1234`
+  - **Bảo mật**: `psk-wpa2` (WPA2-PSK AES/CCMP)
+  *(Lưu ý: Chuẩn quốc tế IEEE 802.11i WPA2-PSK bắt buộc tối thiểu 8 ký tự để bảo mật, do đó mật khẩu mặc định được đặt là `admin1234`).
+
+---
+
+## 3. Hướng Dẫn Chi Tiết Từng Phương Pháp Flash
 
 ### Cách 1: Nâng cấp trực tiếp từ OpenWrt / R3P OS (Khuyên dùng)
 1. Kết nối vào router qua SSH hoặc Terminal: `ssh root@192.168.2.1` (mật khẩu mặc định: `root`).

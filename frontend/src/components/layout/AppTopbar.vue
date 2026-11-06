@@ -11,6 +11,7 @@ const auth = useAuthStore()
 const prefs = useUiPreferences()
 const checkingNet = ref(false)
 const copiedIp = ref(false)
+const emit = defineEmits<{ openMobileSidebar: [] }>()
 
 const routeTitleKeys: Record<string, string> = {
   '/': 'title_dashboard',
@@ -95,23 +96,35 @@ function signOut() {
 </script>
 
 <template>
-  <header class="h-[72px] px-5 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-3 overflow-x-auto">
-    <!-- Breadcrumb / Title -->
-    <div class="flex items-center gap-3 min-w-0">
-      <span class="text-[16px] font-bold text-sky-400 uppercase tracking-wider shrink-0">R3P·SERVER</span>
-      <span class="text-[17px] text-gray-500 shrink-0">/</span>
-      <h1 class="text-[21px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
+  <header class="h-14 lg:h-[72px] px-3 lg:px-5 bg-[#0d121e] border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0 select-none gap-2 lg:gap-3">
+    <!-- Breadcrumb / Title & Mobile Hamburger Button -->
+    <div class="flex items-center gap-2 lg:gap-3 min-w-0">
+      <!-- Hamburger Menu Button for Mobile 9:16 -->
+      <button
+        type="button"
+        class="lg:hidden p-1.5 rounded-lg bg-black/40 border border-white/10 text-gray-200 hover:text-white hover:bg-sky-500/20 hover:border-sky-500/40 transition shrink-0 cursor-pointer"
+        title="Mở menu danh mục"
+        @click="emit('openMobileSidebar')"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      <span class="text-[13px] lg:text-[16px] font-bold text-sky-400 uppercase tracking-wider shrink-0 hidden sm:inline">R3P·SERVER</span>
+      <span class="text-[14px] lg:text-[17px] text-gray-500 shrink-0 hidden sm:inline">/</span>
+      <h1 class="text-[15px] lg:text-[21px] font-bold text-gray-100 truncate">{{ currentTitle }}</h1>
     </div>
 
     <!-- Live Telemetry, Hass.io Style Switcher, Theme Toggle & 1-Click Language Switcher -->
-    <div class="flex items-center gap-2 text-[13.5px] shrink-0">
-      <!-- 1. 3 Home Assistant (Hass.io) Theme Presets -->
-      <div class="flex items-center bg-black/25 border border-white/10 rounded-lg p-1 gap-1" title="Chọn 1 trong 3 bộ giao diện phong cách Home Assistant (Hass.io)">
+    <div class="flex items-center gap-1.5 lg:gap-2 text-[12px] lg:text-[13.5px] shrink-0">
+      <!-- 1. 3 Home Assistant (Hass.io) Theme Presets (Desktop & Tablet) -->
+      <div class="hidden md:flex items-center bg-black/25 border border-white/10 rounded-lg p-1 gap-1" title="Chọn 1 trong 3 bộ giao diện phong cách Home Assistant (Hass.io)">
         <button
           v-for="ht in hassThemes"
           :key="ht.id"
           type="button"
-          class="px-3 py-1.5 rounded-lg text-[13px] font-semibold transition flex items-center gap-1.5 cursor-pointer"
+          class="px-2.5 py-1 lg:px-3 lg:py-1.5 rounded-lg text-xs lg:text-[13px] font-semibold transition flex items-center gap-1.5 cursor-pointer"
           :class="prefs.state.hassStyle === ht.id
             ? 'bg-sky-600/80 text-sky-100 border border-sky-400/30 shadow-sm'
             : 'text-gray-400 hover:text-gray-200'"
@@ -125,86 +138,58 @@ function signOut() {
       <!-- 2. 1-Click Light / Dark Mode Button -->
       <button
         type="button"
-        class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer"
+        class="flex items-center gap-1.5 px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer text-xs lg:text-[13px]"
         title="Đổi giao diện Sáng / Tối (Light / Dark Mode)"
         @click="prefs.toggleTheme()"
       >
         <span>{{ prefs.state.theme === 'light' ? '☀️' : '🌙' }}</span>
-        <span class="hidden sm:inline text-[13px]">{{ prefs.state.theme === 'light' ? prefs.t('theme_light') : prefs.t('theme_dark') }}</span>
+        <span class="hidden sm:inline">{{ prefs.state.theme === 'light' ? prefs.t('theme_light') : prefs.t('theme_dark') }}</span>
       </button>
 
       <!-- 3. Single 1-Click Rotating Language Button (VI ➔ EN ➔ CN ➔ VI) -->
       <button
         type="button"
-        class="px-3.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-[13px] font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+        class="px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-xs lg:text-[13px] font-bold transition flex items-center gap-1 cursor-pointer shadow-sm"
         title="Nhấn để đổi ngôn ngữ (Xoay vòng: VI ➔ EN ➔ CN)"
         @click="rotateLang"
       >
         <span>🌐</span>
-        <span class="mono tracking-wider font-extrabold">{{ currentLangBadge }}</span>
+        <span>{{ currentLangBadge }}</span>
       </button>
 
-      <!-- Internet Connectivity Status -->
-      <button
-        class="flex items-center gap-2 px-3 py-1.5 rounded-lg border transition cursor-pointer"
+      <!-- 4. Internet Status Badge -->
+      <div
+        class="flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-semibold cursor-pointer select-none transition"
         :class="system.internet?.online
           ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
-          : 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'"
-        :title="system.internet?.online
-          ? `Internet Online via ${system.internet.wan_iface || 'WAN'} (${system.internet.wan_local_ip || 'DHCP'}) · Gateway ${system.internet.gateway || '—'} · Click to refresh`
-          : 'No upstream Internet detected · Click to re-check'"
+          : 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'"
+        title="Bấm để kiểm tra lại kết nối Internet"
         @click="recheckInternet"
       >
-        <span
-          class="w-2 h-2 rounded-full"
-          :class="[
-            system.internet?.online ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400',
-            checkingNet ? 'animate-ping' : ''
-          ]"
-        ></span>
-        <span class="font-semibold tracking-wide text-[13px]">
-          {{ checkingNet ? prefs.t('checking') : (system.internet?.online ? prefs.t('internet_online') : prefs.t('internet_offline')) }}
-        </span>
-        <span v-if="system.internet?.online" class="mono text-[12px] opacity-90 hidden sm:inline">
-          · {{ wanModeLabel }}
-          <template v-if="system.internet.latency_ms > 0">({{ system.internet.latency_ms }}ms)</template>
-        </span>
-      </button>
+        <span class="w-1.5 h-1.5 rounded-full" :class="system.internet?.online ? 'bg-emerald-400' : 'bg-rose-400'"></span>
+        <span class="hidden sm:inline font-mono text-[11px]">{{ wanModeLabel }}</span>
+      </div>
 
-      <!-- External Public IP -->
+      <!-- External Public IP (Desktop) -->
       <button
-        class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/25 border border-white/10 text-gray-300 hover:border-sky-500/40 transition cursor-pointer"
-        :title="system.internet?.isp ? `ISP: ${system.internet.isp} (${system.internet.country || ''}) · Click to copy External IP` : 'External Public IP · Click to copy'"
+        type="button"
+        class="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-gray-300 hover:border-sky-500/40 text-xs font-mono transition cursor-pointer"
+        :title="system.internet?.isp ? `ISP: ${system.internet.isp} · Click để copy IP` : 'IP Công Cộng Ngoài Internet · Click để copy'"
         @click="copyExternalIp"
       >
-        <span class="text-gray-500 text-[12px] font-semibold">{{ prefs.t('ext_ip') }}</span>
-        <span class="mono font-medium text-[13px]" :class="system.internet?.external_ip && system.internet.external_ip !== '—' ? 'text-sky-400' : 'text-gray-500'">
-          {{ copiedIp ? prefs.t('copied') : (system.internet?.external_ip || '—') }}
-        </span>
+        <span class="text-gray-400">IP:</span>
+        <span class="text-sky-400 font-semibold">{{ copiedIp ? 'Đã copy!' : (system.internet?.external_ip || '—') }}</span>
       </button>
 
-      <!-- CPU & RAM -->
-      <div class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/20 border border-white/5 text-gray-400 text-[13px]">
-        <span class="text-gray-500 text-[12px]">CPU</span>
-        <span class="mono text-sky-400 font-medium">{{ (system.cpu || 0).toFixed(0) }}%</span>
-        <span class="text-gray-600">·</span>
-        <span class="text-gray-500 text-[12px]">RAM</span>
-        <span class="mono text-emerald-400 font-medium">{{ (system.ram || 0).toFixed(0) }}%</span>
-      </div>
-
-      <!-- User Chip & Logout -->
-      <div class="flex items-center gap-1.5 pl-2 border-l border-white/10">
-        <span class="mono text-[13.5px] text-gray-300 font-medium hidden sm:inline">root</span>
-        <button
-          class="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer"
-          title="Sign out"
-          @click="signOut"
-        >
-          <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-          </svg>
-        </button>
-      </div>
+      <!-- 5. User Profile Menu -->
+      <button
+        type="button"
+        class="px-2 py-1 rounded-md bg-white/5 border border-white/10 text-gray-300 hover:text-rose-400 text-xs font-mono font-bold transition cursor-pointer"
+        title="Đăng xuất khỏi phiên quản trị Router"
+        @click="signOut"
+      >
+        root ✕
+      </button>
     </div>
   </header>
 </template>
