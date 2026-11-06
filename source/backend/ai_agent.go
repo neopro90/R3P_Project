@@ -73,8 +73,9 @@ const (
 	aiConfigFile    = "/etc/r3p/ai_config.json"
 	aiHistoryFile   = "/etc/r3p/ai_history.json"
 	aiSessionsFile  = "/etc/r3p/ai_sessions.json"
-	aiMemoryFile    = "/etc/r3p/ai_memory.json"
-	aiBlueprintFile = "/etc/r3p/SYSTEM_BLUEPRINT.md"
+	aiMemoryFile        = "/etc/r3p/ai_memory.json"
+	aiBlueprintFile     = "/etc/r3p/SYSTEM_BLUEPRINT.md"
+	aiQuickCommandsFile = "/etc/r3p/quick_commands.json"
 )
 
 var (
@@ -158,6 +159,44 @@ AI có toàn quyền thực thi và chỉnh sửa hệ thống bằng cách xu�
 - **Kiểm Tra Dung Lượng & Bộ Nhớ**:
   df -h /mnt/sda1 /overlay 2>/dev/null; free; uptime
 `
+
+const defaultQuickCommandsJSON = `{
+  "quick": [
+    { "label": "🩺 Kiểm tra tổng quan Router", "cmd": "!uname -a && uptime && df -h /overlay /mnt/sda1 && free -m" },
+    { "label": "📊 Tải CPU & Tiến trình top", "cmd": "!top -b -n 1 | head -n 25" },
+    { "label": "🌐 IP các cổng mạng", "cmd": "!ip -br addr && echo \"---\" && ip route" },
+    { "label": "📜 30 dòng log hệ thống gần nhất", "cmd": "!logread | tail -n 30" }
+  ],
+  "network": [
+    { "label": "📡 Quét Wi-Fi 2.4G & 5G xung quanh", "cmd": "!iwinfo phy1 scan 2>/dev/null | head -n 35; iwinfo phy0 scan 2>/dev/null | head -n 35" },
+    { "label": "📶 Cấu hình Wi-Fi hiện tại (UCI)", "cmd": "!uci show wireless" },
+    { "label": "👥 Danh sách thiết bị kết nối DHCP", "cmd": "!cat /tmp/dhcp.leases" },
+    { "label": "⚡ Ping kiểm tra Internet (Google)", "cmd": "!ping -c 4 8.8.8.8" },
+    { "label": "🔎 Tra cứu DNS qua nslookup", "cmd": "!nslookup google.com 127.0.0.1" }
+  ],
+  "storage": [
+    { "label": "💾 Chi tiết ổ đĩa USB 3.0 & Phân vùng", "cmd": "!lsblk -o NAME,FSTYPE,SIZE,MOUNTPOINT,LABEL" },
+    { "label": "🚀 Tốc độ I/O ổ đĩa HDD 500GB", "cmd": "!dd if=/dev/sda1 of=/dev/null bs=1M count=100 2>&1" },
+    { "label": "📁 Xem file trong ổ cứng USB", "cmd": "!ls -lah /mnt/sda1" },
+    { "label": "⚡ Thông số tinh chỉnh USB Queue", "cmd": "!cat /sys/block/sda/queue/read_ahead_kb; cat /sys/block/sda/queue/max_sectors_kb" }
+  ],
+  "adblock": [
+    { "label": "🛡️ Trạng thái AdBlock & Số domain", "cmd": "!cat /etc/r3p/adblock.json | grep total_blocked; wc -l /tmp/r3p-adblock.hosts" },
+    { "label": "🔍 Kiểm tra cổng DNS 53 listening", "cmd": "!netstat -tlpn | grep 53" },
+    { "label": "🚫 Thử phân giải tên miền quảng cáo", "cmd": "!nslookup pagead2.googlesyndication.com 127.0.0.1" }
+  ],
+  "download": [
+    { "label": "⬇️ Phiên bản yt-dlp & aria2c", "cmd": "!yt-dlp --version; aria2c --version | head -n 1" },
+    { "label": "📂 File video đã tải về (/mnt/sda1)", "cmd": "!ls -lah /mnt/sda1/esp32-downloads 2>/dev/null || ls -lah /overlay/downloads" },
+    { "label": "🤖 Kiểm tra cổng 8787 ESP32 Runtime", "cmd": "!netstat -tlpn | grep 8787" }
+  ],
+  "maintenance": [
+    { "label": "🧹 Giải phóng RAM (Drop Caches)", "cmd": "!sync && echo 3 > /proc/sys/vm/drop_caches && free -m" },
+    { "label": "🔄 Khởi động lại dịch vụ r3p-api", "cmd": "!/etc/init.d/r3p-api restart" },
+    { "label": "📶 Khởi động lại Wi-Fi subsystem", "cmd": "!wifi reload" },
+    { "label": "📦 Kiểm tra kho ứng dụng opkg", "cmd": "!opkg list-installed | wc -l" }
+  ]
+}`
 
 func ensureSystemBlueprintFile() string {
 	_ = os.MkdirAll("/etc/r3p", 0755)
@@ -1281,6 +1320,88 @@ func handleAIBlueprint(w http.ResponseWriter, r *http.Request) {
 			"saved":   true,
 			"path":    aiBlueprintFile,
 			"content": content,
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+
+// GET / PUT / POST / DELETE /api/v1/ai/quick-commands
+func handleAIQuickCommands(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		data, err := os.ReadFile(aiQuickCommandsFile)
+		if err != nil || len(strings.TrimSpace(string(data))) < 10 {
+			var defMap map[string]interface{}
+			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"commands": defMap,
+				"custom":   false,
+			})
+			return
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			var defMap map[string]interface{}
+			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"commands": defMap,
+				"custom":   false,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"commands": parsed,
+			"custom":   true,
+		})
+	case http.MethodPut, http.MethodPost:
+		var body struct {
+			Commands map[string]interface{} `json:"commands"`
+			Reset    bool                   `json:"reset"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 262144)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+			return
+		}
+		if body.Reset {
+			_ = os.Remove(aiQuickCommandsFile)
+			var defMap map[string]interface{}
+			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"saved":    true,
+				"reset":    true,
+				"commands": defMap,
+			})
+			return
+		}
+		if body.Commands == nil {
+			writeJSON(w, http.StatusBadRequest, false, "missing commands")
+			return
+		}
+		out, err := json.MarshalIndent(body.Commands, "", "  ")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "failed to marshal commands")
+			return
+		}
+		_ = os.MkdirAll("/etc/r3p", 0755)
+		if err := os.WriteFile(aiQuickCommandsFile, out, 0644); err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "failed to write file: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"saved":    true,
+			"commands": body.Commands,
+		})
+	case http.MethodDelete:
+		_ = os.Remove(aiQuickCommandsFile)
+		var defMap map[string]interface{}
+		_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"deleted":  true,
+			"commands": defMap,
 		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")

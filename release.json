@@ -1,9 +1,9 @@
 {
-    "version":  "v1.0.10",
-    "revision":  11,
-    "released_at":  "2026-11-07 01:37:40",
+    "version":  "v1.1.0",
+    "revision":  12,
+    "released_at":  "2026-11-07 01:55:20",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.0.10",
-    "changelog":  "v1.1.0 (Rev 11): Rebalance PC desktop typography, enhance button contrast, and fix circular gauges"
+    "commit_sha":  "v1.1.0",
+    "changelog":  "Add quick commands CRUD \u0026 System Blueprint editor in AI tab, track full OS flash .bin files ecosystem"
 }

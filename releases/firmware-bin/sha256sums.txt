@@ -1,0 +1,5 @@
+ee6bc919a2776332a2d521356dfeb6ce6bc7dffed5a4ec705785a78b0896a95f  miwifi.bin
+ee6bc919a2776332a2d521356dfeb6ce6bc7dffed5a4ec705785a78b0896a95f  openwrt-25.12.5-ramips-mt7621-xiaomi_mi-router-3-pro-squashfs-factory.bin
+262a0e976eaeb59a7ac177ad1b8c63433e8dd8bf85f2578a5b888620c236e7ff  openwrt-25.12.5-ramips-mt7621-xiaomi_mi-router-3-pro-squashfs-sysupgrade.bin
+ad9df94f8e63f34c159481b76067c99c191883565fa89386b71eec404bf08733  R3P-Firmware-PB-Boot.bin
+eba8d764107c51609e92376c741ab42ae42bfe8f9b8cfd75079ef87eef68e77a  R3P-Recovery-Initramfs.bin

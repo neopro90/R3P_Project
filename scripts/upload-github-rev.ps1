@@ -1,5 +1,6 @@
 param(
     [switch]$InitialV1 = $false,
+    [string]$TargetVersion = "",
     [string]$Message = "",
     [string]$RepoUrl = "https://github.com/neopro90/R3P_Project.git",
     [string]$Branch = "main"
@@ -25,8 +26,9 @@ if (Test-Path $ReleaseFile) {
 if (-not $InitialV1) {
     # Increment revision by +1 on every upload!
     $rev = $rev + 1
-    # Parse vMajor.Minor.Patch and increment patch so version reflects the new revision (v1.0.0 -> v1.0.1 -> v1.0.2 ...)
-    if ($ver -match '^v(\d+)\.(\d+)\.(\d+)$') {
+    if (-not [string]::IsNullOrWhiteSpace($TargetVersion)) {
+        $ver = $TargetVersion
+    } elseif ($ver -match '^v(\d+)\.(\d+)\.(\d+)$') {
         $major = [int]$Matches[1]
         $minor = [int]$Matches[2]
         $patch = $rev - 1
@@ -36,7 +38,7 @@ if (-not $InitialV1) {
     }
 } else {
     $rev = 1
-    $ver = "v1.0.0"
+    $ver = if (-not [string]::IsNullOrWhiteSpace($TargetVersion)) { $TargetVersion } else { "v1.0.0" }
 }
 
 $dateStr = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")

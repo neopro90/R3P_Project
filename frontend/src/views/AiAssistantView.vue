@@ -99,7 +99,13 @@ const providerModels: Record<string, string[]> = {
   openrouter: ['google/gemini-2.5-flash', 'anthropic/claude-3.5-sonnet', 'deepseek/deepseek-chat'],
 }
 
-const quickCommandGroups = {
+interface QuickCommandItem {
+  id?: string
+  label: string
+  cmd: string
+}
+
+const defaultQuickCommands: Record<string, QuickCommandItem[]> = {
   quick: [
     { label: '🩺 Kiểm tra tổng quan Router', cmd: '!uname -a && uptime && df -h /overlay /mnt/sda1 && free -m' },
     { label: '📊 Tải CPU & Tiến trình top', cmd: '!top -b -n 1 | head -n 25' },
@@ -136,6 +142,25 @@ const quickCommandGroups = {
     { label: '📦 Kiểm tra kho ứng dụng opkg', cmd: '!opkg list-installed | wc -l' },
   ],
 }
+
+const quickCommandGroups = ref<Record<string, QuickCommandItem[]>>(JSON.parse(JSON.stringify(defaultQuickCommands)))
+
+// Quick command modal state
+const showCommandModal = ref(false)
+const isEditingCommand = ref(false)
+const commandEditCategory = ref('quick')
+const commandEditIndex = ref(-1)
+const commandForm = ref({
+  category: 'quick',
+  label: '',
+  cmd: '',
+})
+
+// Blueprint modal state
+const blueprintEditMode = ref(false)
+const savingBlueprint = ref(false)
+const blueprintFeedback = ref('')
+const blueprintFileInput = ref<HTMLInputElement | null>(null)
 
 function onProviderChange() {
   const models = providerModels[config.value.provider]
@@ -249,11 +274,186 @@ async function deleteSession(id: string) {
 
 async function loadBlueprint() {
   try {
+    blueprintFeedback.value = ''
+    blueprintEditMode.value = false
     const res = await apiRequest<{ content: string }>('/ai/blueprint')
     systemBlueprint.value = res.content || ''
     showBlueprintModal.value = true
   } catch (e) {
     errorMsg.value = (e as Error).message
+  }
+}
+
+async function saveBlueprint() {
+  savingBlueprint.value = true
+  blueprintFeedback.value = ''
+  try {
+    await apiRequest('/ai/blueprint', {
+      method: 'PUT',
+      body: JSON.stringify({ content: systemBlueprint.value }),
+    })
+    blueprintFeedback.value = 'Đã lưu bản thiết kế hệ thống thành công!'
+    setTimeout(() => { blueprintFeedback.value = '' }, 4000)
+  } catch (e) {
+    blueprintFeedback.value = 'Lỗi lưu: ' + (e as Error).message
+  } finally {
+    savingBlueprint.value = false
+  }
+}
+
+async function resetBlueprint() {
+  if (!confirm('Khôi phục bản thiết kế hệ thống về nội dung mặc định của nhà sản xuất?')) return
+  savingBlueprint.value = true
+  blueprintFeedback.value = ''
+  try {
+    const res = await apiRequest<{ content: string }>('/ai/blueprint', {
+      method: 'PUT',
+      body: JSON.stringify({ reset: true }),
+    })
+    systemBlueprint.value = res.content || ''
+    blueprintFeedback.value = 'Đã khôi phục bản thiết kế mặc định!'
+    setTimeout(() => { blueprintFeedback.value = '' }, 4000)
+  } catch (e) {
+    blueprintFeedback.value = 'Lỗi khôi phục: ' + (e as Error).message
+  } finally {
+    savingBlueprint.value = false
+  }
+}
+
+function downloadBlueprint() {
+  const blob = new Blob([systemBlueprint.value], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'SYSTEM_BLUEPRINT.md'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function triggerBlueprintUpload() {
+  blueprintFileInput.value?.click()
+}
+
+function onBlueprintFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const text = (e.target?.result as string) || ''
+    if (text.trim()) {
+      systemBlueprint.value = text
+      blueprintEditMode.value = true
+      blueprintFeedback.value = `Đã nạp nội dung từ "${file.name}". Bấm "Lưu Thay Đổi" để áp dụng lên Router.`
+    }
+    input.value = ''
+  }
+  reader.readAsText(file)
+}
+
+// Quick Commands Handlers
+function openAddCommandModal() {
+  isEditingCommand.value = false
+  commandEditIndex.value = -1
+  commandForm.value = {
+    category: activeCommandTab.value || 'quick',
+    label: '',
+    cmd: '',
+  }
+  showCommandModal.value = true
+}
+
+function openEditCommandModal(category: string, index: number) {
+  isEditingCommand.value = true
+  commandEditCategory.value = category
+  commandEditIndex.value = index
+  const item = quickCommandGroups.value[category]?.[index]
+  if (item) {
+    commandForm.value = {
+      category,
+      label: item.label,
+      cmd: item.cmd,
+    }
+    showCommandModal.value = true
+  }
+}
+
+async function saveCommandItem() {
+  const label = commandForm.value.label.trim()
+  const cmd = commandForm.value.cmd.trim()
+  const cat = commandForm.value.category.trim() || 'quick'
+  if (!label || !cmd) return
+
+  if (!quickCommandGroups.value[cat]) {
+    quickCommandGroups.value[cat] = []
+  }
+
+  if (isEditingCommand.value && commandEditIndex.value >= 0) {
+    const oldCat = commandEditCategory.value
+    if (oldCat !== cat) {
+      quickCommandGroups.value[oldCat]?.splice(commandEditIndex.value, 1)
+      quickCommandGroups.value[cat].push({ label, cmd })
+    } else {
+      quickCommandGroups.value[cat][commandEditIndex.value] = { label, cmd }
+    }
+  } else {
+    quickCommandGroups.value[cat].push({ label, cmd })
+  }
+
+  activeCommandTab.value = cat as any
+  showCommandModal.value = false
+  await persistQuickCommands()
+}
+
+async function deleteCommandItem(category: string, index: number) {
+  if (!confirm('Bạn có chắc muốn xóa lệnh này không?')) return
+  quickCommandGroups.value[category]?.splice(index, 1)
+  await persistQuickCommands()
+}
+
+async function resetDefaultCommands() {
+  if (!confirm('Khôi phục toàn bộ bảng lệnh kiểm tra về mặc định ban đầu?')) return
+  try {
+    const res = await apiRequest<{ commands: Record<string, QuickCommandItem[]> }>('/ai/quick-commands', {
+      method: 'POST',
+      body: JSON.stringify({ reset: true }),
+    })
+    quickCommandGroups.value = res.commands || JSON.parse(JSON.stringify(defaultQuickCommands))
+  } catch {
+    quickCommandGroups.value = JSON.parse(JSON.stringify(defaultQuickCommands))
+  }
+}
+
+async function persistQuickCommands() {
+  try {
+    await apiRequest('/ai/quick-commands', {
+      method: 'PUT',
+      body: JSON.stringify({ commands: quickCommandGroups.value }),
+    })
+  } catch (e) {
+    console.error('Failed to save quick commands to router:', e)
+    localStorage.setItem('r3p_quick_commands', JSON.stringify(quickCommandGroups.value))
+  }
+}
+
+async function loadQuickCommands() {
+  try {
+    const res = await apiRequest<{ commands: Record<string, QuickCommandItem[]> }>('/ai/quick-commands')
+    if (res.commands && Object.keys(res.commands).length > 0) {
+      quickCommandGroups.value = res.commands
+      return
+    }
+  } catch {
+    const saved = localStorage.getItem('r3p_quick_commands')
+    if (saved) {
+      try {
+        quickCommandGroups.value = JSON.parse(saved)
+        return
+      } catch {}
+    }
   }
 }
 
@@ -415,8 +615,11 @@ function clearChat() {
   })
 }
 
-onMounted(() => {
-  void loadState()
+onMounted(async () => {
+  await Promise.all([
+    loadState(),
+    loadQuickCommands(),
+  ])
 })
 </script>
 
@@ -681,14 +884,32 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 3. Bảng Lệnh Kiểm Tra & Cài Đặt Hệ Thống Sẵn Có (Quick Actions) -->
+        <!-- 3. BẢNG LỆNH KIỂM TRA & CÀI ĐẶT HỆ THỐNG SẴN CÓ (QUICK ACTIONS) -->
         <div class="pro-card p-3 flex-1 flex flex-col min-h-0 space-y-2.5">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <span class="text-[13px] font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
               <span>⚡</span>
               <span>Bảng Lệnh Kiểm Tra Sẵn Có</span>
             </span>
-            <span class="text-[11.5px] text-emerald-400 font-mono font-semibold">Bấm để chạy ngay</span>
+            <div class="flex items-center gap-1.5">
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-md text-[12px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                title="Thêm đoạn lệnh kiểm tra mới (Quyền Root)"
+                @click="openAddCommandModal"
+              >
+                <span>+</span>
+                <span>Thêm</span>
+              </button>
+              <button
+                type="button"
+                class="px-2 py-1 rounded-md text-[11.5px] font-medium bg-white/5 text-gray-400 hover:text-gray-100 hover:bg-white/10 transition cursor-pointer border border-white/5"
+                title="Khôi phục danh sách lệnh mặc định ban đầu"
+                @click="resetDefaultCommands"
+              >
+                ↻ Mặc định
+              </button>
+            </div>
           </div>
 
           <!-- Category Selector Tabs -->
@@ -714,15 +935,17 @@ onMounted(() => {
           </div>
 
           <!-- Commands list for selected tab -->
-          <div class="space-y-1.5 overflow-y-auto flex-1">
-            <button
-              v-for="item in quickCommandGroups[activeCommandTab]"
-              :key="item.label"
-              type="button"
-              class="w-full text-left p-3 rounded-lg border border-white/10 bg-black/20 hover:bg-sky-500/10 hover:border-sky-500/30 transition group flex items-center justify-between gap-2.5 cursor-pointer"
-              @click="executeQuickCommand(item.cmd)"
+          <div class="space-y-1.5 overflow-y-auto flex-1 pr-0.5">
+            <div
+              v-for="(item, idx) in (quickCommandGroups[activeCommandTab] || [])"
+              :key="idx"
+              class="w-full p-2.5 rounded-lg border border-white/10 bg-black/20 hover:bg-sky-500/10 hover:border-sky-500/30 transition group flex items-center justify-between gap-2.5"
             >
-              <div class="min-w-0">
+              <div
+                class="min-w-0 flex-1 cursor-pointer"
+                title="Bấm để đưa lệnh vào hộp thoại và thực thi"
+                @click="executeQuickCommand(item.cmd)"
+              >
                 <div class="text-[13.5px] font-semibold text-gray-100 group-hover:text-sky-300 transition truncate">
                   {{ item.label }}
                 </div>
@@ -730,8 +953,42 @@ onMounted(() => {
                   {{ item.cmd }}
                 </div>
               </div>
-              <span class="text-sm text-sky-400 font-bold shrink-0 opacity-70 group-hover:opacity-100">▶</span>
-            </button>
+
+              <!-- Root Action Buttons: Sửa, Xóa, Chạy -->
+              <div class="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  class="p-1.5 rounded-md text-gray-400 hover:text-sky-300 hover:bg-sky-500/20 border border-transparent hover:border-sky-500/30 transition cursor-pointer text-xs"
+                  title="Chỉnh sửa nội dung lệnh này"
+                  @click.stop="openEditCommandModal(activeCommandTab, idx)"
+                >
+                  ✏️
+                </button>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-md text-gray-400 hover:text-rose-400 hover:bg-rose-500/20 border border-transparent hover:border-rose-500/30 transition cursor-pointer text-xs"
+                  title="Xóa lệnh này khỏi danh mục"
+                  @click.stop="deleteCommandItem(activeCommandTab, idx)"
+                >
+                  🗑️
+                </button>
+                <button
+                  type="button"
+                  class="p-1.5 px-2 rounded-md bg-sky-500/20 text-sky-300 hover:bg-sky-500/40 hover:text-white border border-sky-500/40 transition cursor-pointer font-bold text-xs"
+                  title="Chạy lệnh ngay lập tức"
+                  @click.stop="executeQuickCommand(item.cmd)"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+
+            <div
+              v-if="!(quickCommandGroups[activeCommandTab] && quickCommandGroups[activeCommandTab].length)"
+              class="text-center py-6 text-xs text-gray-500 italic"
+            >
+              Chưa có lệnh nào trong mục này. Bấm nút "+ Thêm" bên trên để tạo mới.
+            </div>
           </div>
         </div>
       </div>
@@ -852,27 +1109,194 @@ onMounted(() => {
     <!-- System Blueprint Modal (/etc/r3p/SYSTEM_BLUEPRINT.md) -->
     <div
       v-if="showBlueprintModal"
-      class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-3"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3"
     >
-      <div class="pro-card max-w-3xl w-full max-h-[85vh] flex flex-col border-sky-500/40 p-4 space-y-3">
-        <div class="flex items-center justify-between border-b border-white/10 pb-2">
-          <div class="flex items-center gap-2">
-            <span class="text-base">📜</span>
-            <h3 class="text-sm font-bold text-gray-200">Bản Thiết Kế Hệ Thống (SYSTEM BLUEPRINT)</h3>
+      <div class="pro-card max-w-4xl w-full max-h-[92vh] flex flex-col border-sky-500/40 p-4 space-y-3 shadow-2xl">
+        <!-- Header with Title & Mode Switcher -->
+        <div class="flex items-center justify-between border-b border-white/10 pb-2.5">
+          <div class="flex items-center gap-2.5">
+            <span class="text-xl">📜</span>
+            <div>
+              <h3 class="text-sm font-bold text-gray-100 uppercase tracking-wide flex items-center gap-2">
+                <span>Bản Thiết Kế Hệ Thống</span>
+                <span class="badge badge-blue text-[10px] font-mono">SYSTEM_BLUEPRINT.md</span>
+              </h3>
+              <p class="text-[11.5px] text-gray-400 font-mono">Đường dẫn: /etc/r3p/SYSTEM_BLUEPRINT.md</p>
+            </div>
           </div>
-          <button class="text-gray-400 hover:text-white" @click="showBlueprintModal = false">✕</button>
+
+          <div class="flex items-center gap-2">
+            <!-- Mode Switcher: Xem Trước vs Chỉnh Sửa Trực Tiếp -->
+            <div class="flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs">
+              <button
+                type="button"
+                class="px-3 py-1 rounded transition font-semibold cursor-pointer"
+                :class="!blueprintEditMode ? 'bg-sky-500/20 text-sky-300 font-bold border border-sky-500/40 shadow-sm' : 'text-gray-400 hover:text-gray-200'"
+                @click="blueprintEditMode = false"
+              >
+                👁️ Xem Trước
+              </button>
+              <button
+                type="button"
+                class="px-3 py-1 rounded transition font-semibold cursor-pointer"
+                :class="blueprintEditMode ? 'bg-sky-500/20 text-sky-300 font-bold border border-sky-500/40 shadow-sm' : 'text-gray-400 hover:text-gray-200'"
+                @click="blueprintEditMode = true"
+              >
+                ✏️ Chỉnh Sửa Trực Tiếp
+              </button>
+            </div>
+            <button class="text-gray-400 hover:text-white text-base px-2 py-1 cursor-pointer" @click="showBlueprintModal = false">✕</button>
+          </div>
         </div>
 
-        <div class="text-xs text-gray-400">
-          File tham chiếu kiến trúc tại <code class="mono text-sky-300">/etc/r3p/SYSTEM_BLUEPRINT.md</code>. AI Agent đọc tài liệu này để hiểu toàn bộ phần cứng, phân vùng ổ đĩa, Wi-Fi và mạng của R3P.
+        <div v-if="blueprintFeedback" class="p-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
+          <span>✅</span>
+          <span>{{ blueprintFeedback }}</span>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-3 bg-black/40 rounded-lg border border-white/5">
-          <pre class="text-gray-200 mono text-xs whitespace-pre-wrap leading-relaxed">{{ systemBlueprint }}</pre>
+        <div class="text-[12px] text-gray-400 leading-relaxed">
+          Tài liệu tham chiếu cốt lõi để AI Agent hiểu toàn bộ kiến trúc phần cứng MT7621AT, phân vùng SLC NAND Flash (/overlay), ổ đĩa SSD USB 3.0 (/mnt/sda1), sơ đồ mạng và Wi-Fi của Xiaomi Mi Router 3 Pro.
         </div>
 
-        <div class="flex justify-end">
-          <button class="btn-primary text-xs" @click="showBlueprintModal = false">Đóng</button>
+        <!-- Hidden input for file upload -->
+        <input
+          ref="blueprintFileInput"
+          type="file"
+          accept=".md,.markdown,.txt"
+          class="hidden"
+          @change="onBlueprintFileSelected"
+        />
+
+        <!-- Content Area: Editor vs Preview -->
+        <div class="flex-1 min-h-[360px] max-h-[58vh] flex flex-col">
+          <textarea
+            v-if="blueprintEditMode"
+            v-model="systemBlueprint"
+            rows="18"
+            class="w-full flex-1 p-3.5 bg-black/70 font-mono text-[12.5px] text-emerald-300 border border-white/10 rounded-lg focus:outline-none focus:border-sky-500 leading-relaxed resize-none shadow-inner"
+            placeholder="Nội dung file Markdown /etc/r3p/SYSTEM_BLUEPRINT.md..."
+          ></textarea>
+          <div
+            v-else
+            class="flex-1 overflow-y-auto p-3.5 bg-black/40 rounded-lg border border-white/5"
+          >
+            <pre class="text-gray-200 mono text-[12px] whitespace-pre-wrap leading-relaxed">{{ systemBlueprint }}</pre>
+          </div>
+        </div>
+
+        <!-- Footer Actions Bar: Download, Upload, Reset, Save -->
+        <div class="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="btn-secondary py-1.5 px-3 text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Tải file SYSTEM_BLUEPRINT.md về máy tính"
+              @click="downloadBlueprint"
+            >
+              <span>📥</span>
+              <span>Tải Xuống (.md)</span>
+            </button>
+            <button
+              type="button"
+              class="btn-secondary py-1.5 px-3 text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Upload file mới từ máy tính để thay thế Blueprint"
+              @click="triggerBlueprintUpload"
+            >
+              <span>📤</span>
+              <span>Upload File Mới</span>
+            </button>
+            <button
+              type="button"
+              class="text-xs text-gray-400 hover:text-amber-400 transition underline decoration-dotted ml-2 cursor-pointer"
+              title="Khôi phục nội dung gốc ban đầu"
+              @click="resetBlueprint"
+            >
+              ↻ Khôi phục mặc định
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button
+              v-if="blueprintEditMode"
+              type="button"
+              class="btn-primary py-1.5 px-4 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md"
+              :disabled="savingBlueprint"
+              @click="saveBlueprint"
+            >
+              <span>💾</span>
+              <span>{{ savingBlueprint ? 'Đang lưu...' : 'Lưu Thay Đổi Lên Router' }}</span>
+            </button>
+            <button
+              type="button"
+              class="btn-secondary py-1.5 px-3.5 text-xs cursor-pointer"
+              @click="showBlueprintModal = false"
+            >
+              Đóng
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Thêm / Chỉnh Sửa Lệnh Kiểm Tra Sẵn Có -->
+    <div
+      v-if="showCommandModal"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3"
+    >
+      <div class="pro-card max-w-md w-full border-sky-500/40 p-4 space-y-3 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-white/10 pb-2">
+          <h3 class="text-sm font-bold text-gray-100 flex items-center gap-1.5">
+            <span>⚡</span>
+            <span>{{ isEditingCommand ? 'Chỉnh Sửa Lệnh Kiểm Tra' : 'Thêm Lệnh Kiểm Tra Mới' }}</span>
+          </h3>
+          <button class="text-gray-400 hover:text-white text-base cursor-pointer" @click="showCommandModal = false">✕</button>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-gray-400 mb-1">Danh mục lệnh:</label>
+          <select v-model="commandForm.category" class="w-full pro-input text-xs">
+            <option value="quick">🩺 Kiểm tra tổng quan</option>
+            <option value="network">📡 Mạng & Wi-Fi</option>
+            <option value="storage">💾 Lưu trữ & USB</option>
+            <option value="adblock">🛡️ AdBlock & DNS</option>
+            <option value="download">⬇️ Download & Media</option>
+            <option value="maintenance">⚙️ Bảo trì & Tối ưu</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-gray-400 mb-1">Tiêu đề / Tên mô tả lệnh:</label>
+          <input
+            v-model="commandForm.label"
+            type="text"
+            class="w-full pro-input text-xs"
+            placeholder="Ví dụ: 🌐 Kiểm tra IP Public ngoài Internet"
+          />
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-gray-400 mb-1">Đoạn lệnh Shell (bắt đầu bằng !):</label>
+          <textarea
+            v-model="commandForm.cmd"
+            rows="3"
+            class="w-full bg-[#070b12] text-gray-200 text-xs p-2.5 rounded-lg border border-white/10 focus:border-sky-500 focus:outline-none mono leading-relaxed"
+            placeholder="!curl -s ifconfig.me"
+          ></textarea>
+          <p class="text-[11px] text-gray-400 mt-1">
+            Gõ tiền tố <code class="mono text-emerald-400">!</code> để gửi trực tiếp đến shell Linux của Router.
+          </p>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2 border-t border-white/10">
+          <button type="button" class="btn-secondary text-xs cursor-pointer" @click="showCommandModal = false">Hủy</button>
+          <button
+            type="button"
+            class="btn-primary text-xs font-bold cursor-pointer"
+            :disabled="!commandForm.label.trim() || !commandForm.cmd.trim()"
+            @click="saveCommandItem"
+          >
+            {{ isEditingCommand ? 'Cập Nhật Lệnh' : 'Thêm Vào Bảng' }}
+          </button>
         </div>
       </div>
     </div>

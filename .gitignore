@@ -14,9 +14,14 @@ build/output/
 build/firmware/
 build/files/
 build/artifacts/*.bin
-releases/
-miwifi.bin
-R3P-Firmware-PB-Boot.bin
+
+# Allow firmware distribution binaries
+!releases/firmware-bin/
+!releases/firmware-bin/*
+!miwifi.bin
+!R3P-Firmware-PB-Boot.bin
+!R3P-Firmware-Sysupgrade.bin
+!R3P-Recovery-Initramfs.bin
 
 # Temporary / local files
 .tmp/

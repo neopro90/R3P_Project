@@ -1535,6 +1535,7 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/sessions", cors(handleAISessions, "GET", "POST", "PUT", "DELETE"))
 	mux.HandleFunc("/api/v1/ai/memory", cors(handleAIMemory, "GET", "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/ai/blueprint", cors(handleAIBlueprint, "GET", "PUT"))
+	mux.HandleFunc("/api/v1/ai/quick-commands", cors(handleAIQuickCommands, "GET", "PUT", "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/adblock/streams", cors(handleAdblockStreams, "GET", "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/explorer/list", cors(handleExplorerList, "GET"))
 	mux.HandleFunc("/api/v1/explorer/read", cors(handleExplorerRead, "GET"))
