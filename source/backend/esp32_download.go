@@ -43,7 +43,7 @@ func isSda1Mounted() bool {
 
 func getEspHostRoot() string {
 	if isSda1Mounted() {
-		if st, err := os.Stat(filepath.Join(espBaseDir, "public")); err == nil && st.IsDir() {
+		if st, err := os.Stat(filepath.Join(espBaseDir, "public", "styles.css")); err == nil && !st.IsDir() {
 			return espBaseDir
 		}
 	}
@@ -1954,7 +1954,7 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Static Assets from /mnt/sda1/esp32-download-host/public
+	// 6. Static Assets from /mnt/sda1/esp32-download-host/public or /overlay/esp32-download-host/public
 	pubRoot := filepath.Join(getEspHostRoot(), "public")
 	wanted := p
 	if wanted == "/" {
@@ -1966,11 +1966,22 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fullPath := filepath.Join(pubRoot, cleanRel)
+	if st, err := os.Stat(fullPath); err != nil || st.IsDir() {
+		fullPath = filepath.Join(espFallbackDir, "public", cleanRel)
+	}
 	if st, err := os.Stat(fullPath); err == nil && !st.IsDir() {
 		ext := strings.ToLower(filepath.Ext(fullPath))
 		switch ext {
 		case ".html":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if cleanRel == "index.html" {
+				if raw, rErr := os.ReadFile(fullPath); rErr == nil {
+					modified := strings.ReplaceAll(string(raw), "WINDOWS LOCAL HOST", "R3P LINUX LOCAL HOST")
+					w.Header().Set("Cache-Control", "no-store")
+					_, _ = w.Write([]byte(modified))
+					return
+				}
+			}
 		case ".css":
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		case ".js":

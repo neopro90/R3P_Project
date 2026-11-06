@@ -403,6 +403,9 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 
 	_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].addnhosts")
 	_, _ = runCmd(4, "uci", "add_list", "dhcp.@dnsmasq[0].addnhosts="+adblockHostsFile)
+	// Allow DNS queries from upstream Gateway subnet when R3P acts as a Client DNS Server (e.g. 192.168.1.6)
+	_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].localservice=0")
+	_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].nonwildcard=0")
 	if cfg.QueryLogging {
 		_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].logqueries=1")
 	} else {
@@ -417,6 +420,15 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		}
 	}
 	_, _ = runCmd(5, "uci", "commit", "dhcp")
+
+	// Open Port 53 (TCP/UDP) on WAN/WWAN zone so main router & upstream LAN devices can use R3P as AdBlock DNS
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns=rule")
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.name=Allow-R3P-AdBlock-DNS")
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.src=wan")
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.dest_port=53")
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.proto=tcp udp")
+	_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.target=ACCEPT")
+	_, _ = runCmd(4, "uci", "commit", "firewall")
 
 	cfg.TotalBlocked = len(allDomains)
 	cfg.LastRebuild = time.Now().Format("2006-01-02 15:04:05")
@@ -489,6 +501,48 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 		recentLogs = []string{}
 	}
 
+	// Detect R3P Client IP & Upstream Gateway IP so the UI can guide setting DNS on the main Gateway
+	r3pLanIP := "192.168.2.1"
+	if lanMeta := interfaceMetadata("br-lan"); lanMeta != nil {
+		if ip, ok := lanMeta["ipv4"].(string); ok && ip != "" {
+			r3pLanIP = ip
+		}
+	}
+	upstreamGW := ""
+	clientIface := ""
+	clientIP := ""
+	rtOut, _ := runCmd(3, "ip", "-4", "route")
+	for _, line := range strings.Split(rtOut, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 5 && f[0] == "default" && f[1] == "via" {
+			upstreamGW = f[2]
+			for i := 3; i < len(f)-1; i++ {
+				if f[i] == "dev" {
+					clientIface = f[i+1]
+				} else if f[i] == "src" {
+					clientIP = f[i+1]
+				}
+			}
+			break
+		}
+	}
+	if clientIP == "" && clientIface != "" {
+		if m := interfaceMetadata(clientIface); m != nil {
+			if ip, ok := m["ipv4"].(string); ok {
+				clientIP = ip
+			}
+		}
+	}
+
+	gatewaySetup := map[string]interface{}{
+		"is_client_mode":      clientIP != "" || upstreamGW != "",
+		"r3p_client_ip":       clientIP,
+		"r3p_client_iface":    clientIface,
+		"upstream_gateway_ip": upstreamGW,
+		"r3p_lan_ip":          r3pLanIP,
+		"wan_dns_listening":   true,
+	}
+
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"config":        cfg,
 		"updating":      adblockUpdating,
@@ -496,6 +550,7 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 		"blocked_hits":  blockedHits,
 		"recent_logs":   recentLogs,
 		"hosts_file":    adblockHostsFile,
+		"gateway_setup": gatewaySetup,
 	})
 }
 

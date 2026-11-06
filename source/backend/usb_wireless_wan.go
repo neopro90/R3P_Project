@@ -1018,6 +1018,9 @@ type ScannedWifiNetwork struct {
 }
 
 func scanPhyWithIwinfo(phy, rad, band string) string {
+	// Ensure regulatory domain is set to US so 5GHz channels (36-165) allow active probe scanning (no "no IR")
+	_, _ = runCmd(2, "iw", "reg", "set", "US")
+
 	// 1. Check if an active netdev already exists on this phy via `iw dev`
 	iwOut, _ := runCmd(3, "iw", "dev")
 	curPhy := ""
@@ -1033,23 +1036,34 @@ func scanPhyWithIwinfo(phy, rad, band string) string {
 
 	for _, ifc := range existingIfaces {
 		_, _ = runCmd(2, "ip", "link", "set", ifc, "up")
-		out, err := runCmd(10, "iwinfo", ifc, "scan")
-		if err == nil && strings.Contains(out, "Cell ") {
-			return out
+		for attempt := 0; attempt < 2; attempt++ {
+			out, err := runCmd(10, "iwinfo", ifc, "scan")
+			if err == nil && strings.Contains(out, "Cell ") {
+				return out
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 
-	// 2. If no active netdev on this phy (e.g. radio is disabled), create a temporary scan interface
+	// 2. If no active netdev on this phy (e.g. radio1 5GHz is disabled), create a persistent scan interface
 	tmpIfc := "r3pscan0"
 	if phy == "phy1" {
 		tmpIfc = "r3pscan1"
 	}
-	_, _ = runCmd(3, "iw", "dev", tmpIfc, "del")
 	_, _ = runCmd(4, "iw", "phy", phy, "interface", "add", tmpIfc, "type", "managed")
 	_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "up")
-	out, _ := runCmd(12, "iwinfo", tmpIfc, "scan")
-	_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "down")
-	_, _ = runCmd(3, "iw", "dev", tmpIfc, "del")
+	// Give MT7615 5GHz RF calibration 700ms to settle when interface just came up
+	time.Sleep(700 * time.Millisecond)
+
+	var out string
+	for attempt := 0; attempt < 2; attempt++ {
+		o, _ := runCmd(12, "iwinfo", tmpIfc, "scan")
+		if strings.Contains(o, "Cell ") {
+			out = o
+			break
+		}
+		time.Sleep(600 * time.Millisecond)
+	}
 	return out
 }
 
@@ -1096,10 +1110,21 @@ func handleWirelessScan(w http.ResponseWriter, r *http.Request) {
 					} else if strings.HasPrefix(t, "ESSID:") {
 						item.SSID = strings.Trim(strings.TrimSpace(strings.TrimPrefix(t, "ESSID:")), "\"")
 					} else if strings.Contains(t, "Channel:") {
+						if strings.Contains(t, "5 GHz") || strings.Contains(t, "Frequency: 5.") {
+							item.Band = "5GHz"
+							item.Device = "radio1"
+						}
 						parts := strings.SplitN(t, "Channel:", 2)
 						fields := strings.Fields(strings.TrimSpace(parts[1]))
 						if len(fields) > 0 {
 							item.Channel, _ = strconv.Atoi(fields[0])
+							if item.Channel >= 36 {
+								item.Band = "5GHz"
+								item.Device = "radio1"
+							} else if item.Channel >= 1 && item.Channel <= 14 {
+								item.Band = "2.4GHz"
+								item.Device = "radio0"
+							}
 						}
 					} else if strings.Contains(t, "Signal:") {
 						if sIdx := strings.Index(t, "Signal:"); sIdx >= 0 {

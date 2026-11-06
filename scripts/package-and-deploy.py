@@ -19,6 +19,7 @@ BINARY_PATH = ROOT / "build" / "artifacts" / "r3p-api"
 DIST_DIR = ROOT / "frontend" / "dist"
 RELEASE_JSON = ROOT / "release.json"
 BUNDLE_PATH = ROOT / "build" / "artifacts" / "r3p-update-bundle.tar.gz"
+ESP_PUBLIC_DIR = Path(r"D:\Source_Tools\Esp32-Download\local-host\public")
 
 
 def build_bundle() -> Path:
@@ -58,6 +59,18 @@ def build_bundle() -> Path:
                 ti_web.mode = 0o644
                 ti_web.mtime = now
                 tar.addfile(ti_web, io.BytesIO(data))
+
+        # 4. Add overlay/esp32-download-host/public/* from D:\Source_Tools\Esp32-Download\local-host\public
+        if ESP_PUBLIC_DIR.exists():
+            for fpath in sorted(ESP_PUBLIC_DIR.rglob("*")):
+                if fpath.is_file():
+                    rel = fpath.relative_to(ESP_PUBLIC_DIR).as_posix()
+                    data = fpath.read_bytes()
+                    ti_esp = tarfile.TarInfo(name=f"overlay/esp32-download-host/public/{rel}")
+                    ti_esp.size = len(data)
+                    ti_esp.mode = 0o644
+                    ti_esp.mtime = now
+                    tar.addfile(ti_esp, io.BytesIO(data))
 
     print(f"[OK] Built {BUNDLE_PATH} ({BUNDLE_PATH.stat().st_size:,} bytes)")
     return BUNDLE_PATH

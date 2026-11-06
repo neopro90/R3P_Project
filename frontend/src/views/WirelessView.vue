@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
 import { useSystemStore } from '@/stores/system'
 
 const systemStore = useSystemStore()
+const scanBandFilter = ref<'ALL' | '5GHz' | '2.4GHz'>('ALL')
 
 interface RadioInfo {
   device: string
@@ -76,6 +77,12 @@ const clientStatus = ref<WirelessClientStatus>({
 })
 const scannedNetworks = ref<ScannedNetwork[]>([])
 const scanning = ref(false)
+const filteredScannedNetworks = computed(() => {
+  if (scanBandFilter.value === 'ALL') return scannedNetworks.value
+  return scannedNetworks.value.filter((n) => n.band === scanBandFilter.value)
+})
+const count5G = computed(() => scannedNetworks.value.filter((n) => n.band === '5GHz').length)
+const count24G = computed(() => scannedNetworks.value.filter((n) => n.band === '2.4GHz').length)
 const connectingClient = ref(false)
 const showClientForm = ref(false)
 const clientForm = ref({
@@ -132,12 +139,15 @@ async function loadWireless() {
 
 async function scanNearbyWifi(band = 'all') {
   scanning.value = true
-  notice.value = 'Đang quét sóng Wi-Fi xung quanh (2.4GHz & 5GHz)…'
+  if (band === '5GHz') scanBandFilter.value = '5GHz'
+  else if (band === '2.4GHz') scanBandFilter.value = '2.4GHz'
+  else scanBandFilter.value = 'ALL'
+  notice.value = `Đang quét sóng Wi-Fi xung quanh (${band === 'all' ? '2.4GHz & 5GHz' : band})…`
   try {
     const res = await apiRequest<{ networks: ScannedNetwork[]; count: number }>(`/wireless/scan?band=${band}`)
     scannedNetworks.value = res?.networks || []
-    notice.value = `Đã tìm thấy ${scannedNetworks.value.length} mạng Wi-Fi xung quanh!`
-    setTimeout(() => { notice.value = null }, 4000)
+    notice.value = `Đã tìm thấy ${scannedNetworks.value.length} mạng Wi-Fi (${count5G.value} mạng 5GHz · ${count24G.value} mạng 2.4GHz)!`
+    setTimeout(() => { notice.value = null }, 5000)
   } catch (err: any) {
     notice.value = 'Quét Wi-Fi thất bại: ' + (err?.message || err)
   } finally {
@@ -296,7 +306,21 @@ onMounted(() => {
             :disabled="scanning"
             @click="scanNearbyWifi('all')"
           >
-            {{ scanning ? 'Đang quét sóng Wi-Fi…' : '🔍 Quét Wi-Fi Xung Quanh (2.4G & 5G)' }}
+            {{ scanning ? 'Đang quét sóng Wi-Fi…' : '🔍 Quét Cả 2.4G & 5G' }}
+          </button>
+          <button
+            class="btn-secondary text-[11px] py-1 border-purple-500/40 text-purple-300"
+            :disabled="scanning"
+            @click="scanNearbyWifi('5GHz')"
+          >
+            📡 Quét Riêng 5GHz
+          </button>
+          <button
+            class="btn-secondary text-[11px] py-1"
+            :disabled="scanning"
+            @click="scanNearbyWifi('2.4GHz')"
+          >
+            📶 Quét Riêng 2.4GHz
           </button>
           <button
             class="btn-secondary text-[11px] py-1"
@@ -412,7 +436,39 @@ onMounted(() => {
       </form>
 
       <!-- Scanned Nearby Wi-Fi Table -->
-      <div v-if="scannedNetworks.length > 0" class="overflow-x-auto max-h-60 border-t border-white/10 pt-2">
+      <div v-if="scannedNetworks.length > 0" class="overflow-x-auto max-h-72 border-t border-white/10 pt-2">
+        <div class="flex items-center justify-between mb-2 px-1">
+          <span class="text-[11px] text-gray-400">
+            Kết quả quét: <strong class="text-white">{{ scannedNetworks.length }}</strong> mạng
+            (<strong class="text-purple-400">{{ count5G }} mạng 5GHz</strong> · <strong class="text-sky-400">{{ count24G }} mạng 2.4GHz</strong>)
+          </span>
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded text-[10.5px] border cursor-pointer"
+              :class="scanBandFilter === 'ALL' ? 'bg-sky-500/20 border-sky-500/40 text-sky-300 font-bold' : 'border-white/10 text-gray-400'"
+              @click="scanBandFilter = 'ALL'"
+            >
+              Tất cả ({{ scannedNetworks.length }})
+            </button>
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded text-[10.5px] border cursor-pointer"
+              :class="scanBandFilter === '5GHz' ? 'bg-purple-500/25 border-purple-500/50 text-purple-300 font-bold' : 'border-white/10 text-gray-400'"
+              @click="scanBandFilter = '5GHz'"
+            >
+              Chỉ 5GHz ({{ count5G }})
+            </button>
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded text-[10.5px] border cursor-pointer"
+              :class="scanBandFilter === '2.4GHz' ? 'bg-sky-500/20 border-sky-500/40 text-sky-300 font-bold' : 'border-white/10 text-gray-400'"
+              @click="scanBandFilter = '2.4GHz'"
+            >
+              Chỉ 2.4GHz ({{ count24G }})
+            </button>
+          </div>
+        </div>
         <table class="pro-table">
           <thead>
             <tr>
@@ -425,7 +481,7 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="net in scannedNetworks" :key="net.bssid + net.ssid">
+            <tr v-for="net in filteredScannedNetworks" :key="net.bssid + net.ssid">
               <td class="font-semibold text-gray-100">{{ net.ssid }}</td>
               <td>
                 <span class="badge" :class="net.band === '5GHz' ? 'badge-purple' : 'badge-blue'">
