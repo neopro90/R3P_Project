@@ -2036,15 +2036,132 @@ func handleSystemBackup(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	// Guarantee /etc/r3p is preserved in sysupgrade.conf
+	_, _ = runCmd(5, "sh", "-c", "grep -q '^/etc/r3p' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/r3p' >> /etc/sysupgrade.conf")
+
 	backupPath := "/tmp/r3p-config-backup.tar.gz"
 	_ = os.Remove(backupPath)
 	if _, err := runCmd(15, "sysupgrade", "-b", backupPath); err != nil {
-		// Fallback tar of /etc/config and /etc/r3p
-		_, _ = runCmd(10, "tar", "-czf", backupPath, "/etc/config", "/etc/r3p", "/etc/crontabs")
+		// Fallback tar of /etc/config, /etc/r3p, /etc/crontabs, /etc/passwd, /etc/shadow, /etc/dropbear
+		_, _ = runCmd(10, "tar", "-czf", backupPath, "/etc/config", "/etc/r3p", "/etc/crontabs", "/etc/passwd", "/etc/shadow", "/etc/dropbear")
 	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"r3p-backup.tar.gz\"")
 	http.ServeFile(w, r, backupPath)
+}
+
+// POST /api/v1/system/restore
+func handleSystemRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
+		return
+	}
+
+	restorePath := "/tmp/r3p-restore.tar.gz"
+	_ = os.Remove(restorePath)
+
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+
+	var origFilename string
+	var doReboot bool
+
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "Không thể đọc file backup: "+err.Error())
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "Vui lòng chọn file backup (.tar.gz)")
+			return
+		}
+		defer file.Close()
+		origFilename = header.Filename
+		doReboot = r.FormValue("reboot") == "true" || r.FormValue("reboot") == "1"
+
+		out, err := os.Create(restorePath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo file tạm /tmp: "+err.Error())
+			return
+		}
+		_, copyErr := io.Copy(out, file)
+		out.Close()
+		if copyErr != nil {
+			_ = os.Remove(restorePath)
+			writeJSON(w, http.StatusInternalServerError, false, "Lỗi khi lưu file backup: "+copyErr.Error())
+			return
+		}
+	} else {
+		origFilename = r.Header.Get("X-Filename")
+		if origFilename == "" {
+			origFilename = r.URL.Query().Get("filename")
+		}
+		if origFilename == "" {
+			origFilename = "r3p-backup.tar.gz"
+		}
+		doReboot = r.URL.Query().Get("reboot") == "true" || r.URL.Query().Get("reboot") == "1"
+
+		out, err := os.Create(restorePath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo file tạm /tmp: "+err.Error())
+			return
+		}
+		_, copyErr := io.Copy(out, r.Body)
+		out.Close()
+		if copyErr != nil {
+			_ = os.Remove(restorePath)
+			writeJSON(w, http.StatusInternalServerError, false, "Lỗi khi nhận dữ liệu file backup: "+copyErr.Error())
+			return
+		}
+	}
+
+	// Verify tar archive validity
+	testOut, testErr := runCmd(10, "tar", "-ztf", restorePath)
+	if testErr != nil || strings.TrimSpace(testOut) == "" {
+		_ = os.Remove(restorePath)
+		writeJSON(w, http.StatusBadRequest, false, "File tải lên không phải là file nén tar.gz hợp lệ của OpenWrt/R3P")
+		return
+	}
+
+	// Extract to /
+	extractOut, extractErr := runCmd(15, "tar", "-xzf", restorePath, "-C", "/")
+	if extractErr != nil {
+		_ = os.Remove(restorePath)
+		writeJSON(w, http.StatusInternalServerError, false, "Lỗi khi giải nén khôi phục cấu hình: "+extractOut)
+		return
+	}
+	_ = os.Remove(restorePath)
+
+	if doReboot {
+		go func() {
+			time.Sleep(1 * time.Second)
+			_, _ = runCmd(5, "sync")
+			_, _ = runCmd(5, "reboot")
+		}()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"message":  "Đã khôi phục cấu hình thành công từ " + origFilename + "! Router đang khởi động lại trong 45 giây...",
+			"reboot":   true,
+			"filename": origFilename,
+		})
+	} else {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_, _ = runCmd(10, "/etc/init.d/network", "reload")
+			_, _ = runCmd(10, "wifi", "reload")
+			_, _ = runCmd(10, "/etc/init.d/firewall", "restart")
+			_, _ = runCmd(10, "/etc/init.d/dnsmasq", "restart")
+			_, _ = runCmd(10, "/etc/init.d/r3p-api", "restart")
+		}()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"message":  "Đã khôi phục cấu hình thành công từ " + origFilename + "! Các dịch vụ đang được áp dụng lại.",
+			"reboot":   false,
+			"filename": origFilename,
+		})
+	}
 }
 
 // POST /api/v1/system/reboot

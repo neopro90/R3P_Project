@@ -1497,6 +1497,7 @@ func main() {
 	mux.HandleFunc("/api/v1/system/ping", cors(handleSystemPing, "GET"))
 	mux.HandleFunc("/api/v1/system/nslookup", cors(handleSystemNslookup, "GET"))
 	mux.HandleFunc("/api/v1/system/backup", cors(handleSystemBackup, "GET"))
+	mux.HandleFunc("/api/v1/system/restore", cors(handleSystemRestore, "POST"))
 	mux.HandleFunc("/api/v1/system/reboot", cors(handleSystemReboot, "POST"))
 	mux.HandleFunc("/api/v1/system/settings", cors(handleSystemSettings, "PUT"))
 	mux.HandleFunc("/api/v1/system/drop-caches", cors(handleSystemDropCaches, "POST"))

@@ -41,6 +41,9 @@ uci set dropbear.@dropbear[0].RootPasswordAuth='on'
 uci -q delete dropbear.@dropbear[0].Interface
 uci commit dropbear
 
+# Ensure /etc/r3p configs and AI blueprints are preserved during sysupgrade & backups
+grep -q '^/etc/r3p' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/r3p' >> /etc/sysupgrade.conf
+
 # Start the API daemon
 /etc/init.d/r3p-api enable
 /etc/init.d/r3p-api start

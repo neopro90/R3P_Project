@@ -317,6 +317,66 @@ async function triggerReboot() {
   }
 }
 
+// ─── Config Backup & Restore ────────────────────────────────────────────────
+const restoringConfig = ref(false)
+const restoreFileInput = ref<HTMLInputElement | null>(null)
+const restoreModalOpen = ref(false)
+const selectedRestoreFile = ref<File | null>(null)
+const restoreReboot = ref(true)
+
+function openRestorePicker() {
+  restoreFileInput.value?.click()
+}
+
+function handleRestoreFileChange(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (target.files && target.files.length > 0) {
+    selectedRestoreFile.value = target.files[0]
+    restoreModalOpen.value = true
+  }
+}
+
+async function executeRestore() {
+  if (!selectedRestoreFile.value) return
+  restoringConfig.value = true
+  notice.value = `Đang tải file '${selectedRestoreFile.value.name}' và khôi phục cấu hình hệ thống...`
+  errorMsg.value = null
+
+  try {
+    const formData = new FormData()
+    formData.append('file', selectedRestoreFile.value)
+    formData.append('reboot', restoreReboot.value ? 'true' : 'false')
+
+    const resp = await fetch('/api/v1/system/restore', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    })
+
+    const payload = await resp.json()
+    if (!resp.ok || !payload.ok) {
+      throw new Error(payload.error || payload.data || `HTTP ${resp.status}`)
+    }
+
+    restoreModalOpen.value = false
+    selectedRestoreFile.value = null
+    if (restoreFileInput.value) restoreFileInput.value.value = ''
+
+    if (payload.data?.reboot) {
+      rebooting.value = true
+      notice.value = payload.data?.message || 'Khôi phục thành công! Router đang khởi động lại...'
+    } else {
+      notice.value = payload.data?.message || 'Khôi phục cấu hình thành công!'
+      setTimeout(() => { notice.value = null }, 5000)
+      await system.refresh()
+    }
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi khôi phục cấu hình: ' + (err?.message || err)
+  } finally {
+    restoringConfig.value = false
+  }
+}
+
 onMounted(async () => {
   await system.refresh()
   if (system.hostname && system.hostname !== '—') {
@@ -625,6 +685,24 @@ onMounted(async () => {
           ↓ Download Config Backup (tar.gz)
         </a>
 
+        <!-- Restore Config Button & Hidden File Input -->
+        <input
+          ref="restoreFileInput"
+          type="file"
+          accept=".tar.gz,.gz,application/gzip,application/x-gzip"
+          class="hidden"
+          @change="handleRestoreFileChange"
+        />
+        <button
+          type="button"
+          class="btn-secondary text-[11.5px] border-amber-500/40 text-amber-300 hover:bg-amber-500/10 flex items-center gap-1.5 cursor-pointer font-medium"
+          :disabled="restoringConfig"
+          @click="openRestorePicker"
+        >
+          <span>↑</span>
+          <span>{{ restoringConfig ? 'Đang nạp file...' : 'Restore Config Backup (.tar.gz)' }}</span>
+        </button>
+
         <button class="btn-secondary text-[11.5px]" :disabled="loadingLogs" @click="fetchLogs">
           {{ loadingLogs ? 'Reading Logs…' : 'Refresh System Log ↻' }}
         </button>
@@ -660,6 +738,49 @@ onMounted(async () => {
             @click="rebootConfirm = false"
           >
             Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Xác Nhận Restore Config -->
+    <div v-if="restoreModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+      <div class="bg-gray-900 border border-amber-500/50 rounded-xl max-w-md w-full p-5 shadow-2xl space-y-4">
+        <div class="flex items-center gap-2 text-amber-400 font-bold text-base">
+          <span class="text-lg">⚠️</span>
+          <span>Khôi Phục Cấu Hình Router</span>
+        </div>
+        <div class="text-xs text-gray-300 space-y-2">
+          <p>Bạn sắp nạp lại toàn bộ cấu hình từ file backup:</p>
+          <div class="px-3 py-2 rounded bg-black/60 border border-gray-700 font-mono text-emerald-400 text-[11.5px] break-all">
+            {{ selectedRestoreFile?.name }} ({{ ((selectedRestoreFile?.size || 0) / 1024).toFixed(1) }} KB)
+          </div>
+          <p class="text-gray-400 leading-relaxed">
+            Hệ thống sẽ nạp lại mật khẩu root, mạng Wi-Fi, tường lửa, DNS, DuckDNS và cơ sở dữ liệu trợ lý AI từ bản sao lưu này.
+          </p>
+        </div>
+        <div class="flex items-center gap-2 pt-2 border-t border-gray-800">
+          <input id="restoreRebootCheck" v-model="restoreReboot" type="checkbox" class="accent-sky-500 rounded cursor-pointer" />
+          <label for="restoreRebootCheck" class="text-xs text-gray-300 cursor-pointer select-none font-medium">
+            Khởi động lại Router ngay sau khi nạp (Khuyên dùng)
+          </label>
+        </div>
+        <div class="flex justify-end gap-2.5 pt-2">
+          <button
+            type="button"
+            class="btn-secondary text-xs px-3 py-1.5"
+            :disabled="restoringConfig"
+            @click="restoreModalOpen = false; selectedRestoreFile = null"
+          >
+            Hủy Bỏ
+          </button>
+          <button
+            type="button"
+            class="px-4 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer shadow"
+            :disabled="restoringConfig"
+            @click="executeRestore"
+          >
+            {{ restoringConfig ? 'Đang Nạp File...' : 'Xác Nhận Khôi Phục' }}
           </button>
         </div>
       </div>
