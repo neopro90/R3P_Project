@@ -347,26 +347,26 @@ onMounted(() => {
           <span v-if="usbStatus.hotplug_ready" class="badge badge-green">AUTO-HOTPLUG ACTIVE</span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-1.5">
+        <div class="flex flex-wrap items-center gap-2">
           <button
-            class="btn-danger text-[11px] py-1 px-2.5 font-semibold"
+            class="btn-danger text-[12.5px] py-1.5 px-3 font-bold"
             @click="showFormatPanel = !showFormatPanel"
           >
             {{ showFormatPanel ? '✕ Đóng Công Cụ Format' : '🛠 Format USB / Ổ Cứng' }}
           </button>
-          <select v-model.number="benchSizeMb" class="pro-input mono text-[11px]">
+          <select v-model.number="benchSizeMb" class="pro-input mono text-[12.5px] py-1.5 px-2.5 font-medium">
             <option :value="64">Benchmark 64 MB</option>
             <option :value="128">Benchmark 128 MB</option>
             <option :value="256">Benchmark 256 MB</option>
           </select>
           <button
-            class="btn-primary text-[11px] py-1"
+            class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold shadow-md"
             :disabled="runningBench"
             @click="runDiskBenchmark"
           >
             {{ runningBench ? '⚡ Đang Test Tốc Độ…' : '⚡ Test Tốc Độ Đọc/Ghi' }}
           </button>
-          <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadNAS()">↻</button>
+          <button class="btn-secondary text-[12.5px] py-1.5 px-3 font-bold" :disabled="loading" @click="loadNAS()">↻</button>
         </div>
       </div>
 

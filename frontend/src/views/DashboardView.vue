@@ -228,23 +228,23 @@ onUnmounted(() => {
 <template>
   <div class="h-full overflow-y-auto p-2 sm:p-3 space-y-3 bg-[#080b11]">
     <!-- Action bar & Host Info Banner -->
-    <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0d1322] border border-white/10 rounded-lg px-3 py-1.5">
-      <div class="flex items-center gap-2 text-xs">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span class="font-bold text-gray-200">{{ system.hostname || 'R3P-Router' }}</span>
+    <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0d1322] border border-white/10 rounded-lg px-3.5 py-2">
+      <div class="flex items-center gap-2.5 text-[13px]">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="font-bold text-gray-100">{{ system.hostname || 'R3P-Router' }}</span>
         <span class="text-gray-500">·</span>
-        <span class="mono text-sky-400">MediaTek MT7621AT @ 880MHz</span>
+        <span class="mono text-sky-400 font-semibold">MediaTek MT7621AT @ 880MHz</span>
         <span class="text-gray-500 hidden sm:inline">·</span>
-        <span class="text-purple-300 mono hidden sm:inline">Linux {{ system.kernel || '6.12.94' }}</span>
-        <span v-if="actionNotice" class="ml-2 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-medium">
+        <span class="text-purple-300 mono font-semibold hidden sm:inline">Linux {{ system.kernel || '6.12.94' }}</span>
+        <span v-if="actionNotice" class="ml-2 px-2.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[12px] font-semibold">
           {{ actionNotice }}
         </span>
       </div>
       <div class="flex items-center gap-2">
-        <button class="btn-secondary text-[11px] py-1 px-2.5" @click="flushCache">
+        <button class="btn-secondary text-[12px] py-1 px-3" @click="flushCache">
           🧹 Giải Phóng Cache
         </button>
-        <button class="btn-primary text-[11px] py-1 px-3" :disabled="loading" @click="refreshDashboard">
+        <button class="btn-primary text-[12px] py-1 px-3.5" :disabled="loading" @click="refreshDashboard">
           {{ loading ? 'Đang đồng bộ…' : 'Đồng Bộ ↻' }}
         </button>
       </div>
@@ -253,12 +253,12 @@ onUnmounted(() => {
     <!-- ROW 1: REALTIME INTERACTIVE GRAPHS & GAUGES -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5">
       <!-- 1. CPU Load & Sparkline Realtime Chart -->
-      <div class="pro-card p-3 flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs mb-1">
+      <div class="pro-card p-3.5 flex flex-col justify-between">
+        <div class="flex items-center justify-between text-[13.5px] mb-1">
           <div class="flex items-center gap-1.5">
             <span class="text-sky-400 font-bold">⚡ Tải Vi Xử Lý (CPU)</span>
           </div>
-          <span class="mono font-extrabold text-sky-300 text-sm">{{ (system.cpu || 0).toFixed(1) }}%</span>
+          <span class="mono font-extrabold text-sky-300 text-[16px]">{{ (system.cpu || 0).toFixed(1) }}%</span>
         </div>
 
         <!-- SVG Realtime Sparkline Line Chart -->
@@ -282,17 +282,17 @@ onUnmounted(() => {
           </svg>
         </div>
 
-        <div class="flex items-center justify-between text-[10px] text-gray-500 mono pt-1 border-t border-white/5">
+        <div class="flex items-center justify-between text-[12px] text-gray-300 mono pt-1 border-t border-white/5 font-medium">
           <span>Load Avg: {{ system.loadAvg[0]?.toFixed(2) || '0.15' }}</span>
           <span>4 Luồng Xử Lý</span>
         </div>
       </div>
 
       <!-- 2. Bandwidth Traffic In/Out Dual-Area Chart -->
-      <div class="pro-card p-3 flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs mb-1">
+      <div class="pro-card p-3.5 flex flex-col justify-between">
+        <div class="flex items-center justify-between text-[13.5px] mb-1">
           <span class="font-bold text-emerald-400">🌐 Băng Thông Mạng (Live)</span>
-          <span class="badge badge-blue text-[9px]">REALTIME</span>
+          <span class="badge badge-blue text-[10.5px]">REALTIME</span>
         </div>
 
         <!-- SVG Dual Area Chart -->
@@ -322,17 +322,17 @@ onUnmounted(() => {
           </svg>
         </div>
 
-        <div class="flex items-center justify-between text-[10.5px] mono pt-1 border-t border-white/5">
-          <span class="text-emerald-400 font-semibold">↓ {{ formatRate(totalRxRate) }}</span>
-          <span class="text-sky-400 font-semibold">↑ {{ formatRate(totalTxRate) }}</span>
+        <div class="flex items-center justify-between text-[12px] mono pt-1 border-t border-white/5">
+          <span class="text-emerald-400 font-bold">↓ {{ formatRate(totalRxRate) }}</span>
+          <span class="text-sky-400 font-bold">↑ {{ formatRate(totalTxRate) }}</span>
         </div>
       </div>
 
       <!-- 3. Memory RAM Ring Donut Gauge -->
-      <div class="pro-card p-3 flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs mb-1">
+      <div class="pro-card p-3.5 flex flex-col justify-between">
+        <div class="flex items-center justify-between text-[13.5px] mb-1">
           <span class="font-bold text-amber-300">🧠 Bộ Nhớ RAM (512MB)</span>
-          <span class="mono font-bold text-amber-400">{{ (system.ram || 0).toFixed(0) }}%</span>
+          <span class="mono font-bold text-amber-400 text-[14px]">{{ (system.ram || 0).toFixed(0) }}%</span>
         </div>
 
         <div class="flex items-center gap-3 my-1">
@@ -356,21 +356,21 @@ onUnmounted(() => {
                 d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
               />
             </svg>
-            <span class="absolute text-[11px] font-bold text-gray-200 mono">{{ (system.ram || 0).toFixed(0) }}%</span>
+            <span class="absolute text-[12px] font-extrabold text-amber-300 mono">{{ (system.ram || 0).toFixed(0) }}%</span>
           </div>
 
-          <div class="flex-1 space-y-1 text-[10.5px]">
-            <div class="flex justify-between text-gray-400">
-              <span>Đang dùng:</span>
-              <span class="mono text-gray-200 font-bold">{{ (system.ramUsed || 0).toFixed(0) }} MB</span>
+          <div class="flex-1 space-y-1 text-[12px]">
+            <div class="flex justify-between text-gray-300">
+              <span class="font-medium">Đang dùng:</span>
+              <span class="mono text-gray-100 font-bold">{{ (system.ramUsed || 0).toFixed(0) }} MB</span>
             </div>
-            <div class="flex justify-between text-gray-400">
-              <span>Khả dụng:</span>
+            <div class="flex justify-between text-gray-300">
+              <span class="font-medium">Khả dụng:</span>
               <span class="mono text-emerald-400 font-bold">{{ ((system.ramTotal || 512) - (system.ramUsed || 0)).toFixed(0) }} MB</span>
             </div>
-            <div class="flex justify-between text-gray-500 text-[10px]">
+            <div class="flex justify-between text-gray-400 text-[11.5px]">
               <span>Tổng RAM:</span>
-              <span class="mono">512 MB DDR3</span>
+              <span class="mono font-semibold">512 MB DDR3</span>
             </div>
           </div>
         </div>
@@ -381,10 +381,10 @@ onUnmounted(() => {
       </div>
 
       <!-- 4. Storage & Partitions Gauge (NAND + USB 500GB) Each with its own Circular Donut Ring -->
-      <div class="pro-card p-3 flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs mb-1">
+      <div class="pro-card p-3.5 flex flex-col justify-between">
+        <div class="flex items-center justify-between text-[13.5px] mb-1">
           <span class="font-bold text-purple-300">💾 Lưu Trữ & Phân Vùng</span>
-          <RouterLink to="/nas" class="text-[10px] text-sky-400 hover:underline">Chi tiết →</RouterLink>
+          <RouterLink to="/nas" class="text-[12px] text-sky-400 hover:underline font-semibold">Chi tiết →</RouterLink>
         </div>
 
         <div class="grid grid-cols-2 gap-2.5 my-1">
@@ -409,12 +409,12 @@ onUnmounted(() => {
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
               </svg>
-              <span class="absolute text-[11px] font-extrabold text-purple-300 mono">{{ overlayPercent }}%</span>
+              <span class="absolute text-[12px] font-extrabold text-purple-300 mono">{{ overlayPercent }}%</span>
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
-              <div class="font-bold text-[12px] text-gray-200 truncate">NAND (/overlay)</div>
-              <div class="text-purple-300 font-semibold text-[11.5px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '22.4 MB' }} trống</div>
-              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '180 MB' }}</div>
+              <div class="font-bold text-[13px] text-gray-100 truncate">NAND (/overlay)</div>
+              <div class="text-purple-300 font-bold text-[12px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '22.4 MB' }} trống</div>
+              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '180 MB' }}</div>
             </div>
           </div>
 
@@ -439,17 +439,17 @@ onUnmounted(() => {
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                 />
               </svg>
-              <span class="absolute text-[11px] font-extrabold text-emerald-300 mono">{{ usbHddPercent }}%</span>
+              <span class="absolute text-[12px] font-extrabold text-emerald-300 mono">{{ usbHddPercent }}%</span>
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
-              <div class="font-bold text-[12px] text-gray-200 truncate">USB (/mnt/sda1)</div>
-              <div class="text-emerald-300 font-semibold text-[11.5px] truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : '234.7 GB' }} trống</div>
-              <div class="text-gray-400 text-[11px] truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '0.3 MB' }}</div>
+              <div class="font-bold text-[13px] text-gray-100 truncate">USB (/mnt/sda1)</div>
+              <div class="text-emerald-300 font-bold text-[12px] truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : '234.7 GB' }} trống</div>
+              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '0.3 MB' }}</div>
             </div>
           </div>
         </div>
 
-        <div class="flex justify-between text-[11.5px] text-gray-400 pt-1.5 border-t border-white/10 mono font-medium">
+        <div class="flex justify-between text-[12px] text-gray-300 pt-1.5 border-t border-white/10 mono font-semibold">
           <span>SLC Flash 256MB</span>
           <span>USB 3.0 ext4 Fast I/O</span>
         </div>
@@ -462,27 +462,27 @@ onUnmounted(() => {
       <div class="pro-card">
         <div class="pro-card-header">
           <span class="pro-card-title">Live Interfaces & Radios</span>
-          <RouterLink to="/wireless" class="text-[11px] text-sky-400 hover:underline">Wi-Fi + WWAN →</RouterLink>
+          <RouterLink to="/wireless" class="text-[12px] text-sky-400 hover:underline font-semibold">Wi-Fi + WWAN →</RouterLink>
         </div>
 
-        <div class="space-y-2 text-[12px]">
+        <div class="space-y-2.5 text-[13px]">
           <div
             v-for="iface in network.interfaces.filter(i => i.name !== 'lo').slice(0, 4)"
             :key="iface.name"
-            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/5"
+            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/10"
           >
             <div class="min-w-0">
               <div class="flex items-center gap-2">
-                <span class="font-bold text-[14px] text-gray-100 mono">{{ iface.name }}</span>
-                <span class="text-[11.5px] text-gray-400 truncate">
+                <span class="font-bold text-[15px] text-gray-100 mono">{{ iface.name }}</span>
+                <span class="text-[12.5px] text-gray-300 truncate font-medium">
                   {{ iface.ipv4 ? `(${iface.ipv4})` : (iface.type === 'lan' ? '(LAN Bridge)' : '') }}
                 </span>
               </div>
-              <div class="mono text-[11px] text-gray-400 font-medium mt-0.5">
+              <div class="mono text-[12px] text-gray-300 font-medium mt-0.5">
                 RX: {{ formatMB(Math.round(iface.rxBytes / 1024)) }} · TX: {{ formatMB(Math.round(iface.txBytes / 1024)) }}
               </div>
             </div>
-            <span class="badge text-[10.5px] font-bold px-2 py-0.5" :class="iface.up ? 'badge-green' : 'badge-gray'">
+            <span class="badge text-[11.5px] font-bold px-2.5 py-1" :class="iface.up ? 'badge-green' : 'badge-gray'">
               {{ iface.up ? 'UP' : 'DOWN' }}
             </span>
           </div>
@@ -490,15 +490,15 @@ onUnmounted(() => {
           <div
             v-for="r in radios"
             :key="r.device"
-            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/5"
+            class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/10"
           >
             <div>
-              <div class="font-bold text-[14px] text-gray-100">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
-              <div class="mono text-[11px] text-gray-400 font-medium mt-0.5">
+              <div class="font-bold text-[15px] text-gray-100">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
+              <div class="mono text-[12px] text-gray-300 font-medium mt-0.5">
                 Kênh {{ r.channel || 'Auto' }} · {{ r.htmode || 'VHT80' }}
               </div>
             </div>
-            <span class="badge text-[10.5px] font-bold px-2 py-0.5" :class="r.enabled ? 'badge-green' : 'badge-orange'">
+            <span class="badge text-[11.5px] font-bold px-2.5 py-1" :class="r.enabled ? 'badge-green' : 'badge-orange'">
               {{ r.enabled ? 'ACTIVE' : 'DISABLED' }}
             </span>
           </div>
@@ -509,26 +509,26 @@ onUnmounted(() => {
       <div class="pro-card">
         <div class="pro-card-header">
           <span class="pro-card-title">Core System Daemons (procd)</span>
-          <span class="text-[11px] text-gray-400 font-medium">{{ services.length }} Monitored</span>
+          <span class="text-[12px] text-gray-300 font-semibold">{{ services.length }} Monitored</span>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 text-[12px]">
+        <div class="grid grid-cols-2 gap-2 text-[13px]">
           <div
             v-for="s in services"
             :key="s.name"
-            class="p-2.5 rounded-lg bg-black/30 border border-white/5 flex items-center justify-between"
+            class="p-2.5 rounded-lg bg-black/30 border border-white/10 flex items-center justify-between"
           >
             <div class="min-w-0 pr-1">
-              <div class="flex items-center gap-1.5 font-bold text-[13.5px] text-gray-100">
-                <span class="w-2 h-2 rounded-full shrink-0" :class="s.running ? 'bg-emerald-400 shadow-sm' : 'bg-gray-500'"></span>
+              <div class="flex items-center gap-1.5 font-bold text-[14px] text-gray-100">
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="s.running ? 'bg-emerald-400 shadow-sm' : 'bg-gray-500'"></span>
                 <span class="mono truncate">{{ s.name }}</span>
               </div>
-              <div class="mono text-[11px] text-gray-400 font-medium truncate mt-0.5">
+              <div class="mono text-[12px] text-gray-300 font-medium truncate mt-0.5">
                 {{ s.pid ? `PID ${s.pid} · ${s.memory_kb}K` : 'Stopped' }}
               </div>
             </div>
             <button
-              class="btn-secondary text-[11px] py-1 px-2 shrink-0 font-bold hover:text-white"
+              class="btn-secondary text-[12px] py-1 px-2.5 shrink-0 font-bold hover:text-white"
               title="Khởi động lại dịch vụ"
               @click="quickServiceRestart(s.name)"
             >
@@ -542,51 +542,51 @@ onUnmounted(() => {
       <div class="pro-card space-y-2.5">
         <div class="pro-card-header">
           <span class="pro-card-title">AdBlock Shield & SoC Info</span>
-          <RouterLink to="/adblock" class="text-[11px] text-sky-400 hover:underline">AdBlock Tab →</RouterLink>
+          <RouterLink to="/adblock" class="text-[12px] text-sky-400 hover:underline font-semibold">AdBlock Tab →</RouterLink>
         </div>
 
         <div class="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-bold text-[13.5px] text-emerald-300">🛡️ Lá Chắn DNS AdBlock</span>
-            <span class="badge badge-green text-[10px] font-bold">ACTIVE</span>
+            <span class="font-bold text-[14px] text-emerald-300">🛡️ Lá Chắn DNS AdBlock</span>
+            <span class="badge badge-green text-[11px] font-bold">ACTIVE</span>
           </div>
 
           <!-- 4 Specific Stat Metrics with Counters -->
-          <div class="grid grid-cols-2 gap-1.5 pt-0.5">
-            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
-              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Tổng Số Luồng Đã Phân Tích</span>
-              <span class="text-[17px] font-extrabold text-sky-400 mono mt-1">{{ adStats.analyzed.toLocaleString() }}</span>
+          <div class="grid grid-cols-2 gap-2 pt-0.5">
+            <div class="p-2.5 rounded-lg bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[12px] text-gray-200 font-semibold leading-snug">Tổng Số Luồng Đã Phân Tích</span>
+              <span class="text-[18px] font-extrabold text-sky-400 mono mt-1">{{ adStats.analyzed.toLocaleString() }}</span>
             </div>
-            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
-              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Trình Theo Dõi & Pixel (Trackers)</span>
-              <span class="text-[17px] font-extrabold text-amber-400 mono mt-1">{{ adStats.trackers.toLocaleString() }}</span>
+            <div class="p-2.5 rounded-lg bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[12px] text-gray-200 font-semibold leading-snug">Trình Theo Dõi & Pixel (Trackers)</span>
+              <span class="text-[18px] font-extrabold text-amber-400 mono mt-1">{{ adStats.trackers.toLocaleString() }}</span>
             </div>
-            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
-              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Luồng Video Ads (YouTube/TikTok)</span>
-              <span class="text-[17px] font-extrabold text-rose-400 mono mt-1">{{ adStats.video_ads.toLocaleString() }}</span>
+            <div class="p-2.5 rounded-lg bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[12px] text-gray-200 font-semibold leading-snug">Luồng Video Ads (YouTube/TikTok)</span>
+              <span class="text-[18px] font-extrabold text-rose-400 mono mt-1">{{ adStats.video_ads.toLocaleString() }}</span>
             </div>
-            <div class="p-2 rounded bg-black/40 border border-white/5 flex flex-col justify-between">
-              <span class="text-[10px] text-gray-300 font-semibold leading-tight">Đã Nhận Diện & Tự Động Chặn</span>
-              <span class="text-[17px] font-extrabold text-emerald-400 mono mt-1">{{ adStats.blocked.toLocaleString() }}</span>
+            <div class="p-2.5 rounded-lg bg-black/40 border border-white/5 flex flex-col justify-between">
+              <span class="text-[12px] text-gray-200 font-semibold leading-snug">Đã Nhận Diện & Tự Động Chặn</span>
+              <span class="text-[18px] font-extrabold text-emerald-400 mono mt-1">{{ adStats.blocked.toLocaleString() }}</span>
             </div>
           </div>
         </div>
 
-        <div class="space-y-1 text-[12px] pt-1">
+        <div class="space-y-1.5 text-[13px] pt-1">
           <div class="flex justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Board / SoC</span>
+            <span class="text-gray-300 font-medium">Board / SoC</span>
             <span class="mono text-gray-100 font-semibold">Xiaomi Mi Router 3 Pro</span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Kiến trúc Vi xử lý</span>
+            <span class="text-gray-300 font-medium">Kiến trúc Vi xử lý</span>
             <span class="mono text-sky-300 font-semibold">mipsle_24kc (880MHz)</span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Bộ nhớ Flash</span>
+            <span class="text-gray-300 font-medium">Bộ nhớ Flash</span>
             <span class="mono text-purple-300 font-semibold">256MB ESMT SLC NAND</span>
           </div>
           <div class="flex justify-between py-1">
-            <span class="text-gray-400">Cổng USB 3.0</span>
+            <span class="text-gray-300 font-medium">Cổng USB 3.0</span>
             <span class="mono text-emerald-300 font-semibold">Dual Mode (Storage + Tether)</span>
           </div>
         </div>
@@ -599,10 +599,10 @@ onUnmounted(() => {
       <div class="pro-card">
         <div class="pro-card-header">
           <span class="pro-card-title">Active DHCP Clients ({{ network.clients.length }})</span>
-          <RouterLink to="/access" class="text-[11px] text-sky-400 hover:underline">DHCP & Leases →</RouterLink>
+          <RouterLink to="/access" class="text-[12px] text-sky-400 hover:underline font-semibold">DHCP & Leases →</RouterLink>
         </div>
 
-        <div class="overflow-x-auto max-h-48">
+        <div class="overflow-x-auto max-h-52">
           <table class="pro-table">
             <thead>
               <tr>
@@ -614,13 +614,13 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr v-if="!network.clients.length">
-                <td colspan="4" class="text-center text-gray-500 py-3">Chưa có thiết bị nào nhận DHCP</td>
+                <td colspan="4" class="text-center text-gray-400 py-4 font-medium">Chưa có thiết bị nào nhận DHCP</td>
               </tr>
               <tr v-for="c in network.clients" :key="c.mac">
-                <td class="font-medium text-gray-200">{{ c.hostname || 'Connected Device' }}</td>
-                <td class="mono text-sky-300">{{ c.ip }}</td>
-                <td class="mono text-gray-400 text-xs">{{ c.mac }}</td>
-                <td><span class="badge badge-green text-[10px]">ACTIVE</span></td>
+                <td class="font-semibold text-gray-100 text-[13.5px]">{{ c.hostname || 'Connected Device' }}</td>
+                <td class="mono font-bold text-sky-300 text-[13.5px]">{{ c.ip }}</td>
+                <td class="mono text-gray-300 text-[12.5px]">{{ c.mac }}</td>
+                <td><span class="badge badge-green text-[11px] font-bold">ACTIVE</span></td>
               </tr>
             </tbody>
           </table>
@@ -632,25 +632,25 @@ onUnmounted(() => {
         <div class="pro-card-header">
           <div class="flex items-center gap-2">
             <span class="pro-card-title">Live System Log (logread)</span>
-            <span class="text-[11px] text-gray-400 hidden sm:inline">(Mới nhất ở trên cùng)</span>
+            <span class="text-[12px] text-gray-300 font-medium hidden sm:inline">(Mới nhất ở trên cùng)</span>
           </div>
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="px-2.5 py-0.5 text-[11px] rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition font-semibold cursor-pointer"
+              class="px-3 py-1 text-[12px] rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-500/40 transition font-bold cursor-pointer"
               :disabled="clearingLogs"
               @click="clearLogs"
             >
               {{ clearingLogs ? 'Đang xóa...' : '🗑 Xóa Log' }}
             </button>
-            <RouterLink to="/system" class="text-[11px] text-sky-400 hover:underline">Xem Tất Cả →</RouterLink>
+            <RouterLink to="/system" class="text-[12px] text-sky-400 hover:underline font-semibold">Xem Tất Cả →</RouterLink>
           </div>
         </div>
 
-        <div class="bg-black/50 rounded border border-white/5 p-2 font-mono text-[11px] text-gray-300 overflow-y-auto max-h-48 space-y-1">
-          <div v-if="!recentLogs.length" class="text-gray-500 py-3 text-center">Bộ đệm log trống sạch sẽ.</div>
-          <div v-for="(line, idx) in recentLogs" :key="idx" class="leading-relaxed hover:bg-white/[0.03] px-1 rounded truncate">
-            <span class="text-sky-400 select-none">›</span> {{ line }}
+        <div class="bg-black/50 rounded-lg border border-white/5 p-2.5 font-mono text-[12px] text-gray-200 overflow-y-auto max-h-52 space-y-1">
+          <div v-if="!recentLogs.length" class="text-gray-400 py-3 text-center">Bộ đệm log trống sạch sẽ.</div>
+          <div v-for="(line, idx) in recentLogs" :key="idx" class="leading-relaxed hover:bg-white/[0.04] px-1 rounded truncate">
+            <span class="text-sky-400 select-none font-bold">›</span> {{ line }}
           </div>
         </div>
       </div>

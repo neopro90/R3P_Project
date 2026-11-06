@@ -605,12 +605,12 @@ onMounted(() => {
         <!-- 1. Quản lý Phiên (Multi-Session Switcher) -->
         <div class="pro-card p-3 space-y-2 shrink-0">
           <div class="flex items-center justify-between">
-            <span class="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1">
+            <span class="text-[13px] font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
               <span>💬</span>
               <span>Phiên Làm Việc ({{ sessions.length }})</span>
             </span>
             <button
-              class="btn-primary py-0.5 px-2 text-[10.5px] font-bold flex items-center gap-1"
+              class="btn-primary py-1 px-2.5 text-[12px] font-bold flex items-center gap-1"
               title="Tạo phiên trò chuyện mới"
               @click="createNewSession"
             >
@@ -622,16 +622,16 @@ onMounted(() => {
             <button
               v-for="sess in sessions"
               :key="sess.id"
-              class="px-2.5 py-1.5 rounded-lg border text-xs font-semibold whitespace-nowrap transition flex items-center gap-1.5 shrink-0"
+              class="px-3 py-1.5 rounded-lg border text-[13px] font-semibold whitespace-nowrap transition flex items-center gap-1.5 shrink-0"
               :class="activeSessionId === sess.id
                 ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
-                : 'bg-black/25 border-white/10 text-gray-400 hover:text-gray-200'"
+                : 'bg-black/25 border-white/10 text-gray-300 hover:text-gray-100'"
               @click="switchSession(sess.id)"
             >
               <span>{{ sess.title }}</span>
               <span
                 v-if="sessions.length > 1 && activeSessionId === sess.id"
-                class="text-rose-400 hover:text-rose-200 ml-1"
+                class="text-rose-400 hover:text-rose-200 ml-1 font-bold"
                 title="Xóa phiên này"
                 @click.stop="deleteSession(sess.id)"
               >
@@ -645,33 +645,33 @@ onMounted(() => {
         <div class="pro-card p-3 space-y-2 shrink-0">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1.5">
-              <span class="text-sm">🧠</span>
-              <span class="text-[11px] font-bold text-gray-300 uppercase tracking-wider">
+              <span class="text-base">🧠</span>
+              <span class="text-[13px] font-bold text-gray-200 uppercase tracking-wider">
                 Bộ Nhớ AI ({{ memories.length }})
               </span>
             </div>
             <button
-              class="btn-secondary py-0.5 px-2 text-[10.5px]"
+              class="btn-secondary py-1 px-2.5 text-[12px] font-semibold"
               @click="showNewMemoryModal = true"
             >
               + Ghi Nhớ
             </button>
           </div>
 
-          <div class="space-y-1.5 max-h-36 overflow-y-auto">
+          <div class="space-y-1.5 max-h-40 overflow-y-auto">
             <div
               v-for="m in memories"
               :key="m.id"
-              class="p-2 rounded bg-black/30 border border-white/5 text-[11px] flex items-start justify-between gap-1.5 group"
+              class="p-2.5 rounded-lg bg-black/30 border border-white/5 text-[12.5px] flex items-start justify-between gap-1.5 group"
             >
               <div class="min-w-0">
-                <div class="text-gray-300 leading-snug">{{ m.content }}</div>
-                <div class="text-[9.5px] text-gray-500 mt-0.5 mono">
+                <div class="text-gray-200 leading-snug">{{ m.content }}</div>
+                <div class="text-[11px] text-gray-400 mt-1 mono font-medium">
                   {{ m.category }} · {{ m.created_at }}
                 </div>
               </div>
               <button
-                class="text-gray-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition shrink-0"
+                class="text-gray-400 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition shrink-0 font-bold px-1"
                 title="Xóa ghi nhớ"
                 @click="deleteMemory(m.id)"
               >
@@ -682,17 +682,17 @@ onMounted(() => {
         </div>
 
         <!-- 3. Bảng Lệnh Kiểm Tra & Cài Đặt Hệ Thống Sẵn Có (Quick Actions) -->
-        <div class="pro-card p-3 flex-1 flex flex-col min-h-0 space-y-2">
+        <div class="pro-card p-3 flex-1 flex flex-col min-h-0 space-y-2.5">
           <div class="flex items-center justify-between">
-            <span class="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+            <span class="text-[13px] font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
               <span>⚡</span>
               <span>Bảng Lệnh Kiểm Tra Sẵn Có</span>
             </span>
-            <span class="text-[10px] text-emerald-400 font-mono">Bấm để chạy ngay</span>
+            <span class="text-[11.5px] text-emerald-400 font-mono font-semibold">Bấm để chạy ngay</span>
           </div>
 
           <!-- Category Selector Tabs -->
-          <div class="flex items-center gap-1 overflow-x-auto pb-1 text-[10.5px]">
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 text-[12px]">
             <button
               v-for="(label, key) in {
                 quick: '🩺 Kiểm tra',
@@ -703,7 +703,7 @@ onMounted(() => {
                 maintenance: '⚙️ Bảo trì',
               }"
               :key="key"
-              class="px-2 py-1 rounded-md border font-semibold whitespace-nowrap transition cursor-pointer"
+              class="px-2.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition cursor-pointer"
               :class="activeCommandTab === key
                 ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
                 : 'bg-black/25 border-white/10 text-gray-400 hover:text-gray-200'"
@@ -719,18 +719,18 @@ onMounted(() => {
               v-for="item in quickCommandGroups[activeCommandTab]"
               :key="item.label"
               type="button"
-              class="w-full text-left p-2.5 rounded-lg border border-white/10 bg-black/20 hover:bg-sky-500/10 hover:border-sky-500/30 transition group flex items-center justify-between gap-2"
+              class="w-full text-left p-3 rounded-lg border border-white/10 bg-black/20 hover:bg-sky-500/10 hover:border-sky-500/30 transition group flex items-center justify-between gap-2.5 cursor-pointer"
               @click="executeQuickCommand(item.cmd)"
             >
               <div class="min-w-0">
-                <div class="text-xs font-medium text-gray-200 group-hover:text-sky-300 transition truncate">
+                <div class="text-[13.5px] font-semibold text-gray-100 group-hover:text-sky-300 transition truncate">
                   {{ item.label }}
                 </div>
-                <div class="text-[10px] mono text-gray-500 group-hover:text-emerald-400 truncate mt-0.5">
+                <div class="text-[12px] mono text-emerald-400/90 group-hover:text-emerald-300 truncate mt-0.5 font-medium">
                   {{ item.cmd }}
                 </div>
               </div>
-              <span class="text-xs text-sky-400 font-bold shrink-0 opacity-60 group-hover:opacity-100">▶</span>
+              <span class="text-sm text-sky-400 font-bold shrink-0 opacity-70 group-hover:opacity-100">▶</span>
             </button>
           </div>
         </div>
@@ -739,20 +739,20 @@ onMounted(() => {
       <!-- CỘT PHẢI (65% width / 8-cols on lg): Cửa Sổ Giao Tiếp AI & Terminal Root Chat -->
       <div class="lg:col-span-8 pro-card p-0 flex flex-col min-h-0 overflow-hidden border border-sky-500/20 shadow-xl">
         <!-- Chat Header -->
-        <div class="px-4 py-2.5 bg-black/30 border-b border-white/10 flex items-center justify-between shrink-0">
+        <div class="px-4 py-3 bg-black/30 border-b border-white/10 flex items-center justify-between shrink-0">
           <div class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span class="text-xs font-bold text-gray-200">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span class="text-[14px] font-bold text-gray-100">
               Cửa Sổ Giao Tiếp & Terminal Root (root@R3P)
             </span>
-            <span class="text-[10px] text-gray-500 mono hidden sm:inline">
+            <span class="text-[12px] text-gray-400 mono hidden sm:inline">
               Gõ !&lt;lệnh&gt; để thực thi shell trực tiếp
             </span>
           </div>
 
           <div class="flex items-center gap-2">
             <button
-              class="btn-secondary py-0.5 px-2 text-[10.5px]"
+              class="btn-secondary py-1 px-3 text-[12px] font-semibold"
               title="Xóa lịch sử chat trong phiên này"
               @click="clearChat"
             >
@@ -762,7 +762,7 @@ onMounted(() => {
         </div>
 
         <!-- Chat Messages Container -->
-        <div ref="chatContainer" class="flex-1 p-3 overflow-y-auto space-y-3 bg-[#080b13]">
+        <div ref="chatContainer" class="flex-1 p-3.5 overflow-y-auto space-y-3.5 bg-[#080b13]">
           <div
             v-for="(msg, idx) in history"
             :key="idx"
@@ -770,11 +770,11 @@ onMounted(() => {
             :class="msg.role === 'user' ? 'flex flex-col items-end' : 'flex flex-col items-start'"
           >
             <!-- Sender Badge -->
-            <div class="flex items-center gap-1.5 text-[10px] text-gray-500 px-1">
+            <div class="flex items-center gap-1.5 text-[11.5px] text-gray-400 px-1 font-medium">
               <span class="font-bold uppercase tracking-wider" :class="msg.role === 'user' ? 'text-sky-400' : 'text-emerald-400'">
                 {{ msg.role === 'user' ? 'Quản Trị Viên (User)' : 'Root AI Agent' }}
               </span>
-              <span v-if="msg.source === 'telegram'" class="px-1 py-0.2 rounded bg-sky-500/20 text-sky-300 font-bold">
+              <span v-if="msg.source === 'telegram'" class="px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300 font-bold">
                 📱 TELEGRAM
               </span>
               <span>· {{ msg.timestamp }}</span>
@@ -782,54 +782,54 @@ onMounted(() => {
 
             <!-- Message Bubble -->
             <div
-              class="max-w-[92%] rounded-xl px-3.5 py-2.5 text-xs leading-relaxed"
+              class="max-w-[92%] rounded-xl px-4 py-3 text-[13.5px] leading-relaxed"
               :class="msg.role === 'user'
                 ? 'bg-sky-600/20 border border-sky-500/40 text-gray-100 rounded-tr-none'
-                : 'bg-black/40 border border-white/10 text-gray-200 rounded-tl-none space-y-2'"
+                : 'bg-black/40 border border-white/10 text-gray-100 rounded-tl-none space-y-2.5'"
             >
               <div class="whitespace-pre-wrap select-text font-sans">{{ msg.content }}</div>
 
               <!-- Executed Shell Command Results (Logs) -->
-              <div v-if="msg.commands && msg.commands.length > 0" class="mt-2 space-y-1.5 pt-2 border-t border-white/10">
-                <div class="text-[10px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1">
+              <div v-if="msg.commands && msg.commands.length > 0" class="mt-2.5 space-y-2 pt-2.5 border-t border-white/10">
+                <div class="text-[12px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
                   <span>⚡ Lệnh Hệ Thống Đã Chạy Trên Router:</span>
                 </div>
                 <div
                   v-for="(cmd, cIdx) in msg.commands"
                   :key="cIdx"
-                  class="p-2 rounded bg-black/60 border border-white/5 mono text-[11px]"
+                  class="p-2.5 rounded-lg bg-black/70 border border-white/10 mono text-[12px]"
                 >
-                  <div class="flex items-center justify-between text-emerald-400 font-bold mb-1">
-                    <span>$ {{ cmd.command }}</span>
-                    <span class="text-[9.5px] text-gray-500 font-normal">
+                  <div class="flex items-center justify-between text-emerald-400 font-bold mb-1.5">
+                    <span class="text-[13px]">$ {{ cmd.command }}</span>
+                    <span class="text-[11px] text-gray-400 font-normal">
                       {{ cmd.duration_ms }}ms · Exit {{ cmd.exit_code }}
                     </span>
                   </div>
-                  <pre class="text-gray-300 whitespace-pre-wrap max-h-44 overflow-y-auto text-[10.5px]">{{ cmd.output }}</pre>
+                  <pre class="text-gray-200 whitespace-pre-wrap max-h-56 overflow-y-auto text-[12px] leading-relaxed font-mono">{{ cmd.output }}</pre>
                 </div>
               </div>
             </div>
           </div>
 
-          <div v-if="sending" class="flex items-center gap-2 text-xs text-sky-400 animate-pulse p-2">
+          <div v-if="sending" class="flex items-center gap-2 text-[13px] text-sky-400 animate-pulse p-2">
             <span>🤖 AI đang suy nghĩ & thực thi lệnh trên Router R3P...</span>
           </div>
         </div>
 
         <!-- Chat Input Bar -->
-        <div class="p-2.5 bg-black/40 border-t border-white/10 shrink-0">
-          <form class="flex items-center gap-2" @submit.prevent="sendMessage()">
+        <div class="p-3 bg-black/40 border-t border-white/10 shrink-0">
+          <form class="flex items-center gap-2.5" @submit.prevent="sendMessage()">
             <div class="relative flex-1">
               <input
                 v-model="promptInput"
                 type="text"
-                class="w-full pro-input py-2 pl-3 pr-8 text-xs font-sans"
+                class="w-full pro-input py-2.5 pl-3.5 pr-14 text-[13.5px] font-sans"
                 placeholder="Nhập yêu cầu bằng tiếng Việt (hoặc gõ !lệnh để chạy root shell trực tiếp)..."
                 :disabled="sending"
               />
               <span
                 v-if="promptInput.startsWith('!')"
-                class="absolute right-2.5 top-2 text-[10px] font-bold text-amber-400 mono"
+                class="absolute right-3 top-2.5 text-[11px] font-bold text-amber-400 mono px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30"
                 title="Chế độ thực thi lệnh root shell trực tiếp"
               >
                 ROOT!
@@ -838,7 +838,7 @@ onMounted(() => {
 
             <button
               type="submit"
-              class="btn-primary py-2 px-4 text-xs font-semibold shrink-0 flex items-center gap-1.5"
+              class="btn-primary py-2.5 px-5 text-[13px] font-bold shrink-0 flex items-center gap-1.5 shadow-md"
               :disabled="!promptInput.trim() || sending"
             >
               <span>Gửi</span>

@@ -1,9 +1,9 @@
 {
-    "version":  "v1.0.9",
-    "revision":  10,
-    "released_at":  "2026-11-07 01:17:56",
+    "version":  "v1.0.10",
+    "revision":  11,
+    "released_at":  "2026-11-07 01:37:40",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.0.9",
-    "changelog":  "v1.0.9: Enlarge subtitles on dashboard cards \u0026 app catalog, add 4 DNS AdBlock stream metrics with counters, clean www assets to reclaim flash overlay"
+    "commit_sha":  "v1.0.10",
+    "changelog":  "v1.1.0 (Rev 11): Rebalance PC desktop typography, enhance button contrast, and fix circular gauges"
 }

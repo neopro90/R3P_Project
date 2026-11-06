@@ -228,19 +228,19 @@ onMounted(() => {
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Port Forwarding / DNAT Redirections ({{ redirects.length }})</span>
-        <button class="btn-primary text-[11px]" @click="showAddRedirect = !showAddRedirect">
+        <button class="btn-primary text-[12px] py-1 px-3" @click="showAddRedirect = !showAddRedirect">
           {{ showAddRedirect ? 'Cancel' : '+ Add Port Forward' }}
         </button>
       </div>
 
       <!-- Add Redirect Form -->
-      <form v-if="showAddRedirect" class="mb-3 p-2.5 rounded bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-6 gap-2 items-end" @submit.prevent="addRedirect">
+      <form v-if="showAddRedirect" class="mb-3 p-3 rounded-lg bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-6 gap-2.5 items-end text-xs" @submit.prevent="addRedirect">
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">Rule Name</label>
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">Rule Name</label>
           <input v-model="newRedir.name" type="text" required class="w-full pro-input" placeholder="e.g. Web-Server" />
         </div>
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">Protocol</label>
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">Protocol</label>
           <select v-model="newRedir.proto" class="w-full pro-input mono">
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
@@ -248,18 +248,18 @@ onMounted(() => {
           </select>
         </div>
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">WAN Port</label>
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">WAN Port</label>
           <input v-model="newRedir.src_dport" type="number" min="1" max="65535" required class="w-full pro-input mono" placeholder="8080" />
         </div>
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">LAN Target IP</label>
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">LAN Target IP</label>
           <input v-model="newRedir.dest_ip" type="text" required class="w-full pro-input mono" placeholder="192.168.2.100" />
         </div>
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">LAN Port</label>
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">LAN Port</label>
           <input v-model="newRedir.dest_port" type="number" min="1" max="65535" class="w-full pro-input mono" placeholder="80" />
         </div>
-        <button type="submit" class="btn-primary justify-center py-1.5">Save DNAT</button>
+        <button type="submit" class="btn-primary justify-center py-2 text-[12.5px] font-bold">Save DNAT</button>
       </form>
 
       <div class="overflow-x-auto">
@@ -276,26 +276,26 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-if="!redirects.length">
-              <td colspan="6" class="text-center text-gray-500 py-3">
+              <td colspan="6" class="text-center text-gray-400 py-4 font-medium">
                 No port forwarding rules configured. Click "+ Add Port Forward" to expose an internal service.
               </td>
             </tr>
             <tr v-for="pf in redirects" :key="pf.id">
-              <td class="font-medium text-gray-200">{{ pf.name || pf.id }}</td>
-              <td><span class="badge badge-blue mono uppercase text-[10px]">{{ pf.proto }}</span></td>
-              <td class="mono text-sky-300">{{ pf.src_dport }}</td>
-              <td class="mono text-gray-300">{{ pf.dest_ip }}:{{ pf.dest_port || pf.src_dport }}</td>
+              <td class="font-semibold text-gray-100 text-[13.5px]">{{ pf.name || pf.id }}</td>
+              <td><span class="badge badge-blue mono uppercase text-[11px] font-bold">{{ pf.proto }}</span></td>
+              <td class="mono font-bold text-sky-300 text-[13.5px]">{{ pf.src_dport }}</td>
+              <td class="mono text-gray-200 text-[13.5px]">{{ pf.dest_ip }}:{{ pf.dest_port || pf.src_dport }}</td>
               <td>
                 <span :class="pf.enabled ? 'badge badge-green' : 'badge badge-gray'">
                   {{ pf.enabled ? 'ACTIVE' : 'DISABLED' }}
                 </span>
               </td>
               <td>
-                <div class="flex items-center gap-1.5">
-                  <button class="btn-secondary text-[10px] py-0.5 px-2" @click="toggleRedirect(pf)">
+                <div class="flex items-center gap-2">
+                  <button class="btn-secondary text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="toggleRedirect(pf)">
                     {{ pf.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteRedirect(pf.id)">
+                  <button class="btn-danger text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="deleteRedirect(pf.id)">
                     Delete
                   </button>
                 </div>

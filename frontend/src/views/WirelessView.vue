@@ -399,26 +399,26 @@ onMounted(() => {
       </div>
 
       <!-- Current WWAN Status Summary -->
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11.5px] mb-2">
-        <div class="p-2 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-500 uppercase">Upstream SSID</div>
-          <div class="mono font-bold text-sky-300 truncate">{{ clientStatus.ssid || 'Chưa cấu hình' }}</div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-2.5 text-[12.5px] mb-2.5">
+        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
+          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Upstream SSID</div>
+          <div class="mono font-bold text-sky-300 text-[14px] truncate mt-0.5">{{ clientStatus.ssid || 'Chưa cấu hình' }}</div>
         </div>
-        <div class="p-2 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-500 uppercase">Radio / Band</div>
-          <div class="mono text-gray-200">{{ clientStatus.configured ? `${clientStatus.band} (${clientStatus.device})` : '—' }}</div>
+        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
+          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Radio / Band</div>
+          <div class="mono text-gray-100 font-bold text-[14px] mt-0.5">{{ clientStatus.configured ? `${clientStatus.band} (${clientStatus.device})` : '—' }}</div>
         </div>
-        <div class="p-2 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-500 uppercase">WWAN Local IP</div>
-          <div class="mono text-emerald-400 font-semibold">{{ clientStatus.ip_address || 'DHCP Waiting' }}</div>
+        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
+          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">WWAN Local IP</div>
+          <div class="mono text-emerald-400 font-bold text-[14px] mt-0.5">{{ clientStatus.ip_address || 'DHCP Waiting' }}</div>
         </div>
-        <div class="p-2 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-500 uppercase">Signal / RSSI</div>
-          <div class="mono text-gray-200">{{ clientStatus.signal_dbm || '—' }}</div>
+        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
+          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Signal / RSSI</div>
+          <div class="mono text-gray-100 font-bold text-[14px] mt-0.5">{{ clientStatus.signal_dbm || '—' }}</div>
         </div>
-        <div class="p-2 rounded bg-black/30 border border-white/5">
-          <div class="text-[10px] text-gray-500 uppercase">Security</div>
-          <div class="mono text-purple-300 uppercase">{{ clientStatus.encryption || '—' }}</div>
+        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
+          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Security</div>
+          <div class="mono text-purple-300 uppercase font-bold text-[14px] mt-0.5">{{ clientStatus.encryption || '—' }}</div>
         </div>
       </div>
 
@@ -632,37 +632,37 @@ onMounted(() => {
         </div>
 
         <!-- Read-Only Summary View -->
-        <div v-if="editingRadio !== r.device" class="space-y-2 text-[12px]">
+        <div v-if="editingRadio !== r.device" class="space-y-2.5 text-[13px]">
           <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">UCI Device / Section</span>
-            <span class="mono text-gray-300">{{ r.device }} / {{ r.iface_section }}</span>
+            <span class="text-gray-300 font-medium">UCI Device / Section</span>
+            <span class="mono text-gray-200 font-semibold">{{ r.device }} / {{ r.iface_section }}</span>
           </div>
           <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Broadcast SSID</span>
-            <span class="mono font-semibold text-sky-400">{{ r.ssid }}</span>
+            <span class="text-gray-300 font-medium">Broadcast SSID</span>
+            <span class="mono font-bold text-sky-400 text-[14px]">{{ r.ssid }}</span>
           </div>
           <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Channel & Bandwidth</span>
-            <span class="mono text-gray-200">Channel {{ r.channel }} ({{ r.htmode }})</span>
+            <span class="text-gray-300 font-medium">Channel & Bandwidth</span>
+            <span class="mono text-gray-100 font-semibold">Channel {{ r.channel }} ({{ r.htmode }})</span>
           </div>
           <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-400">Transmit Power</span>
-            <span class="mono text-gray-200">{{ r.txpower }} dBm</span>
+            <span class="text-gray-300 font-medium">Transmit Power</span>
+            <span class="mono text-gray-100 font-semibold">{{ r.txpower }} dBm</span>
           </div>
           <div class="flex items-center justify-between py-1">
-            <span class="text-gray-400">Security Mode</span>
-            <span class="mono text-emerald-400 uppercase">{{ r.encryption }}</span>
+            <span class="text-gray-300 font-medium">Security Mode</span>
+            <span class="mono text-emerald-400 uppercase font-bold">{{ r.encryption }}</span>
           </div>
 
-          <div class="mt-3 pt-2 border-t border-white/5 flex justify-end gap-2">
+          <div class="mt-3 pt-2.5 border-t border-white/5 flex justify-end gap-2.5">
             <button
-              class="btn-secondary text-[11px]"
+              class="btn-secondary text-[12.5px] py-1.5 px-3.5 font-semibold cursor-pointer"
               :disabled="savingDevice === r.device"
               @click="toggleRadioEnabled(r)"
             >
               {{ r.enabled ? 'Disable AP' : 'Enable AP' }}
             </button>
-            <button class="btn-primary text-[11px]" @click="editingRadio = r.device">
+            <button class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold cursor-pointer" @click="editingRadio = r.device">
               Configure AP Radio
             </button>
           </div>

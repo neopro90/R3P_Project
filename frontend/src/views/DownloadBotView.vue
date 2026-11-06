@@ -300,47 +300,47 @@ onUnmounted(() => {
       </div>
 
       <!-- 4 Diagnostic Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-2 text-[12px]">
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10 space-y-1">
-          <div class="flex items-center justify-between font-bold text-gray-200">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-[13px]">
+        <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
+          <div class="flex items-center justify-between font-bold text-gray-100">
             <span>🌐 Router IP & Cổng 8787</span>
             <span class="badge" :class="debugResult?.port_8787_listening ? 'badge-green' : 'badge-red'">
               {{ debugResult?.port_8787_listening ? 'PORT 8787 OK' : 'PORT LỖI' }}
             </span>
           </div>
-          <div class="text-gray-400">LAN IP: <span class="mono text-gray-200 font-bold">{{ debugResult?.lan_ip || '192.168.2.1' }}</span></div>
-          <div class="text-gray-400 truncate">URL: <span class="mono text-sky-400">{{ debugResult?.runtime_base_url || 'http://192.168.2.1:8787' }}</span></div>
+          <div class="text-gray-300">LAN IP: <span class="mono text-gray-100 font-bold">{{ debugResult?.lan_ip || '192.168.2.1' }}</span></div>
+          <div class="text-gray-300 truncate">URL: <span class="mono text-sky-400 font-semibold">{{ debugResult?.runtime_base_url || 'http://192.168.2.1:8787' }}</span></div>
         </div>
 
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10 space-y-1">
-          <div class="flex items-center justify-between font-bold text-gray-200">
+        <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
+          <div class="flex items-center justify-between font-bold text-gray-100">
             <span>💾 Thư Mục Đầu Ra (USB)</span>
             <span class="badge" :class="debugResult?.output_dir_writable ? 'badge-green' : 'badge-orange'">
               {{ debugResult?.output_dir_writable ? 'SẴN SÀNG GHI (0777)' : 'CHƯA CÓ QUYỀN' }}
             </span>
           </div>
-          <div class="text-gray-400 truncate mono text-xs">{{ debugResult?.output_dir || '/mnt/sda1/esp32-downloads' }}</div>
-          <div class="text-gray-400">Trống: <span class="mono text-emerald-400 font-bold">{{ debugResult?.storage?.freeGb || '234' }} GB</span> (USB 3.0 ext4)</div>
+          <div class="text-gray-300 truncate mono text-[12px] font-medium">{{ debugResult?.output_dir || '/mnt/sda1/esp32-downloads' }}</div>
+          <div class="text-gray-300">Trống: <span class="mono text-emerald-400 font-bold">{{ debugResult?.storage?.freeGb || '234' }} GB</span> (USB 3.0 ext4)</div>
         </div>
 
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10 space-y-1">
-          <div class="flex items-center justify-between font-bold text-gray-200">
+        <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
+          <div class="flex items-center justify-between font-bold text-gray-100">
             <span>🎬 Trình Tải Media (yt-dlp)</span>
             <span class="badge" :class="debugResult?.yt_dlp_version ? 'badge-green' : 'badge-orange'">
               {{ debugResult?.yt_dlp_version ? 'SẴN SÀNG' : 'CHƯA TÌM THẤY' }}
             </span>
           </div>
-          <div class="text-gray-400">Phiên bản: <span class="mono text-emerald-300 font-bold">{{ debugResult?.yt_dlp_version || '2026.10.21' }}</span></div>
-          <div class="text-gray-400">Đường dẫn: <span class="mono text-gray-300">/usr/bin/yt-dlp</span></div>
+          <div class="text-gray-300">Phiên bản: <span class="mono text-emerald-300 font-bold">{{ debugResult?.yt_dlp_version || '2026.10.21' }}</span></div>
+          <div class="text-gray-300">Đường dẫn: <span class="mono text-gray-200">/usr/bin/yt-dlp</span></div>
         </div>
 
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10 space-y-1">
-          <div class="flex items-center justify-between font-bold text-gray-200">
+        <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
+          <div class="flex items-center justify-between font-bold text-gray-100">
             <span>🤖 Telegram & Tự Động</span>
             <span class="badge badge-green">TRỰC TUYẾN</span>
           </div>
-          <div class="text-gray-400">Telegram Bot: <span class="mono text-emerald-400 font-bold">{{ debugResult?.telegram_token_set ? 'Đã Cấu Hình Token' : 'Chưa Nhập' }}</span></div>
-          <div class="text-gray-400">Chat ID: <span class="mono text-gray-200 font-bold">{{ debugResult?.telegram_chat_id || '2041840936' }}</span></div>
+          <div class="text-gray-300">Telegram Bot: <span class="mono text-emerald-400 font-bold">{{ debugResult?.telegram_token_set ? 'Đã Cấu Hình Token' : 'Chưa Nhập' }}</span></div>
+          <div class="text-gray-300">Chat ID: <span class="mono text-gray-100 font-bold">{{ debugResult?.telegram_chat_id || '2041840936' }}</span></div>
         </div>
       </div>
     </div>
@@ -349,7 +349,7 @@ onUnmounted(() => {
     <div class="pro-card p-4 space-y-3">
       <div class="flex items-center justify-between pb-2 border-b border-white/10">
         <span class="pro-card-title">📥 Thêm Tác Vụ Tải Xuống Mới (Direct URL / Video / Audio)</span>
-        <span class="text-xs text-gray-400 font-medium">Hỗ trợ: YouTube, TikTok, Facebook, Douyin, X, Bilibili, HTTP/HTTPS direct</span>
+        <span class="text-[12.5px] text-gray-300 font-medium">Hỗ trợ: YouTube, TikTok, Facebook, Douyin, X, Bilibili, HTTP/HTTPS direct</span>
       </div>
 
       <form class="flex flex-col sm:flex-row items-center gap-2.5" @submit.prevent="addDownloadJob">
@@ -358,13 +358,13 @@ onUnmounted(() => {
             v-model="newUrl"
             type="text"
             required
-            class="w-full pro-input text-[13.5px] font-mono py-2 px-3 text-sky-300 placeholder-gray-500"
+            class="w-full pro-input text-[14px] font-mono py-2.5 px-3.5 text-sky-300 placeholder-gray-400"
             placeholder="Dán liên kết video, audio hoặc file tải xuống vào đây…"
           />
         </div>
 
         <div class="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-          <select v-model="selectedQuality" class="pro-input text-xs py-2 px-2.5 font-medium text-gray-200">
+          <select v-model="selectedQuality" class="pro-input text-[13px] py-2 px-3 font-medium text-gray-100">
             <option value="best">🎬 Video Tốt Nhất (Best)</option>
             <option value="1080p">📺 1080p Full HD</option>
             <option value="720p">📱 720p Tiết Kiệm</option>
@@ -373,7 +373,7 @@ onUnmounted(() => {
 
           <button
             type="submit"
-            class="btn-primary py-2 px-4 text-xs font-bold shrink-0 cursor-pointer shadow-md flex items-center gap-1.5"
+            class="btn-primary py-2 px-4 text-[13px] font-bold shrink-0 cursor-pointer shadow-md flex items-center gap-1.5"
             :disabled="addingJob"
           >
             <span>⚡</span>
@@ -392,36 +392,36 @@ onUnmounted(() => {
         </div>
 
         <!-- Filter Tabs & Actions -->
-        <div class="flex items-center gap-1.5 text-xs">
+        <div class="flex items-center gap-2 text-[12.5px]">
           <div class="flex items-center bg-black/30 border border-white/10 rounded-lg p-0.5 gap-0.5">
             <button
               type="button"
-              class="px-2.5 py-1 rounded-md font-semibold transition cursor-pointer"
-              :class="activeTab === 'all' ? 'bg-sky-600 text-white' : 'text-gray-400 hover:text-white'"
+              class="px-3 py-1.5 rounded-md font-semibold transition cursor-pointer"
+              :class="activeTab === 'all' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:text-white'"
               @click="activeTab = 'all'"
             >
               Tất Cả ({{ jobs.length }})
             </button>
             <button
               type="button"
-              class="px-2.5 py-1 rounded-md font-semibold transition cursor-pointer"
-              :class="activeTab === 'running' ? 'bg-sky-600 text-white' : 'text-gray-400 hover:text-white'"
+              class="px-3 py-1.5 rounded-md font-semibold transition cursor-pointer"
+              :class="activeTab === 'running' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:text-white'"
               @click="activeTab = 'running'"
             >
               Đang Tải ({{ runningJobsCount }})
             </button>
             <button
               type="button"
-              class="px-2.5 py-1 rounded-md font-semibold transition cursor-pointer"
-              :class="activeTab === 'completed' ? 'bg-sky-600 text-white' : 'text-gray-400 hover:text-white'"
+              class="px-3 py-1.5 rounded-md font-semibold transition cursor-pointer"
+              :class="activeTab === 'completed' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:text-white'"
               @click="activeTab = 'completed'"
             >
               Hoàn Tất ({{ completedJobsCount }})
             </button>
             <button
               type="button"
-              class="px-2.5 py-1 rounded-md font-semibold transition cursor-pointer"
-              :class="activeTab === 'failed' ? 'bg-sky-600 text-white' : 'text-gray-400 hover:text-white'"
+              class="px-3 py-1.5 rounded-md font-semibold transition cursor-pointer"
+              :class="activeTab === 'failed' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:text-white'"
               @click="activeTab = 'failed'"
             >
               Lỗi ({{ failedJobsCount }})
@@ -431,7 +431,7 @@ onUnmounted(() => {
           <button
             v-if="completedJobsCount > 0"
             type="button"
-            class="btn-secondary py-1 px-2.5 text-xs font-semibold cursor-pointer"
+            class="btn-secondary py-1.5 px-3 text-[12px] font-semibold cursor-pointer"
             title="Dọn dẹp các job đã tải xong"
             @click="clearFinishedJobs"
           >
