@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -111,6 +112,11 @@ func fetchPublicIPv4() string {
 
 // Perform DDNS update for DuckDNS or other providers
 func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
+	cfg.Domain = strings.TrimSpace(cfg.Domain)
+	cfg.Token = strings.TrimSpace(cfg.Token)
+	cfg.Username = strings.TrimSpace(cfg.Username)
+	cfg.CustomURL = strings.TrimSpace(cfg.CustomURL)
+
 	if cfg.Domain == "" {
 		return false, "Vui lòng nhập tên miền (Domain / Subdomain)"
 	}
@@ -133,11 +139,22 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 		subdomain = strings.TrimSuffix(subdomain, ".duckdns.org")
 		subdomain = strings.TrimPrefix(subdomain, "http://")
 		subdomain = strings.TrimPrefix(subdomain, "https://")
+		subdomain = strings.TrimSpace(subdomain)
+		token := strings.TrimSpace(cfg.Token)
 
 		updateURL := fmt.Sprintf("https://www.duckdns.org/update?domains=%s&token=%s&ip=%s",
-			subdomain, cfg.Token, pubIP)
+			url.QueryEscape(subdomain), url.QueryEscape(token), url.QueryEscape(pubIP))
 
-		resp, err := client.Get(updateURL)
+		req, err := http.NewRequest(http.MethodGet, updateURL, nil)
+		if err != nil {
+			msg := "Lỗi tạo request DuckDNS: " + err.Error()
+			cfg.LastStatus = msg
+			cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
+			return false, msg
+		}
+		req.Header.Set("User-Agent", "curl/7.88.1")
+
+		resp, err := client.Do(req)
 		if err != nil {
 			msg := "Lỗi kết nối DuckDNS: " + err.Error()
 			cfg.LastStatus = msg
@@ -145,7 +162,7 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 			return false, msg
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		reply := strings.TrimSpace(string(body))
 		if strings.EqualFold(reply, "OK") {
 			msg := fmt.Sprintf("Cập nhật DuckDNS thành công! IP: %s (Tên miền: %s.duckdns.org)", pubIP, subdomain)
@@ -273,6 +290,10 @@ func handleAccessDDNS(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "Dữ liệu JSON không hợp lệ: "+err.Error())
 			return
 		}
+		body.Domain = strings.TrimSpace(body.Domain)
+		body.Token = strings.TrimSpace(body.Token)
+		body.Username = strings.TrimSpace(body.Username)
+		body.CustomURL = strings.TrimSpace(body.CustomURL)
 		cur := loadDDNSConfig()
 		body.LastIP = cur.LastIP
 		body.LastUpdate = cur.LastUpdate

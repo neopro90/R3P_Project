@@ -148,6 +148,10 @@ async function saveDHCP() {
 
 async function saveDDNS() {
   savingDdns.value = true
+  ddnsConfig.value.domain = (ddnsConfig.value.domain || '').trim()
+  ddnsConfig.value.token = (ddnsConfig.value.token || '').trim()
+  ddnsConfig.value.username = (ddnsConfig.value.username || '').trim()
+  ddnsConfig.value.custom_url = (ddnsConfig.value.custom_url || '').trim()
   try {
     const res = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns', {
       method: 'PUT',
@@ -165,8 +169,15 @@ async function saveDDNS() {
 
 async function forceUpdateDDNS() {
   updatingDdns.value = true
+  ddnsConfig.value.domain = (ddnsConfig.value.domain || '').trim()
+  ddnsConfig.value.token = (ddnsConfig.value.token || '').trim()
   notice.value = 'Đang gửi yêu cầu cập nhật IP tới máy chủ DDNS…'
   try {
+    // First save the trimmed values
+    await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns', {
+      method: 'PUT',
+      body: JSON.stringify(ddnsConfig.value),
+    })
     const res = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns/update', {
       method: 'POST',
     })
@@ -404,7 +415,7 @@ onMounted(() => {
           <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Tên Miền (Domain / Subdomain)</label>
           <div class="flex items-center gap-1">
             <input
-              v-model="ddnsConfig.domain"
+              v-model.trim="ddnsConfig.domain"
               type="text"
               class="w-full pro-input mono font-bold text-emerald-400"
               :placeholder="ddnsProviders.find(p => p.id === ddnsConfig.provider)?.placeholder || 'subdomain'"
@@ -427,7 +438,7 @@ onMounted(() => {
             </button>
           </div>
           <input
-            v-model="ddnsConfig.token"
+            v-model.trim="ddnsConfig.token"
             :type="showDdnsToken ? 'text' : 'password'"
             class="w-full pro-input mono text-gray-200"
             placeholder="Nhập Token lấy từ DuckDNS hoặc API Key"
