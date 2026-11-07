@@ -81,10 +81,31 @@ def build_bundle() -> Path:
 def deploy_to_router(host="192.168.2.1", user="root", password="root"):
     import paramiko
 
-    print(f"[*] Connecting to {user}@{host} ...")
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=user, password=password, timeout=10)
+    target_hosts = [host]
+    if "--host" in sys.argv:
+        idx = sys.argv.index("--host")
+        if idx + 1 < len(sys.argv):
+            target_hosts = [sys.argv[idx + 1]]
+    else:
+        target_hosts = ["192.168.1.7", "192.168.2.1"]
+
+    ssh = None
+    active_host = None
+    for h in target_hosts:
+        print(f"[*] Trying connection to {user}@{h} ...")
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(h, username=user, password=password, timeout=4)
+            ssh = client
+            active_host = h
+            print(f"[+] Connected successfully to {user}@{active_host}")
+            break
+        except Exception as e:
+            print(f"[-] Could not reach {h}: {e}")
+
+    if not ssh or not active_host:
+        raise ConnectionError(f"Failed to connect to any target router host: {target_hosts}")
 
     bundle_bytes = BUNDLE_PATH.read_bytes()
     print(f"[*] Streaming {len(bundle_bytes):,} bytes to /tmp/r3p-update-bundle.tar.gz ...")

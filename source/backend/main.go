@@ -1540,6 +1540,7 @@ func main() {
 	mux.HandleFunc("/api/v1/adblock/streams", cors(handleAdblockStreams, "GET", "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/explorer/list", cors(handleExplorerList, "GET"))
 	mux.HandleFunc("/api/v1/explorer/read", cors(handleExplorerRead, "GET"))
+	mux.HandleFunc("/api/v1/explorer/raw", cors(handleExplorerRaw, "GET"))
 	mux.HandleFunc("/api/v1/explorer/write", cors(handleExplorerWrite, "POST"))
 	mux.HandleFunc("/api/v1/explorer/create", cors(handleExplorerCreate, "POST"))
 	mux.HandleFunc("/api/v1/explorer/delete", cors(handleExplorerDelete, "DELETE"))

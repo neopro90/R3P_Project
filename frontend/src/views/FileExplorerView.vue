@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { apiRequest } from '@/services/api'
 
 interface ExplorerEntry {
@@ -11,6 +11,9 @@ interface ExplorerEntry {
   mod_time: string
   ext: string
   is_editable: boolean
+  is_image?: boolean
+  is_video?: boolean
+  is_audio?: boolean
 }
 
 interface QuickFolder {
@@ -39,6 +42,31 @@ const editingFile = ref<{
 } | null>(null)
 const savingFile = ref(false)
 const createBackup = ref(true)
+
+// Media Preview Modal state (Images, Streaming Videos, Audio)
+const previewMedia = ref<{
+  name: string
+  path: string
+  size: number
+  type: 'image' | 'video' | 'audio'
+  url: string
+} | null>(null)
+
+function openMediaPreview(entry: ExplorerEntry) {
+  const type: 'image' | 'video' | 'audio' = entry.is_image ? 'image' : entry.is_video ? 'video' : 'audio'
+  const url = `/api/v1/explorer/raw?path=${encodeURIComponent(entry.path)}`
+  previewMedia.value = {
+    name: entry.name,
+    path: entry.path,
+    size: entry.size,
+    type,
+    url,
+  }
+}
+
+function closeMediaPreview() {
+  previewMedia.value = null
+}
 
 // Create modal state
 const showCreateModal = ref(false)
@@ -113,6 +141,8 @@ async function loadDirectory(path: string) {
 async function openEntry(entry: ExplorerEntry) {
   if (entry.is_dir) {
     await loadDirectory(entry.path)
+  } else if (entry.is_image || entry.is_video || entry.is_audio) {
+    openMediaPreview(entry)
   } else if (entry.is_editable) {
     await openEditor(entry.path)
   } else {
@@ -238,11 +268,23 @@ async function deleteItem(entry: ExplorerEntry) {
 }
 
 function downloadFile(path: string) {
-  window.open(`/api/v1/nas/download?path=${encodeURIComponent(path)}`, '_blank')
+  window.open(`/api/v1/explorer/raw?download=1&path=${encodeURIComponent(path)}`, '_blank')
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    if (previewMedia.value) closeMediaPreview()
+    else if (editingFile.value) closeEditor()
+  }
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
   void loadDirectory('/mnt/sda1')
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -448,6 +490,30 @@ onMounted(() => {
               <td class="py-2 px-4 text-right">
                 <div class="flex items-center justify-end gap-1">
                   <button
+                    v-if="!entry.is_dir && entry.is_image"
+                    class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 font-semibold text-[11px] cursor-pointer"
+                    title="Xem ảnh trực tiếp (JPG/PNG/WebP/GIF/SVG)"
+                    @click="openMediaPreview(entry)"
+                  >
+                    👁️ Xem
+                  </button>
+                  <button
+                    v-if="!entry.is_dir && entry.is_video"
+                    class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 font-semibold text-[11px] cursor-pointer flex items-center gap-1"
+                    title="Phát video stream HTML5 nhẹ mượt (Không tốn RAM Router)"
+                    @click="openMediaPreview(entry)"
+                  >
+                    <span>▶️ Stream</span>
+                  </button>
+                  <button
+                    v-if="!entry.is_dir && entry.is_audio"
+                    class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 font-semibold text-[11px] cursor-pointer"
+                    title="Nghe nhạc trực tiếp"
+                    @click="openMediaPreview(entry)"
+                  >
+                    🎵 Nghe
+                  </button>
+                  <button
                     v-if="!entry.is_dir && entry.is_editable"
                     class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 font-semibold text-[11px]"
                     title="Chỉnh sửa tệp text/code trực tiếp"
@@ -526,6 +592,114 @@ onMounted(() => {
           >
             Tạo Ngay
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Media Viewer Modal (Images, Streaming Videos, Audio) -->
+    <div
+      v-if="previewMedia"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-2 sm:p-6"
+      @click.self="closeMediaPreview"
+    >
+      <div class="bg-[#0b0f19] border border-white/15 rounded-2xl max-w-5xl w-full max-h-[94vh] flex flex-col shadow-2xl overflow-hidden">
+        <!-- Header -->
+        <div class="px-4 py-3 bg-black/40 border-b border-white/10 flex items-center justify-between gap-3 flex-shrink-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-xl">
+              {{ previewMedia.type === 'image' ? '🖼️' : previewMedia.type === 'video' ? '🎬' : '🎵' }}
+            </span>
+            <div class="min-w-0">
+              <div class="font-bold text-sm text-gray-100 truncate mono">{{ previewMedia.name }}</div>
+              <div class="text-[11px] text-gray-400 flex items-center gap-2">
+                <span>{{ formatBytes(previewMedia.size) }}</span>
+                <span>•</span>
+                <span class="mono text-gray-500 truncate max-w-xs">{{ previewMedia.path }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <span
+              v-if="previewMedia.type === 'video'"
+              class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-semibold hidden sm:inline-flex"
+            >
+              HTML5 HTTP 206 STREAM
+            </span>
+            <span
+              v-else-if="previewMedia.type === 'image'"
+              class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold hidden sm:inline-flex"
+            >
+              CLIENT CODEC (0 KB RAM)
+            </span>
+            <button
+              class="px-2.5 py-1 text-xs rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold flex items-center gap-1 transition cursor-pointer"
+              title="Tải tệp này về máy"
+              @click="downloadFile(previewMedia.path)"
+            >
+              <span>⬇️ Tải về</span>
+            </button>
+            <button
+              class="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 text-lg transition cursor-pointer leading-none"
+              title="Đóng (Esc)"
+              @click="closeMediaPreview"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/60 min-h-[300px]">
+          <!-- Image Viewer -->
+          <div v-if="previewMedia.type === 'image'" class="flex flex-col items-center justify-center w-full">
+            <img
+              :src="previewMedia.url"
+              :alt="previewMedia.name"
+              class="max-h-[74vh] max-w-full object-contain rounded-lg shadow-2xl border border-white/10 select-none"
+              loading="lazy"
+            />
+            <div class="mt-2 text-[11px] text-gray-400 flex items-center justify-between w-full max-w-4xl px-2">
+              <span class="text-emerald-400">Trình duyệt giải mã trực tiếp (JPG / PNG / WebP / GIF / SVG)</span>
+              <span class="text-gray-500 hidden sm:inline">Phím Esc để đóng</span>
+            </div>
+          </div>
+
+          <!-- Video Streamer -->
+          <div v-else-if="previewMedia.type === 'video'" class="w-full flex flex-col items-center">
+            <video
+              controls
+              autoplay
+              preload="metadata"
+              :src="previewMedia.url"
+              class="max-h-[72vh] w-full max-w-4xl mx-auto rounded-lg shadow-2xl bg-black border border-white/10 focus:outline-none"
+            >
+              Trình duyệt của bạn không hỗ trợ phát trực tiếp video này.
+            </video>
+            <div class="mt-2 text-[11px] text-gray-400 flex items-center justify-between w-full max-w-4xl px-2">
+              <span class="flex items-center gap-1.5 text-emerald-400">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Stream trực tiếp qua HTTP Range — Router chỉ gửi byte cần phát, không gánh RAM</span>
+              </span>
+              <span class="text-gray-500 hidden sm:inline">Phím Space: Tạm dừng / Phát</span>
+            </div>
+          </div>
+
+          <!-- Audio Player -->
+          <div v-else-if="previewMedia.type === 'audio'" class="w-full max-w-md p-6 bg-black/40 rounded-xl border border-white/10 flex flex-col items-center gap-4 text-center">
+            <div class="w-20 h-20 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-4xl">
+              🎵
+            </div>
+            <div>
+              <div class="font-bold text-gray-200 text-sm mono">{{ previewMedia.name }}</div>
+              <div class="text-xs text-gray-400 mt-1">{{ formatBytes(previewMedia.size) }}</div>
+            </div>
+            <audio
+              controls
+              autoplay
+              :src="previewMedia.url"
+              class="w-full mt-2"
+            ></audio>
+          </div>
         </div>
       </div>
     </div>

@@ -12,14 +12,17 @@ import (
 )
 
 type ExplorerEntry struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	IsDir     bool   `json:"is_dir"`
-	Size      int64  `json:"size"`
-	Mode      string `json:"mode"`
-	ModTime   string `json:"mod_time"`
-	Ext       string `json:"ext"`
-	IsEditable bool  `json:"is_editable"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	IsDir      bool   `json:"is_dir"`
+	Size       int64  `json:"size"`
+	Mode       string `json:"mode"`
+	ModTime    string `json:"mod_time"`
+	Ext        string `json:"ext"`
+	IsEditable bool   `json:"is_editable"`
+	IsImage    bool   `json:"is_image"`
+	IsVideo    bool   `json:"is_video"`
+	IsAudio    bool   `json:"is_audio"`
 }
 
 type ExplorerQuickFolder struct {
@@ -27,6 +30,33 @@ type ExplorerQuickFolder struct {
 	Path  string `json:"path"`
 	Icon  string `json:"icon"`
 	Desc  string `json:"desc"`
+}
+
+var imageExts = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".webp": true,
+	".gif": true, ".svg": true, ".bmp": true, ".ico": true,
+}
+
+var videoExts = map[string]bool{
+	".mp4": true, ".mkv": true, ".webm": true, ".mov": true,
+	".avi": true, ".m4v": true, ".ts": true, ".flv": true,
+}
+
+var audioExts = map[string]bool{
+	".mp3": true, ".m4a": true, ".ogg": true, ".flac": true,
+	".wav": true, ".aac": true, ".wma": true,
+}
+
+func isImageFile(ext string) bool {
+	return imageExts[strings.ToLower(ext)]
+}
+
+func isVideoFile(ext string) bool {
+	return videoExts[strings.ToLower(ext)]
+}
+
+func isAudioFile(ext string) bool {
+	return audioExts[strings.ToLower(ext)]
 }
 
 var editableExts = map[string]bool{
@@ -40,6 +70,9 @@ var editableExts = map[string]bool{
 
 func isFileEditable(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
+	if isImageFile(ext) || isVideoFile(ext) || isAudioFile(ext) {
+		return false
+	}
 	if editableExts[ext] {
 		return true
 	}
@@ -91,6 +124,9 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 		}
 		full := filepath.Join(targetPath, e.Name())
 		ext := strings.ToLower(filepath.Ext(e.Name()))
+		isImg := !e.IsDir() && isImageFile(ext)
+		isVid := !e.IsDir() && isVideoFile(ext)
+		isAud := !e.IsDir() && isAudioFile(ext)
 		result = append(result, ExplorerEntry{
 			Name:       e.Name(),
 			Path:       full,
@@ -99,7 +135,10 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 			Mode:       info.Mode().String(),
 			ModTime:    info.ModTime().Format("2006-01-02 15:04:05"),
 			Ext:        ext,
-			IsEditable: !e.IsDir() && (isFileEditable(e.Name()) || info.Size() < 512*1024),
+			IsEditable: !e.IsDir() && !isImg && !isVid && !isAud && (isFileEditable(e.Name()) || info.Size() < 512*1024),
+			IsImage:    isImg,
+			IsVideo:    isVid,
+			IsAudio:    isAud,
 		})
 	}
 
@@ -302,4 +341,74 @@ func handleExplorerDelete(w http.ResponseWriter, r *http.Request) {
 		"deleted": true,
 		"path":    targetPath,
 	})
+}
+
+// GET /api/v1/explorer/raw?path=/mnt/sda1/...&download=0
+func handleExplorerRaw(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	targetPath := sanitizeExplorerPath(r.URL.Query().Get("path"))
+	st, err := os.Stat(targetPath)
+	if err != nil {
+		http.Error(w, "Tệp không tồn tại: "+err.Error(), http.StatusNotFound)
+		return
+	}
+	if st.IsDir() {
+		http.Error(w, "Đường dẫn là thư mục, không thể xem thô", http.StatusBadRequest)
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(targetPath))
+	switch ext {
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".webp":
+		w.Header().Set("Content-Type", "image/webp")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".bmp":
+		w.Header().Set("Content-Type", "image/bmp")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".mp4":
+		w.Header().Set("Content-Type", "video/mp4")
+	case ".webm":
+		w.Header().Set("Content-Type", "video/webm")
+	case ".mkv":
+		w.Header().Set("Content-Type", "video/x-matroska")
+	case ".mov":
+		w.Header().Set("Content-Type", "video/quicktime")
+	case ".avi":
+		w.Header().Set("Content-Type", "video/x-msvideo")
+	case ".m4v":
+		w.Header().Set("Content-Type", "video/x-m4v")
+	case ".ts":
+		w.Header().Set("Content-Type", "video/mp2t")
+	case ".mp3":
+		w.Header().Set("Content-Type", "audio/mpeg")
+	case ".m4a":
+		w.Header().Set("Content-Type", "audio/mp4")
+	case ".ogg":
+		w.Header().Set("Content-Type", "audio/ogg")
+	case ".flac":
+		w.Header().Set("Content-Type", "audio/flac")
+	case ".wav":
+		w.Header().Set("Content-Type", "audio/wav")
+	}
+
+	isDownload := r.URL.Query().Get("download") == "1"
+	if isDownload {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", st.Name()))
+	} else {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", st.Name()))
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	// http.ServeFile natively supports HTTP 206 Partial Content (Range requests) for video seeking & streaming!
+	http.ServeFile(w, r, targetPath)
 }
