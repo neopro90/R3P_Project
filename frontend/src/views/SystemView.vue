@@ -388,37 +388,42 @@ onMounted(async () => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11.5px] font-medium flex items-center justify-between">
-      <span>{{ notice }}</span>
-      <button class="text-xs text-gray-400 hover:text-white" @click="notice = null">✕</button>
+    <!-- Floating Toast Notifications (Never shift layout) -->
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">{{ errorMsg }}</span>
+        <button type="button" class="text-rose-300 hover:text-white shrink-0 font-bold" @click="errorMsg = null">✕</button>
+      </div>
     </div>
-    <div v-if="errorMsg" class="px-3 py-1.5 rounded bg-red-500/15 border border-red-500/30 text-red-300 text-[11.5px] font-medium flex items-center justify-between">
-      <span>{{ errorMsg }}</span>
-      <button class="text-xs text-gray-400 hover:text-white" @click="errorMsg = null">✕</button>
+    <div v-else-if="notice" class="r3p-toast r3p-toast-success">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">{{ notice }}</span>
+        <button type="button" class="text-emerald-300 hover:text-white shrink-0 font-bold" @click="notice = null">✕</button>
+      </div>
     </div>
 
     <!-- 1. FIRMWARE UPDATE CENTER (ONLINE VIA GITHUB URL & MANUAL UPLOAD) -->
     <div class="pro-card border border-sky-500/30">
       <div class="pro-card-header flex-wrap gap-2">
-        <div>
+        <div class="min-w-0">
           <span class="pro-card-title text-sky-400">🚀 Trung Tâm Cập Nhật Firmware Thủ Công & Cập Nhật Trực Tuyến Qua GitHub</span>
-          <p class="text-[11px] text-gray-400 mt-0.5">
+          <p class="text-[11px] text-gray-400 mt-0.5 truncate">
             Phiên bản hiện tại: <strong class="mono text-emerald-400">{{ currentVer.version }} (Revision #{{ currentVer.revision }})</strong> ·
             Kho GitHub: <code class="mono text-sky-300">{{ currentVer.repo_url }}</code>
           </p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 shrink-0">
           <span class="badge badge-green mono">{{ currentVer.version }} · REV {{ currentVer.revision }}</span>
           <span class="badge badge-blue mono">{{ currentVer.released_at }}</span>
         </div>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
         <!-- Left Column: Online Update via GitHub URL -->
-        <div class="p-3 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between gap-2.5">
+        <div class="p-3 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between gap-2.5 min-w-0">
           <div>
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-bold text-sky-300 uppercase">🌐 Cập Nhật Qua URL Từ GitHub Repository</span>
+            <div class="flex items-center justify-between mb-2 gap-2">
+              <span class="text-xs font-bold text-sky-300 uppercase truncate">🌐 Cập Nhật Qua URL Từ GitHub Repository</span>
               <span class="badge badge-purple">OTA / GITHUB SYNC</span>
             </div>
 
@@ -445,13 +450,13 @@ onMounted(async () => {
 
             <!-- GitHub Check Result Box -->
             <div v-if="ghCheck" class="p-2.5 rounded bg-black/50 border border-sky-500/25 text-[11px] space-y-1 mb-2">
-              <div class="flex items-center justify-between">
+              <div class="flex items-center justify-between gap-2">
                 <span class="text-gray-400">Trạng thái kết nối GitHub:</span>
                 <span :class="ghCheck.reachable ? 'badge badge-green' : 'badge badge-orange'">
                   {{ ghCheck.reachable ? 'KẾT NỐI THÀNH CÔNG' : 'CHƯA KẾT NỐI / REPO TRỐNG' }}
                 </span>
               </div>
-              <div class="flex items-center justify-between">
+              <div class="flex items-center justify-between gap-2">
                 <span class="text-gray-400">Phiên bản trên máy / Trên GitHub:</span>
                 <span class="mono font-bold text-gray-200">
                   {{ ghCheck.current_version }} (Rev {{ ghCheck.current_revision }}) →
@@ -460,11 +465,11 @@ onMounted(async () => {
                   </span>
                 </span>
               </div>
-              <div v-if="ghCheck.commit_sha" class="flex items-center justify-between">
-                <span class="text-gray-400">Commit mới nhất:</span>
-                <span class="mono text-purple-300">{{ ghCheck.commit_sha }} — {{ ghCheck.commit_message }}</span>
+              <div v-if="ghCheck.commit_sha" class="flex items-center justify-between gap-2">
+                <span class="text-gray-400 shrink-0">Commit mới nhất:</span>
+                <span class="mono text-purple-300 truncate">{{ ghCheck.commit_sha }} — {{ ghCheck.commit_message }}</span>
               </div>
-              <div v-if="ghCheck.changelog" class="text-[10.5px] text-gray-300 pt-1 border-t border-white/5">
+              <div v-if="ghCheck.changelog" class="text-[10.5px] text-gray-300 pt-1 border-t border-white/5 break-words">
                 📝 <strong>Changelog:</strong> {{ ghCheck.changelog }}
               </div>
             </div>
@@ -473,7 +478,7 @@ onMounted(async () => {
           <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-white/10">
             <button
               type="button"
-              class="btn-secondary text-xs"
+              class="btn-secondary text-xs min-w-[216px] justify-center"
               :disabled="checkingGh || updatingFromGh"
               @click="checkUpdateFromGitHub"
             >
@@ -481,7 +486,7 @@ onMounted(async () => {
             </button>
             <button
               type="button"
-              class="btn-primary text-xs"
+              class="btn-primary text-xs min-w-[234px] justify-center"
               :disabled="updatingFromGh"
               @click="triggerGitHubUpdate('os_bundle')"
             >
@@ -489,7 +494,7 @@ onMounted(async () => {
             </button>
             <button
               type="button"
-              class="btn-secondary text-xs"
+              class="btn-secondary text-xs min-w-[196px] justify-center"
               :disabled="updatingFromGh"
               @click="triggerGitHubUpdate('sysupgrade')"
             >
@@ -499,10 +504,10 @@ onMounted(async () => {
         </div>
 
         <!-- Right Column: Manual Firmware Upload (.bin / .tar.gz / r3p-api) -->
-        <div class="p-3 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between gap-2.5">
+        <div class="p-3 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between gap-2.5 min-w-0">
           <div>
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-bold text-emerald-300 uppercase">📁 Cập Nhật Firmware Thủ Công (Upload File)</span>
+            <div class="flex items-center justify-between mb-2 gap-2">
+              <span class="text-xs font-bold text-emerald-300 uppercase truncate">📁 Cập Nhật Firmware Thủ Công (Upload File)</span>
               <span class="badge badge-blue">SYSUPGRADE / OS BUNDLE</span>
             </div>
 
@@ -514,12 +519,12 @@ onMounted(async () => {
               <input
                 type="file"
                 accept=".bin,.tar.gz,.tgz,.ipk,.apk,*"
-                class="pro-input flex-1 text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded file:border-0 file:text-xs file:bg-sky-500/20 file:text-sky-300 hover:file:bg-sky-500/30"
+                class="pro-input flex-1 text-xs min-w-0 file:mr-2 file:py-1 file:px-2.5 file:rounded file:border-0 file:text-xs file:bg-sky-500/20 file:text-sky-300 hover:file:bg-sky-500/30"
                 @change="onFileSelected"
               />
               <button
                 type="button"
-                class="btn-primary text-xs whitespace-nowrap"
+                class="btn-primary text-xs whitespace-nowrap min-w-[148px] justify-center shrink-0"
                 :disabled="!selectedFwFile || uploadingFw"
                 @click="uploadManualFirmware"
               >
@@ -529,8 +534,8 @@ onMounted(async () => {
 
             <!-- Staged Firmware Verification Card -->
             <div v-if="stagedFw.present" class="p-2.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-[11px] space-y-1">
-              <div class="flex items-center justify-between">
-                <span class="font-bold text-emerald-300 mono">{{ stagedFw.filename }}</span>
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-bold text-emerald-300 mono truncate">{{ stagedFw.filename }}</span>
                 <span :class="stagedFw.valid ? 'badge badge-green' : 'badge badge-orange'">
                   {{ stagedFw.valid ? 'VERIFIED OK' : 'CHECK WARNING' }}
                 </span>
@@ -542,7 +547,7 @@ onMounted(async () => {
               <div class="mono text-[10px] text-gray-400 truncate" :title="stagedFw.sha256">
                 SHA256: {{ stagedFw.sha256 }}
               </div>
-              <div class="text-[10.5px] text-gray-300">{{ stagedFw.check_msg }}</div>
+              <div class="text-[10.5px] text-gray-300 break-words">{{ stagedFw.check_msg }}</div>
             </div>
           </div>
 
@@ -553,7 +558,7 @@ onMounted(async () => {
             </label>
             <button
               type="button"
-              class="btn-danger text-xs px-3.5"
+              class="btn-danger text-xs px-3.5 min-w-[216px] justify-center"
               :disabled="!stagedFw.present || applyingFw"
               @click="applyStagedFirmware"
             >
@@ -570,7 +575,7 @@ onMounted(async () => {
     </div>
 
     <!-- 2. Hardware, OS & System Settings Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-start">
       <!-- Hardware Specs -->
       <div class="pro-card">
         <div class="pro-card-header">
@@ -659,7 +664,7 @@ onMounted(async () => {
         </div>
 
         <div class="mt-3 pt-2 border-t border-white/5 flex justify-end">
-          <button type="submit" :disabled="savingSettings" class="btn-primary text-[11px]">
+          <button type="submit" :disabled="savingSettings" class="btn-primary text-[11px] min-w-[164px] justify-center">
             {{ savingSettings ? 'Applying…' : 'Save Hostname & Timezone' }}
           </button>
         </div>
@@ -673,7 +678,7 @@ onMounted(async () => {
       </div>
 
       <div class="flex flex-wrap items-center gap-2.5">
-        <button class="btn-secondary text-[11.5px]" @click="flushRam">
+        <button type="button" class="btn-secondary text-[11.5px]" @click="flushRam">
           Flush Memory Cache (drop_caches)
         </button>
 
@@ -695,7 +700,7 @@ onMounted(async () => {
         />
         <button
           type="button"
-          class="btn-secondary text-[11.5px] border-amber-500/40 text-amber-300 hover:bg-amber-500/10 flex items-center gap-1.5 cursor-pointer font-medium"
+          class="btn-secondary text-[11.5px] border-amber-500/40 text-amber-300 hover:bg-amber-500/10 flex items-center gap-1.5 cursor-pointer font-medium min-w-[208px] justify-center"
           :disabled="restoringConfig"
           @click="openRestorePicker"
         >
@@ -703,13 +708,13 @@ onMounted(async () => {
           <span>{{ restoringConfig ? 'Đang nạp file...' : 'Restore Config Backup (.tar.gz)' }}</span>
         </button>
 
-        <button class="btn-secondary text-[11.5px]" :disabled="loadingLogs" @click="fetchLogs">
+        <button type="button" class="btn-secondary text-[11.5px] min-w-[144px] justify-center" :disabled="loadingLogs" @click="fetchLogs">
           {{ loadingLogs ? 'Reading Logs…' : 'Refresh System Log ↻' }}
         </button>
 
         <button
           type="button"
-          class="px-3 py-1.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 font-semibold text-[11.5px] transition cursor-pointer"
+          class="px-3 py-1.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 font-semibold text-[11.5px] transition cursor-pointer min-w-[146px] text-center"
           :disabled="clearingLogs"
           @click="clearAllLogs"
         >
@@ -718,7 +723,8 @@ onMounted(async () => {
 
         <button
           v-if="!rebootConfirm"
-          class="btn-danger text-[11.5px] ml-auto"
+          type="button"
+          class="btn-danger text-[11.5px] ml-auto min-w-[120px] justify-center"
           @click="rebootConfirm = true"
         >
           Reboot Router…
@@ -727,13 +733,15 @@ onMounted(async () => {
         <div v-else class="flex items-center gap-2 bg-red-500/20 border border-red-500/30 px-3 py-1 rounded ml-auto">
           <span class="text-[11.5px] text-red-200 font-semibold">Confirm hardware reboot?</span>
           <button
+            type="button"
             :disabled="rebooting"
-            class="btn-danger text-[11px] py-0.5 px-2"
+            class="btn-danger text-[11px] py-0.5 px-2 min-w-[104px] justify-center"
             @click="triggerReboot"
           >
             {{ rebooting ? 'Rebooting…' : 'Yes, Reboot Now' }}
           </button>
           <button
+            type="button"
             class="btn-secondary text-[11px] py-0.5 px-2"
             @click="rebootConfirm = false"
           >

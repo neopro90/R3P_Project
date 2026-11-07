@@ -33,6 +33,12 @@ const broker = ref<IoTBroker>({
 const loading = ref(false)
 const probing = ref(false)
 const notice = ref<string | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
+function showNotice(msg: string, ms = 4000) {
+  notice.value = msg
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { notice.value = null }, ms)
+}
 
 const showAddDevice = ref(false)
 const newDev = ref({
@@ -52,7 +58,7 @@ async function loadIoT() {
       if (res.broker) broker.value = res.broker
     }
   } catch (err: any) {
-    notice.value = 'Error loading IoT: ' + (err?.message || err)
+    showNotice('Error loading IoT: ' + (err?.message || err), 5000)
   } finally {
     loading.value = false
   }
@@ -68,23 +74,21 @@ async function addDevice() {
     if (res?.devices) devices.value = res.devices
     showAddDevice.value = false
     newDev.value = { name: '', ip: '192.168.2.', mac: '', protocol: 'MQTT / ICMP', topic: '' }
-    notice.value = 'IoT device registered and probed!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('IoT device registered and probed!')
   } catch (err: any) {
-    notice.value = 'Add device failed: ' + (err?.message || err)
+    showNotice('Add device failed: ' + (err?.message || err), 5000)
   }
 }
 
 async function probeAllDevices() {
   probing.value = true
-  notice.value = 'Probing all registered IoT endpoints via ICMP…'
+  showNotice('Probing all registered IoT endpoints via ICMP…', 10000)
   try {
     const res = await apiRequest<{ devices: IoTDevice[] }>('/iot/ping', { method: 'POST' })
     if (res?.devices) devices.value = res.devices
-    notice.value = 'Reachability probe completed!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('Reachability probe completed!')
   } catch (err: any) {
-    notice.value = 'Probe failed: ' + (err?.message || err)
+    showNotice('Probe failed: ' + (err?.message || err), 5000)
   } finally {
     probing.value = false
   }
@@ -96,10 +100,9 @@ async function deleteDevice(id: string) {
       method: 'DELETE',
     })
     if (res?.devices) devices.value = res.devices
-    notice.value = 'Device removed from registry!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('Device removed from registry!')
   } catch (err: any) {
-    notice.value = 'Delete failed: ' + (err?.message || err)
+    showNotice('Delete failed: ' + (err?.message || err), 5000)
   }
 }
 
@@ -109,10 +112,9 @@ async function saveBroker() {
       method: 'PUT',
       body: JSON.stringify(broker.value),
     })
-    notice.value = 'MQTT Bridge configuration saved!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('MQTT Bridge configuration saved!')
   } catch (err: any) {
-    notice.value = 'Broker save error: ' + (err?.message || err)
+    showNotice('Broker save error: ' + (err?.message || err), 5000)
   }
 }
 
@@ -123,33 +125,37 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Toast Notification (Never shifts layout) -->
+    <div v-if="notice" class="r3p-toast r3p-toast-info">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">{{ notice }}</span>
+        <button type="button" class="text-sky-300 hover:text-white shrink-0 font-bold" @click="notice = null">✕</button>
+      </div>
+    </div>
+
     <!-- Top Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
       <div class="stat-mini">
         <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">MQTT Bridge</div>
-        <div class="mono text-sm font-bold text-emerald-400">{{ broker.enabled ? 'ENABLED' : 'DISABLED' }}</div>
-        <div class="text-[10px] text-gray-500">{{ broker.host }}:{{ broker.port }}</div>
+        <div class="mono text-sm font-bold text-emerald-400 truncate">{{ broker.enabled ? 'ENABLED' : 'DISABLED' }}</div>
+        <div class="text-[10px] text-gray-500 truncate">{{ broker.host }}:{{ broker.port }}</div>
       </div>
       <div class="stat-mini">
         <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Topic Namespace</div>
-        <div class="mono text-sm font-bold text-sky-400">{{ broker.topic_prefix }}/#</div>
-        <div class="text-[10px] text-gray-500">Home Assistant / MQTT</div>
+        <div class="mono text-sm font-bold text-sky-400 truncate">{{ broker.topic_prefix }}/#</div>
+        <div class="text-[10px] text-gray-500 truncate">Home Assistant / MQTT</div>
       </div>
       <div class="stat-mini">
         <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Registered Devices</div>
-        <div class="mono text-sm font-bold text-purple-400">{{ devices.length }} Endpoints</div>
-        <div class="text-[10px] text-gray-500">{{ devices.filter(d => d.online).length }} Online</div>
+        <div class="mono text-sm font-bold text-purple-400 truncate">{{ devices.length }} Endpoints</div>
+        <div class="text-[10px] text-gray-500 truncate">{{ devices.filter(d => d.online).length }} Online</div>
       </div>
       <div class="stat-mini">
         <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Health Probe</div>
-        <button class="btn-primary text-[11px] w-full justify-center py-1 mt-0.5" :disabled="probing" @click="probeAllDevices">
+        <button type="button" class="btn-primary text-[11px] w-full justify-center py-1 mt-0.5" :disabled="probing" @click="probeAllDevices">
           {{ probing ? 'Pinging All…' : '⚡ Probe All Devices' }}
         </button>
       </div>
-    </div>
-
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 text-[11.5px] font-medium">
-      {{ notice }}
     </div>
 
     <!-- Connected IoT Device Registry -->
@@ -157,8 +163,10 @@ onMounted(() => {
       <div class="pro-card-header">
         <span class="pro-card-title">IoT & Smart Device Registry ({{ devices.length }})</span>
         <div class="flex items-center gap-2">
-          <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadIoT">Refresh ↻</button>
-          <button class="btn-primary text-[11px] py-1" @click="showAddDevice = !showAddDevice">
+          <button type="button" class="btn-secondary text-[11px] py-1 min-w-[92px] justify-center" :disabled="loading" @click="loadIoT">
+            {{ loading ? 'Loading…' : 'Refresh ↻' }}
+          </button>
+          <button type="button" class="btn-primary text-[11px] py-1 min-w-[132px] justify-center" @click="showAddDevice = !showAddDevice">
             {{ showAddDevice ? 'Cancel' : '+ Register Device' }}
           </button>
         </div>
@@ -207,9 +215,9 @@ onMounted(() => {
             </tr>
             <tr v-for="d in devices" :key="d.id">
               <td class="mono font-semibold text-sky-400">{{ d.id }}</td>
-              <td class="font-medium text-gray-200">{{ d.name }}</td>
+              <td class="font-medium text-gray-200 max-w-[160px] truncate" :title="d.name">{{ d.name }}</td>
               <td class="mono text-gray-300">{{ d.ip }}</td>
-              <td class="mono text-purple-400">{{ d.topic }}</td>
+              <td class="mono text-purple-400 max-w-[180px] truncate" :title="d.topic">{{ d.topic }}</td>
               <td>
                 <span :class="d.online ? 'badge badge-green' : 'badge badge-red'">
                   {{ d.online ? 'ONLINE' : 'OFFLINE' }}
@@ -218,7 +226,7 @@ onMounted(() => {
               <td class="mono text-emerald-400">{{ d.latency }}</td>
               <td class="mono text-gray-400">{{ d.last_seen }}</td>
               <td>
-                <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteDevice(d.id)">
+                <button type="button" class="btn-danger text-[10px] py-0.5 px-2 min-w-[64px] justify-center" @click="deleteDevice(d.id)">
                   Remove
                 </button>
               </td>

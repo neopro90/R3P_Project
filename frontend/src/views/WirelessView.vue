@@ -122,11 +122,11 @@ async function forgetSavedNetwork(ssid: string) {
     })
     if (res?.networks) {
       savedNetworks.value = res.networks
-      notice.value = res.message || `Đã quên mạng "${ssid}"!`
+      showNotice(res.message || `Đã quên mạng "${ssid}"!`)
       await loadWireless()
     }
   } catch (err: any) {
-    notice.value = 'Lỗi quên mạng: ' + (err?.message || err)
+    showNotice('Lỗi quên mạng: ' + (err?.message || err))
   }
 }
 
@@ -137,10 +137,10 @@ async function reconnectSavedNetwork(net: SavedWifiNetwork) {
       method: 'POST',
       body: JSON.stringify({ ssid: net.ssid }),
     })
-    notice.value = res?.message || `Đang kết nối lại tới "${net.ssid}"...`
+    showNotice(res?.message || `Đang kết nối lại tới "${net.ssid}"...`, 4500)
     setTimeout(() => { void loadWireless(); void loadSavedNetworks() }, 4000)
   } catch (err: any) {
-    notice.value = 'Lỗi kết nối lại: ' + (err?.message || err)
+    showNotice('Lỗi kết nối lại: ' + (err?.message || err))
   }
 }
 const clientForm = ref({
@@ -162,6 +162,13 @@ const savingDevice = ref<string | null>(null)
 const restarting = ref(false)
 const notice = ref<string | null>(null)
 const editingRadio = ref<string | null>(null)
+
+function showNotice(msg: string, ms = 4000) {
+  notice.value = msg
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
 
 async function loadWireless() {
   loading.value = true
@@ -241,13 +248,13 @@ async function saveAndConnectClient() {
       body: JSON.stringify(clientForm.value),
     })
     showClientForm.value = false
-    notice.value = `Đã cấu hình thu Wi-Fi "${clientForm.value.ssid}"! Đang nhận IP và kiểm tra Internet…`
+    showNotice(`Đã cấu hình thu Wi-Fi "${clientForm.value.ssid}"! Đang nhận IP và kiểm tra Internet…`, 4500)
     setTimeout(async () => {
       await loadWireless()
       await systemStore.refreshInternet(true)
     }, 3500)
   } catch (err: any) {
-    notice.value = 'Kết nối Wi-Fi Client thất bại: ' + (err?.message || err)
+    showNotice('Kết nối Wi-Fi Client thất bại: ' + (err?.message || err))
   } finally {
     connectingClient.value = false
   }
@@ -258,11 +265,11 @@ async function disconnectClient() {
   notice.value = 'Đang ngắt kết nối Wi-Fi Client (WWAN)…'
   try {
     await apiRequest('/wireless/client', { method: 'DELETE' })
-    notice.value = 'Đã tắt chế độ thu Wi-Fi Client.'
+    showNotice('Đã tắt chế độ thu Wi-Fi Client.')
     await loadWireless()
     await systemStore.refreshInternet(true)
   } catch (err: any) {
-    notice.value = 'Lỗi khi tắt Wi-Fi Client: ' + (err?.message || err)
+    showNotice('Lỗi khi tắt Wi-Fi Client: ' + (err?.message || err))
   } finally {
     connectingClient.value = false
   }
@@ -324,19 +331,26 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Non-Shifting Notice Toast -->
+    <div
+      v-if="notice"
+      class="r3p-toast"
+      :class="notice.includes('Lỗi') || notice.includes('thất bại') || notice.includes('failed') || notice.includes('Error') ? 'r3p-toast-error' : 'r3p-toast-info'"
+    >
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
+    </div>
+
     <!-- Top Wireless Action Bar -->
     <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0d1322] border border-white/10 rounded px-3 py-1.5">
-      <div class="flex items-center gap-2 text-[11.5px]">
-        <span class="font-semibold text-gray-200">MediaTek MT7615N Dual-Band 4x4 MU-MIMO (AP Broadcast + WWAN Client Repeater)</span>
-        <span v-if="notice" class="px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 font-medium">
-          {{ notice }}
-        </span>
+      <div class="flex items-center gap-2 text-[11.5px] min-w-0">
+        <span class="font-semibold text-gray-200 truncate">MediaTek MT7615N Dual-Band 4x4 MU-MIMO (AP Broadcast + WWAN Client Repeater)</span>
       </div>
-      <div class="flex items-center gap-2">
-        <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadWireless">
-          Refresh Status ↻
+      <div class="flex items-center gap-2 shrink-0">
+        <button type="button" class="btn-secondary text-[11px] py-1 min-w-[118px]" :disabled="loading" @click="loadWireless">
+          {{ loading ? 'Refreshing…' : 'Refresh Status ↻' }}
         </button>
-        <button class="btn-primary text-[11px] py-1" :disabled="restarting" @click="restartWifi">
+        <button type="button" class="btn-primary text-[11px] py-1 min-w-[132px]" :disabled="restarting" @click="restartWifi">
           {{ restarting ? 'Reloading Wi-Fi…' : 'Reload All Radios' }}
         </button>
       </div>
@@ -344,13 +358,13 @@ onMounted(() => {
 
     <!-- Wireless Client / Repeater (Thu Wi-Fi Truy Cập Internet) -->
     <div class="pro-card border border-sky-500/30">
-      <div class="pro-card-header">
-        <div class="flex items-center gap-2">
+      <div class="pro-card-header flex-wrap">
+        <div class="flex items-center gap-2 min-w-0">
           <span
-            class="w-2.5 h-2.5 rounded-full"
+            class="w-2.5 h-2.5 rounded-full shrink-0"
             :class="clientStatus.connected ? 'bg-emerald-400 animate-pulse' : clientStatus.enabled ? 'bg-amber-400' : 'bg-gray-500'"
           ></span>
-          <span class="pro-card-title">Wireless WAN Client / Thu Wi-Fi Làm Internet (STA Mode · WWAN)</span>
+          <span class="pro-card-title truncate">Wireless WAN Client / Thu Wi-Fi Làm Internet (STA Mode · WWAN)</span>
           <span
             class="badge"
             :class="clientStatus.connected ? 'badge-green' : clientStatus.enabled ? 'badge-orange' : 'badge-gray'"
@@ -359,15 +373,17 @@ onMounted(() => {
           </span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-1.5">
+        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
           <button
-            class="btn-primary text-[11px] py-1"
+            type="button"
+            class="btn-primary text-[11px] py-1 min-w-[164px]"
             :disabled="scanning"
             @click="scanNearbyWifi('all')"
           >
             {{ scanning ? 'Đang quét sóng Wi-Fi…' : '🔍 Quét Cả 2.4G & 5G' }}
           </button>
           <button
+            type="button"
             class="btn-secondary text-[11px] py-1 border-purple-500/40 text-purple-300"
             :disabled="scanning"
             @click="scanNearbyWifi('5GHz')"
@@ -375,6 +391,7 @@ onMounted(() => {
             📡 Quét Riêng 5GHz
           </button>
           <button
+            type="button"
             class="btn-secondary text-[11px] py-1"
             :disabled="scanning"
             @click="scanNearbyWifi('2.4GHz')"
@@ -382,13 +399,15 @@ onMounted(() => {
             📶 Quét Riêng 2.4GHz
           </button>
           <button
-            class="btn-secondary text-[11px] py-1"
+            type="button"
+            class="btn-secondary text-[11px] py-1 min-w-[186px]"
             @click="showClientForm = !showClientForm"
           >
-            {{ showClientForm ? 'Ẩn Khung Nhập' : '+ Nhập Thủ Công Wi-Fi Cần Thu' }}
+            {{ showClientForm ? '✕ Ẩn Khung Nhập' : '+ Nhập Thủ Công Wi-Fi Cần Thu' }}
           </button>
           <button
             v-if="clientStatus.configured && clientStatus.enabled"
+            type="button"
             class="btn-danger text-[11px] py-1"
             :disabled="connectingClient"
             @click="disconnectClient"
@@ -501,19 +520,19 @@ onMounted(() => {
             <span class="text-xs font-bold text-gray-200">💾 Mạng Wi-Fi Đã Lưu ({{ savedNetworks.length }})</span>
             <span class="text-[10px] text-gray-500">Tự động kết nối lại hoặc xóa cấu hình</span>
           </div>
-          <button class="btn-secondary text-[10px] py-0.5 px-2" @click="loadSavedNetworks">Làm mới ↻</button>
+          <button type="button" class="btn-secondary text-[10px] py-0.5 px-2" @click="loadSavedNetworks">Làm mới ↻</button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
           <div
             v-for="net in savedNetworks"
             :key="net.ssid"
-            class="p-2.5 rounded-lg border bg-black/25 flex items-center justify-between gap-2"
+            class="p-2.5 rounded-lg border bg-black/25 flex items-center justify-between gap-2 min-w-0"
             :class="clientStatus.connected && clientStatus.ssid === net.ssid ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-white/10'"
           >
-            <div class="min-w-0">
-              <div class="flex items-center gap-1.5">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5 min-w-0">
                 <span class="font-bold text-xs truncate" :class="clientStatus.connected && clientStatus.ssid === net.ssid ? 'text-emerald-300' : 'text-gray-200'">{{ net.ssid }}</span>
-                <span class="text-[9px] px-1 py-0.2 rounded font-mono font-bold" :class="net.band === '5GHz' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'">{{ net.band }}</span>
+                <span class="text-[9px] px-1 py-0.2 rounded font-mono font-bold shrink-0" :class="net.band === '5GHz' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'">{{ net.band }}</span>
               </div>
               <div class="text-[10px] text-gray-500 mono truncate">
                 {{ net.encryption }} · {{ net.last_connected ? `Đã kết nối: ${net.last_connected}` : `Lưu: ${net.saved_at}` }}
@@ -523,6 +542,7 @@ onMounted(() => {
               <span v-if="clientStatus.connected && clientStatus.ssid === net.ssid" class="text-[10px] text-emerald-400 font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40">ĐANG DÙNG</span>
               <button
                 v-else
+                type="button"
                 class="btn-primary text-[10px] py-1 px-2"
                 title="Kết nối lại tới mạng này"
                 @click="reconnectSavedNetwork(net)"
@@ -530,6 +550,7 @@ onMounted(() => {
                 Kết Nối
               </button>
               <button
+                type="button"
                 class="btn-danger text-[10px] py-1 px-2"
                 title="Quên mạng này và xóa mật khẩu đã lưu"
                 @click="forgetSavedNetwork(net.ssid)"
@@ -606,6 +627,7 @@ onMounted(() => {
               <td class="mono text-xs text-gray-500">{{ net.bssid }}</td>
               <td>
                 <button
+                  type="button"
                   class="btn-primary text-[10.5px] py-0.5 px-2.5"
                   @click="selectNetworkForClient(net)"
                 >
@@ -619,12 +641,12 @@ onMounted(() => {
     </div>
 
     <!-- AP Broadcast Radios Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
       <div v-for="r in radios" :key="r.device" class="pro-card">
         <div class="pro-card-header">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full" :class="r.enabled ? 'bg-emerald-400' : 'bg-amber-400'"></span>
-            <span class="pro-card-title">{{ r.band }} AP · {{ r.chip }}</span>
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="r.enabled ? 'bg-emerald-400' : 'bg-amber-400'"></span>
+            <span class="pro-card-title truncate">{{ r.band }} AP · {{ r.chip }}</span>
           </div>
           <span :class="r.enabled ? 'badge badge-green' : 'badge badge-orange'">
             {{ r.enabled ? 'AP BROADCASTING' : 'RADIO DISABLED' }}
@@ -639,7 +661,7 @@ onMounted(() => {
           </div>
           <div class="flex items-center justify-between py-1 border-b border-white/5">
             <span class="text-gray-300 font-medium">Broadcast SSID</span>
-            <span class="mono font-bold text-sky-400 text-[14px]">{{ r.ssid }}</span>
+            <span class="mono font-bold text-sky-400 text-[14px] truncate max-w-[200px]">{{ r.ssid }}</span>
           </div>
           <div class="flex items-center justify-between py-1 border-b border-white/5">
             <span class="text-gray-300 font-medium">Channel & Bandwidth</span>
@@ -656,13 +678,14 @@ onMounted(() => {
 
           <div class="mt-3 pt-2.5 border-t border-white/5 flex justify-end gap-2.5">
             <button
-              class="btn-secondary text-[12.5px] py-1.5 px-3.5 font-semibold cursor-pointer"
+              type="button"
+              class="btn-secondary text-[12.5px] py-1.5 px-3.5 min-w-[106px] font-semibold cursor-pointer"
               :disabled="savingDevice === r.device"
               @click="toggleRadioEnabled(r)"
             >
               {{ r.enabled ? 'Disable AP' : 'Enable AP' }}
             </button>
-            <button class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold cursor-pointer" @click="editingRadio = r.device">
+            <button type="button" class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold cursor-pointer" @click="editingRadio = r.device">
               Configure AP Radio
             </button>
           </div>

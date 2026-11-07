@@ -658,7 +658,7 @@ onMounted(async () => {
           </button>
           <button
             type="button"
-            class="btn-primary py-1 px-2.5 text-xs flex items-center gap-1.5"
+            class="btn-primary py-1 px-2.5 min-w-[144px] text-xs flex items-center gap-1.5"
             @click="showConfig = !showConfig"
           >
             <span>⚙️</span>
@@ -757,7 +757,7 @@ onMounted(async () => {
               />
               <button
                 type="button"
-                class="btn-secondary py-1.5 px-2 text-xs shrink-0"
+                class="btn-secondary py-1.5 px-2 min-w-[46px] text-xs shrink-0"
                 @click="showApiKey = !showApiKey"
               >
                 {{ showApiKey ? 'Ẩn' : 'Hiện' }}
@@ -790,7 +790,7 @@ onMounted(async () => {
             </button>
             <button
               type="button"
-              class="btn-primary py-1 px-3 text-xs"
+              class="btn-primary py-1 px-3 min-w-[138px] text-xs"
               :disabled="savingConfig"
               @click="saveConfiguration(false)"
             >
@@ -813,6 +813,7 @@ onMounted(async () => {
               <span>Phiên Làm Việc ({{ sessions.length }})</span>
             </span>
             <button
+              type="button"
               class="btn-primary py-1 px-2.5 text-[12px] font-bold flex items-center gap-1"
               title="Tạo phiên trò chuyện mới"
               @click="createNewSession"
@@ -825,6 +826,7 @@ onMounted(async () => {
             <button
               v-for="sess in sessions"
               :key="sess.id"
+              type="button"
               class="px-3 py-1.5 rounded-lg border text-[13px] font-semibold whitespace-nowrap transition flex items-center gap-1.5 shrink-0"
               :class="activeSessionId === sess.id
                 ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
@@ -854,6 +856,7 @@ onMounted(async () => {
               </span>
             </div>
             <button
+              type="button"
               class="btn-secondary py-1 px-2.5 text-[12px] font-semibold"
               @click="showNewMemoryModal = true"
             >
@@ -868,12 +871,13 @@ onMounted(async () => {
               class="p-2.5 rounded-lg bg-black/30 border border-white/5 text-[12.5px] flex items-start justify-between gap-1.5 group"
             >
               <div class="min-w-0">
-                <div class="text-gray-200 leading-snug">{{ m.content }}</div>
+                <div class="text-gray-200 leading-snug break-words">{{ m.content }}</div>
                 <div class="text-[11px] text-gray-400 mt-1 mono font-medium">
                   {{ m.category }} · {{ m.created_at }}
                 </div>
               </div>
               <button
+                type="button"
                 class="text-gray-400 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition shrink-0 font-bold px-1"
                 title="Xóa ghi nhớ"
                 @click="deleteMemory(m.id)"
@@ -924,6 +928,7 @@ onMounted(async () => {
                 maintenance: '⚙️ Bảo trì',
               }"
               :key="key"
+              type="button"
               class="px-2.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition cursor-pointer"
               :class="activeCommandTab === key
                 ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
@@ -1009,6 +1014,7 @@ onMounted(async () => {
 
           <div class="flex items-center gap-2">
             <button
+              type="button"
               class="btn-secondary py-1 px-3 text-[12px] font-semibold"
               title="Xóa lịch sử chat trong phiên này"
               @click="clearChat"
@@ -1039,12 +1045,12 @@ onMounted(async () => {
 
             <!-- Message Bubble -->
             <div
-              class="max-w-[92%] rounded-xl px-4 py-3 text-[13.5px] leading-relaxed"
+              class="max-w-[92%] min-w-0 overflow-hidden rounded-xl px-4 py-3 text-[13.5px] leading-relaxed"
               :class="msg.role === 'user'
                 ? 'bg-sky-600/20 border border-sky-500/40 text-gray-100 rounded-tr-none'
                 : 'bg-black/40 border border-white/10 text-gray-100 rounded-tl-none space-y-2.5'"
             >
-              <div class="whitespace-pre-wrap select-text font-sans">{{ msg.content }}</div>
+              <div class="whitespace-pre-wrap break-words select-text font-sans">{{ msg.content }}</div>
 
               <!-- Executed Shell Command Results (Logs) -->
               <div v-if="msg.commands && msg.commands.length > 0" class="mt-2.5 space-y-2 pt-2.5 border-t border-white/10">
@@ -1054,15 +1060,15 @@ onMounted(async () => {
                 <div
                   v-for="(cmd, cIdx) in msg.commands"
                   :key="cIdx"
-                  class="p-2.5 rounded-lg bg-black/70 border border-white/10 mono text-[12px]"
+                  class="p-2.5 rounded-lg bg-black/70 border border-white/10 mono text-[12px] min-w-0 overflow-hidden"
                 >
-                  <div class="flex items-center justify-between text-emerald-400 font-bold mb-1.5">
-                    <span class="text-[13px]">$ {{ cmd.command }}</span>
-                    <span class="text-[11px] text-gray-400 font-normal">
+                  <div class="flex items-center justify-between gap-2 text-emerald-400 font-bold mb-1.5">
+                    <span class="text-[13px] truncate">$ {{ cmd.command }}</span>
+                    <span class="text-[11px] text-gray-400 font-normal shrink-0">
                       {{ cmd.duration_ms }}ms · Exit {{ cmd.exit_code }}
                     </span>
                   </div>
-                  <pre class="text-gray-200 whitespace-pre-wrap max-h-56 overflow-y-auto text-[12px] leading-relaxed font-mono">{{ cmd.output }}</pre>
+                  <pre class="text-gray-200 whitespace-pre-wrap break-words max-h-56 overflow-y-auto text-[12px] leading-relaxed font-mono">{{ cmd.output }}</pre>
                 </div>
               </div>
             </div>
@@ -1309,7 +1315,7 @@ onMounted(async () => {
       <div class="pro-card max-w-md w-full border-sky-500/40 p-4 space-y-3">
         <div class="flex items-center justify-between border-b border-white/10 pb-2">
           <h3 class="text-sm font-bold text-gray-200">Thêm Ghi Nhớ Dài Hạn Cho AI</h3>
-          <button class="text-gray-400 hover:text-white" @click="showNewMemoryModal = false">✕</button>
+          <button type="button" class="text-gray-400 hover:text-white cursor-pointer" @click="showNewMemoryModal = false">✕</button>
         </div>
 
         <div>
@@ -1333,8 +1339,9 @@ onMounted(async () => {
         </div>
 
         <div class="flex justify-end gap-2 pt-2">
-          <button class="btn-secondary text-xs" @click="showNewMemoryModal = false">Hủy</button>
+          <button type="button" class="btn-secondary text-xs" @click="showNewMemoryModal = false">Hủy</button>
           <button
+            type="button"
             class="btn-primary text-xs"
             :disabled="!newMemoryContent.trim()"
             @click="addMemory"

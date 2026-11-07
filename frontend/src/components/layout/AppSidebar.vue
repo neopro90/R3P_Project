@@ -126,6 +126,7 @@ function navigate(to: string) {
       </button>
       <button
         v-else
+        type="button"
         class="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition cursor-pointer"
         :title="collapsed ? 'Expand' : 'Collapse'"
         @click="emit('toggle')"
@@ -146,6 +147,7 @@ function navigate(to: string) {
           <button
             v-for="item in group.items"
             :key="item.to"
+            type="button"
             class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[17px] font-medium transition group relative text-left cursor-pointer"
             :class="isActive(item.to)
               ? 'bg-sky-500/15 text-sky-400 border border-sky-500/35 shadow-sm font-bold'

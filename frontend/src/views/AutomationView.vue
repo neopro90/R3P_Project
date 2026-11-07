@@ -13,6 +13,12 @@ interface CronEntry {
 const jobs = ref<CronEntry[]>([])
 const loading = ref(false)
 const notice = ref<string | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
+function showNotice(msg: string, ms = 4000) {
+  notice.value = msg
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { notice.value = null }, ms)
+}
 const runOutput = ref<string | null>(null)
 const runningCmd = ref<string | null>(null)
 
@@ -45,7 +51,7 @@ async function loadAutomation() {
       }
     }
   } catch (err: any) {
-    notice.value = 'Error loading automation: ' + (err?.message || err)
+    showNotice('Error loading automation: ' + (err?.message || err), 5000)
   } finally {
     loading.value = false
   }
@@ -60,10 +66,9 @@ async function addCron() {
     })
     if (res?.jobs) jobs.value = res.jobs
     showAddCron.value = false
-    notice.value = 'Scheduled task saved to /etc/crontabs/root!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('Scheduled task saved to /etc/crontabs/root!')
   } catch (err: any) {
-    notice.value = 'Add cron error: ' + (err?.message || err)
+    showNotice('Add cron error: ' + (err?.message || err), 5000)
   }
 }
 
@@ -74,8 +79,9 @@ async function toggleCron(c: CronEntry, idx: number) {
       body: JSON.stringify({ index: idx, enabled: !c.enabled }),
     })
     if (res?.jobs) jobs.value = res.jobs
+    showNotice(`Scheduled job #${idx + 1} ${!c.enabled ? 'enabled' : 'disabled'}!`)
   } catch (err: any) {
-    notice.value = 'Toggle error: ' + (err?.message || err)
+    showNotice('Toggle error: ' + (err?.message || err), 5000)
   }
 }
 
@@ -85,10 +91,9 @@ async function deleteCron(idx: number) {
       method: 'DELETE',
     })
     if (res?.jobs) jobs.value = res.jobs
-    notice.value = 'Cron job removed!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('Cron job removed!')
   } catch (err: any) {
-    notice.value = 'Delete error: ' + (err?.message || err)
+    showNotice('Delete error: ' + (err?.message || err), 5000)
   }
 }
 
@@ -121,10 +126,9 @@ async function saveTelegram() {
       }),
     })
     telegramConfigured.value = true
-    notice.value = 'Telegram Bot configuration saved!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showNotice('Telegram Bot configuration saved!')
   } catch (err: any) {
-    notice.value = 'Telegram error: ' + (err?.message || err)
+    showNotice('Telegram error: ' + (err?.message || err), 5000)
   }
 }
 
@@ -138,9 +142,9 @@ async function testTelegram() {
         chat_id: telegramChatId.value.trim(),
       }),
     })
-    notice.value = res.message || 'Test ping sent!'
+    showNotice(res.message || 'Test ping sent!')
   } catch (err: any) {
-    notice.value = 'Telegram test error: ' + (err?.message || err)
+    showNotice('Telegram test error: ' + (err?.message || err), 5000)
   } finally {
     telegramTesting.value = false
   }
@@ -153,8 +157,12 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 text-[11.5px] font-medium">
-      {{ notice }}
+    <!-- Floating Toast Notification (Never shifts layout) -->
+    <div v-if="notice" class="r3p-toast r3p-toast-info">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">{{ notice }}</span>
+        <button type="button" class="text-sky-300 hover:text-white shrink-0 font-bold" @click="notice = null">✕</button>
+      </div>
     </div>
 
     <!-- Automation Cron Jobs Table -->
@@ -162,8 +170,10 @@ onMounted(() => {
       <div class="pro-card-header">
         <span class="pro-card-title">Scheduled Cron Jobs (/etc/crontabs/root)</span>
         <div class="flex items-center gap-2">
-          <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadAutomation">Refresh ↻</button>
-          <button class="btn-primary text-[11px] py-1" @click="showAddCron = !showAddCron">
+          <button type="button" class="btn-secondary text-[11px] py-1 min-w-[92px] justify-center" :disabled="loading" @click="loadAutomation">
+            {{ loading ? 'Loading…' : 'Refresh ↻' }}
+          </button>
+          <button type="button" class="btn-primary text-[11px] py-1 min-w-[154px] justify-center" @click="showAddCron = !showAddCron">
             {{ showAddCron ? 'Cancel' : '+ Add Scheduled Task' }}
           </button>
         </div>
@@ -181,7 +191,7 @@ onMounted(() => {
         </div>
         <div class="flex gap-2">
           <input v-model="newCron.description" type="text" class="w-full pro-input" placeholder="Description" />
-          <button type="submit" class="btn-primary shrink-0">Save</button>
+          <button type="submit" class="btn-primary shrink-0 min-w-[68px] justify-center">Save</button>
         </div>
       </form>
 
@@ -203,7 +213,7 @@ onMounted(() => {
             <tr v-for="(c, idx) in jobs" :key="idx">
               <td class="mono font-semibold text-sky-400">{{ c.schedule }}</td>
               <td class="mono text-gray-200 max-w-sm truncate" :title="c.command">{{ c.command }}</td>
-              <td class="text-gray-400">{{ c.description }}</td>
+              <td class="text-gray-400 max-w-[220px] truncate" :title="c.description">{{ c.description }}</td>
               <td>
                 <span :class="c.enabled ? 'badge badge-green' : 'badge badge-gray'">
                   {{ c.enabled ? 'ACTIVE' : 'DISABLED' }}
@@ -212,16 +222,17 @@ onMounted(() => {
               <td>
                 <div class="flex items-center gap-1.5">
                   <button
-                    class="btn-primary text-[10px] py-0.5 px-2"
+                    type="button"
+                    class="btn-primary text-[10px] py-0.5 px-2 min-w-[82px] justify-center"
                     :disabled="runningCmd === c.command"
                     @click="runNow(c.command)"
                   >
                     {{ runningCmd === c.command ? 'Running…' : '▶ Run Now' }}
                   </button>
-                  <button class="btn-secondary text-[10px] py-0.5 px-2" @click="toggleCron(c, idx)">
+                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2 min-w-[64px] justify-center" @click="toggleCron(c, idx)">
                     {{ c.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteCron(idx)">
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2 min-w-[58px] justify-center" @click="deleteCron(idx)">
                     Delete
                   </button>
                 </div>
@@ -234,14 +245,14 @@ onMounted(() => {
       <div v-if="runOutput" class="mt-3">
         <div class="flex items-center justify-between text-[10.5px] text-gray-400 mb-1">
           <span>Task Execution Output</span>
-          <button class="text-gray-400 hover:text-white" @click="runOutput = null">Clear ×</button>
+          <button type="button" class="text-gray-400 hover:text-white cursor-pointer" @click="runOutput = null">Clear ×</button>
         </div>
         <pre class="bg-black/60 border border-white/10 rounded p-2 mono text-[11px] text-emerald-300 overflow-x-auto whitespace-pre-wrap">{{ runOutput }}</pre>
       </div>
     </div>
 
     <!-- Integrations Grid: Telegram Bot & Quick System Scripts -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
       <!-- Telegram Notifications -->
       <form class="pro-card" @submit.prevent="saveTelegram">
         <div class="pro-card-header">
@@ -276,12 +287,12 @@ onMounted(() => {
             <button
               type="button"
               :disabled="telegramTesting"
-              class="btn-secondary text-[11px]"
+              class="btn-secondary text-[11px] min-w-[152px] justify-center"
               @click="testTelegram"
             >
               {{ telegramTesting ? 'Sending…' : 'Send Test Notification' }}
             </button>
-            <button type="submit" class="btn-primary text-[11px]">Save Bot Config</button>
+            <button type="submit" class="btn-primary text-[11px] min-w-[116px] justify-center">Save Bot Config</button>
           </div>
         </div>
       </form>
@@ -294,33 +305,48 @@ onMounted(() => {
         </div>
 
         <div class="space-y-2 text-[12px]">
-          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between">
-            <div>
-              <div class="font-medium text-gray-200">Flush Linux Memory Cache</div>
-              <div class="mono text-[10.5px] text-gray-400">sync; echo 3 > /proc/sys/vm/drop_caches; free -m</div>
+          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="font-medium text-gray-200 truncate">Flush Linux Memory Cache</div>
+              <div class="mono text-[10.5px] text-gray-400 truncate">sync; echo 3 > /proc/sys/vm/drop_caches; free -m</div>
             </div>
-            <button class="btn-secondary text-[11px]" @click="runNow('sync; echo 3 > /proc/sys/vm/drop_caches; free -m')">
-              ▶ Execute
+            <button
+              type="button"
+              class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
+              :disabled="runningCmd === 'sync; echo 3 > /proc/sys/vm/drop_caches; free -m'"
+              @click="runNow('sync; echo 3 > /proc/sys/vm/drop_caches; free -m')"
+            >
+              {{ runningCmd === 'sync; echo 3 > /proc/sys/vm/drop_caches; free -m' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
 
-          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between">
-            <div>
-              <div class="font-medium text-gray-200">Inspect Active Listening Sockets</div>
-              <div class="mono text-[10.5px] text-gray-400">netstat -tulnp</div>
+          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="font-medium text-gray-200 truncate">Inspect Active Listening Sockets</div>
+              <div class="mono text-[10.5px] text-gray-400 truncate">netstat -tulnp</div>
             </div>
-            <button class="btn-secondary text-[11px]" @click="runNow('netstat -tulnp 2>/dev/null || ss -tuln')">
-              ▶ Execute
+            <button
+              type="button"
+              class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
+              :disabled="runningCmd === 'netstat -tulnp 2>/dev/null || ss -tuln'"
+              @click="runNow('netstat -tulnp 2>/dev/null || ss -tuln')"
+            >
+              {{ runningCmd === 'netstat -tulnp 2>/dev/null || ss -tuln' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
 
-          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between">
-            <div>
-              <div class="font-medium text-gray-200">Reload DNS & DHCP Server</div>
-              <div class="mono text-[10.5px] text-gray-400">/etc/init.d/dnsmasq reload</div>
+          <div class="p-2 rounded bg-black/25 border border-white/5 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="font-medium text-gray-200 truncate">Reload DNS & DHCP Server</div>
+              <div class="mono text-[10.5px] text-gray-400 truncate">/etc/init.d/dnsmasq reload</div>
             </div>
-            <button class="btn-secondary text-[11px]" @click="runNow('/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly')">
-              ▶ Execute
+            <button
+              type="button"
+              class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
+              :disabled="runningCmd === '/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly'"
+              @click="runNow('/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly')"
+            >
+              {{ runningCmd === '/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
         </div>

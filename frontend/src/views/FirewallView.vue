@@ -45,6 +45,13 @@ const conntrackMax = ref(16384)
 const loading = ref(false)
 const notice = ref<string | null>(null)
 
+function showNotice(msg: string, ms = 3500) {
+  notice.value = msg
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
+
 const showAddRedirect = ref(false)
 const newRedir = ref({ name: '', proto: 'tcp', src_dport: '', dest_ip: '192.168.2.100', dest_port: '' })
 
@@ -86,11 +93,10 @@ async function addRedirect() {
     })
     showAddRedirect.value = false
     newRedir.value = { name: '', proto: 'tcp', src_dport: '', dest_ip: '192.168.2.100', dest_port: '' }
-    notice.value = 'Port forward added and fw4 reloaded!'
+    showNotice('Port forward added and fw4 reloaded!')
     await loadFirewall()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
@@ -100,20 +106,20 @@ async function toggleRedirect(r: RedirectItem) {
       method: 'PATCH',
       body: JSON.stringify({ id: r.id, enabled: !r.enabled }),
     })
+    showNotice(`Port forward '${r.name || r.id}' ${!r.enabled ? 'enabled' : 'disabled'}!`)
     await loadFirewall()
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
 async function deleteRedirect(id: string) {
   try {
     await apiRequest(`/firewall/redirect?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
-    notice.value = 'Port forward deleted!'
+    showNotice('Port forward deleted!')
     await loadFirewall()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
@@ -126,11 +132,10 @@ async function addRule() {
     })
     showAddRule.value = false
     newRule.value = { name: '', src: 'wan', proto: 'tcp', dest_port: '', target: 'ACCEPT' }
-    notice.value = 'Firewall rule added and fw4 reloaded!'
+    showNotice('Firewall rule added and fw4 reloaded!')
     await loadFirewall()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
@@ -140,20 +145,20 @@ async function toggleRule(r: RuleItem) {
       method: 'PATCH',
       body: JSON.stringify({ id: r.id, enabled: !r.enabled }),
     })
+    showNotice(`Traffic rule '${r.name || r.id}' ${!r.enabled ? 'enabled' : 'disabled'}!`)
     await loadFirewall()
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
 async function deleteRule(id: string) {
   try {
     await apiRequest(`/firewall/rule?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
-    notice.value = 'Traffic rule deleted!'
+    showNotice('Traffic rule deleted!')
     await loadFirewall()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showNotice('Error: ' + (err?.message || err))
   }
 }
 
@@ -188,15 +193,22 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 text-[11.5px] font-medium">
-      {{ notice }}
+    <div
+      v-if="notice"
+      class="r3p-toast"
+      :class="notice.includes('Error') ? 'r3p-toast-error' : 'r3p-toast-success'"
+    >
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
     </div>
 
     <!-- Zones Overview -->
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Firewall Security Zones (UCI)</span>
-        <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadFirewall">Refresh ↻</button>
+        <button type="button" class="btn-secondary text-[11px] py-1 min-w-[92px]" :disabled="loading" @click="loadFirewall">
+          {{ loading ? 'Loading…' : 'Refresh ↻' }}
+        </button>
       </div>
       <div class="overflow-x-auto">
         <table class="pro-table">
@@ -228,8 +240,8 @@ onMounted(() => {
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Port Forwarding / DNAT Redirections ({{ redirects.length }})</span>
-        <button class="btn-primary text-[12px] py-1 px-3" @click="showAddRedirect = !showAddRedirect">
-          {{ showAddRedirect ? 'Cancel' : '+ Add Port Forward' }}
+        <button type="button" class="btn-primary text-[12px] py-1 px-3 min-w-[146px]" @click="showAddRedirect = !showAddRedirect">
+          {{ showAddRedirect ? '✕ Cancel' : '+ Add Port Forward' }}
         </button>
       </div>
 
@@ -292,10 +304,10 @@ onMounted(() => {
               </td>
               <td>
                 <div class="flex items-center gap-2">
-                  <button class="btn-secondary text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="toggleRedirect(pf)">
+                  <button type="button" class="btn-secondary text-[11.5px] py-1 px-2.5 min-w-[66px] font-semibold cursor-pointer" @click="toggleRedirect(pf)">
                     {{ pf.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button class="btn-danger text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="deleteRedirect(pf.id)">
+                  <button type="button" class="btn-danger text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="deleteRedirect(pf.id)">
                     Delete
                   </button>
                 </div>
@@ -310,8 +322,8 @@ onMounted(() => {
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Firewall Traffic Rules ({{ rules.length }})</span>
-        <button class="btn-primary text-[11px]" @click="showAddRule = !showAddRule">
-          {{ showAddRule ? 'Cancel' : '+ Add Traffic Rule' }}
+        <button type="button" class="btn-primary text-[11px] min-w-[138px]" @click="showAddRule = !showAddRule">
+          {{ showAddRule ? '✕ Cancel' : '+ Add Traffic Rule' }}
         </button>
       </div>
 
@@ -382,10 +394,10 @@ onMounted(() => {
               </td>
               <td>
                 <div class="flex items-center gap-1.5">
-                  <button class="btn-secondary text-[10px] py-0.5 px-2" @click="toggleRule(r)">
+                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2 min-w-[58px]" @click="toggleRule(r)">
                     {{ r.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteRule(r.id)">
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2" @click="deleteRule(r.id)">
                     Delete
                   </button>
                 </div>

@@ -138,7 +138,7 @@ function signOut() {
       <!-- 2. 1-Click Light / Dark Mode Button -->
       <button
         type="button"
-        class="flex items-center gap-1.5 px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer text-xs lg:text-[13px]"
+        class="flex items-center justify-center gap-1.5 px-2.5 py-1 lg:px-3.5 lg:py-1.5 sm:min-w-[82px] rounded-lg bg-black/25 border border-white/10 hover:border-sky-500/40 text-gray-200 font-semibold transition cursor-pointer text-xs lg:text-[13px] shrink-0"
         title="Đổi giao diện Sáng / Tối (Light / Dark Mode)"
         @click="prefs.toggleTheme()"
       >
@@ -149,7 +149,7 @@ function signOut() {
       <!-- 3. Single 1-Click Rotating Language Button (VI ➔ EN ➔ CN ➔ VI) -->
       <button
         type="button"
-        class="px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-xs lg:text-[13px] font-bold transition flex items-center gap-1 cursor-pointer shadow-sm"
+        class="px-2.5 py-1 lg:px-3.5 lg:py-1.5 min-w-[54px] justify-center rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-xs lg:text-[13px] font-bold transition flex items-center gap-1 cursor-pointer shadow-sm shrink-0"
         title="Nhấn để đổi ngôn ngữ (Xoay vòng: VI ➔ EN ➔ CN)"
         @click="rotateLang"
       >
@@ -158,27 +158,36 @@ function signOut() {
       </button>
 
       <!-- 4. Internet Status Badge -->
-      <div
-        class="flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-semibold cursor-pointer select-none transition"
+      <button
+        type="button"
+        class="flex items-center justify-center gap-1.5 px-2.5 py-1 sm:min-w-[104px] rounded-md border text-xs font-semibold cursor-pointer select-none transition shrink-0"
         :class="system.internet?.online
           ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
           : 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'"
         title="Bấm để kiểm tra lại kết nối Internet"
+        :disabled="checkingNet"
         @click="recheckInternet"
       >
-        <span class="w-1.5 h-1.5 rounded-full" :class="system.internet?.online ? 'bg-emerald-400' : 'bg-rose-400'"></span>
-        <span class="hidden sm:inline font-mono text-[11px]">{{ wanModeLabel }}</span>
-      </div>
+        <span
+          class="w-1.5 h-1.5 rounded-full shrink-0"
+          :class="checkingNet ? 'bg-sky-400 animate-ping' : (system.internet?.online ? 'bg-emerald-400' : 'bg-rose-400')"
+        ></span>
+        <span class="hidden sm:inline font-mono text-[11px] text-center">
+          {{ checkingNet ? 'CHECKING…' : wanModeLabel }}
+        </span>
+      </button>
 
       <!-- External Public IP (Desktop) -->
       <button
         type="button"
-        class="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-gray-300 hover:border-sky-500/40 text-xs font-mono transition cursor-pointer"
+        class="hidden xl:flex items-center justify-center gap-1.5 px-2.5 py-1 min-w-[148px] rounded-md bg-white/5 border border-white/10 text-gray-300 hover:border-sky-500/40 text-xs font-mono transition cursor-pointer shrink-0"
         :title="system.internet?.isp ? `ISP: ${system.internet.isp} · Click để copy IP` : 'IP Công Cộng Ngoài Internet · Click để copy'"
         @click="copyExternalIp"
       >
-        <span class="text-gray-400">IP:</span>
-        <span class="text-sky-400 font-semibold">{{ copiedIp ? 'Đã copy!' : (system.internet?.external_ip || '—') }}</span>
+        <span class="text-gray-400 shrink-0">IP:</span>
+        <span class="text-sky-400 font-semibold min-w-[108px] text-center truncate">
+          {{ copiedIp ? '✓ Đã copy!' : (system.internet?.external_ip || '—') }}
+        </span>
       </button>
 
       <!-- 5. User Profile Menu -->

@@ -115,6 +115,22 @@ const loading = ref(false)
 const notice = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 
+function showNotice(msg: string, ms = 4000) {
+  notice.value = msg
+  errorMsg.value = null
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
+
+function showError(msg: string, ms = 4500) {
+  errorMsg.value = msg
+  notice.value = null
+  setTimeout(() => {
+    if (errorMsg.value === msg) errorMsg.value = null
+  }, ms)
+}
+
 const newFolderName = ref('')
 const showNewFolder = ref(false)
 const uploading = ref(false)
@@ -174,11 +190,11 @@ async function runFormatUSB() {
       body: JSON.stringify(formatForm.value),
     })
     formatLog.value = res?.log || 'Format hoàn tất!'
-    notice.value = res?.message || 'Đã Format USB thành công!'
+    showNotice(res?.message || 'Đã Format USB thành công!', 5000)
     formatConfirm.value = false
     await loadNAS(res?.mount_point || '/mnt/sda1')
   } catch (err: any) {
-    errorMsg.value = 'Format USB thất bại: ' + (err?.message || err)
+    showError('Format USB thất bại: ' + (err?.message || err))
     formatLog.value = 'LỖI: ' + (err?.message || err)
   } finally {
     formattingUsb.value = false
@@ -193,10 +209,10 @@ async function toggleMountUSB(device: string, action: 'mount' | 'unmount') {
       method: 'POST',
       body: JSON.stringify({ device, action }),
     })
-    notice.value = res?.message || `Đã ${action} ${device}!`
+    showNotice(res?.message || `Đã ${action} ${device}!`)
     await loadNAS()
   } catch (err: any) {
-    errorMsg.value = `Lỗi ${action}: ` + (err?.message || err)
+    showError(`Lỗi ${action}: ` + (err?.message || err))
   } finally {
     mountingUsb.value = false
   }
@@ -213,10 +229,10 @@ async function runDiskBenchmark() {
     })
     if (res) {
       benchResult.value = res
-      notice.value = `Hoàn tất Benchmark ${res.size_mb}MB: Ghi ${res.write_mbps} MB/s · Đọc ${res.read_mbps} MB/s!`
+      showNotice(`Hoàn tất Benchmark ${res.size_mb}MB: Ghi ${res.write_mbps} MB/s · Đọc ${res.read_mbps} MB/s!`, 5000)
     }
   } catch (err: any) {
-    notice.value = 'Benchmark lỗi: ' + (err?.message || err)
+    showError('Benchmark lỗi: ' + (err?.message || err))
   } finally {
     runningBench.value = false
   }
@@ -231,11 +247,10 @@ async function createFolder() {
     })
     newFolderName.value = ''
     showNewFolder.value = false
-    notice.value = 'Folder created!'
+    showNotice('Folder created!')
     await loadNAS()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Mkdir failed: ' + (err?.message || err)
+    showError('Mkdir failed: ' + (err?.message || err))
   }
 }
 
@@ -258,11 +273,10 @@ async function onFileSelected(event: Event) {
     if (!resp.ok || !json.ok) {
       throw new Error(json.error || `HTTP ${resp.status}`)
     }
-    notice.value = `Uploaded ${file.name} (${formatBytes(file.size)})!`
+    showNotice(`Uploaded ${file.name} (${formatBytes(file.size)})!`)
     await loadNAS()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Upload failed: ' + (err?.message || err)
+    showError('Upload failed: ' + (err?.message || err))
   } finally {
     uploading.value = false
     input.value = ''
@@ -272,11 +286,10 @@ async function onFileSelected(event: Event) {
 async function deleteEntry(p: string) {
   try {
     await apiRequest(`/nas/file?path=${encodeURIComponent(p)}`, { method: 'DELETE' })
-    notice.value = 'Deleted ' + p
+    showNotice('Deleted ' + p)
     await loadNAS()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Delete failed: ' + (err?.message || err)
+    showError('Delete failed: ' + (err?.message || err))
   }
 }
 
@@ -297,20 +310,20 @@ async function addShare() {
     })
     showAddShare.value = false
     newShare.value = { name: '', path: '/mnt/sda1/share', read_only: false, guest_ok: true, comment: '' }
-    notice.value = 'Shared folder added!'
+    showNotice('Shared folder added!')
     await loadNAS()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showError('Error: ' + (err?.message || err))
   }
 }
 
 async function removeShare(name: string) {
   try {
     await apiRequest(`/nas/shares?name=${encodeURIComponent(name)}`, { method: 'DELETE' })
+    showNotice(`Removed share '${name}'!`)
     await loadNAS()
   } catch (err: any) {
-    notice.value = 'Error: ' + (err?.message || err)
+    showError('Error: ' + (err?.message || err))
   }
 }
 
@@ -337,19 +350,30 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Non-Shifting Notices -->
+    <div v-if="notice" class="r3p-toast r3p-toast-info">
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
+    </div>
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <span class="r3p-toast-text">⚠ {{ errorMsg }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="errorMsg = null">✕</button>
+    </div>
+
     <!-- USB 3.0 Dual-Role (Storage + USB Tethering/4G WAN) & High-Speed Benchmark Card -->
     <div class="pro-card border border-sky-500/30">
-      <div class="pro-card-header">
-        <div class="flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span class="pro-card-title">USB 3.0 SuperSpeed Dual-Role Engine (Storage NAS + USB Tethering / 4G WAN)</span>
+      <div class="pro-card-header flex-wrap">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+          <span class="pro-card-title truncate">USB 3.0 SuperSpeed Dual-Role Engine (Storage NAS + USB Tethering / 4G WAN)</span>
           <span class="badge badge-blue uppercase">MODE: {{ usbStatus.active_mode }}</span>
           <span v-if="usbStatus.hotplug_ready" class="badge badge-green">AUTO-HOTPLUG ACTIVE</span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
           <button
-            class="btn-danger text-[12.5px] py-1.5 px-3 font-bold"
+            type="button"
+            class="btn-danger text-[12.5px] py-1.5 px-3 min-w-[184px] font-bold"
             @click="showFormatPanel = !showFormatPanel"
           >
             {{ showFormatPanel ? '✕ Đóng Công Cụ Format' : '🛠 Format USB / Ổ Cứng' }}
@@ -360,13 +384,14 @@ onMounted(() => {
             <option :value="256">Benchmark 256 MB</option>
           </select>
           <button
-            class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold shadow-md"
+            type="button"
+            class="btn-primary text-[12.5px] py-1.5 px-3.5 min-w-[174px] font-bold shadow-md"
             :disabled="runningBench"
             @click="runDiskBenchmark"
           >
             {{ runningBench ? '⚡ Đang Test Tốc Độ…' : '⚡ Test Tốc Độ Đọc/Ghi' }}
           </button>
-          <button class="btn-secondary text-[12.5px] py-1.5 px-3 font-bold" :disabled="loading" @click="loadNAS()">↻</button>
+          <button type="button" class="btn-secondary text-[12.5px] py-1.5 px-3 font-bold" :disabled="loading" @click="loadNAS()">↻</button>
         </div>
       </div>
 
@@ -492,6 +517,7 @@ onMounted(() => {
               <div class="flex items-center gap-1.5 pt-1 border-t border-white/5">
                 <button
                   v-if="d.mounted"
+                  type="button"
                   class="btn-secondary text-[10px] py-0.5 px-2"
                   :disabled="mountingUsb"
                   @click="toggleMountUSB(d.device, 'unmount')"
@@ -500,6 +526,7 @@ onMounted(() => {
                 </button>
                 <button
                   v-else
+                  type="button"
                   class="btn-primary text-[10px] py-0.5 px-2"
                   :disabled="mountingUsb"
                   @click="toggleMountUSB(d.device, 'mount')"
@@ -507,6 +534,7 @@ onMounted(() => {
                   🔌 Mount {{ d.device }}
                 </button>
                 <button
+                  type="button"
                   class="btn-danger text-[10px] py-0.5 px-2 ml-auto"
                   @click="formatForm.device = d.device; showFormatPanel = true"
                 >
@@ -517,7 +545,7 @@ onMounted(() => {
           </div>
           <div v-else class="text-gray-400 text-xs py-2 space-y-1.5">
             <p>Khi cắm USB hoặc ổ cứng di động vào cổng USB 3.0, hệ thống tự động mount vào <code class="mono text-sky-300">/mnt/sda1</code>.</p>
-            <button class="btn-secondary text-[10.5px] py-0.5 px-2" @click="showFormatPanel = true">
+            <button type="button" class="btn-secondary text-[10.5px] py-0.5 px-2" @click="showFormatPanel = true">
               🛠 Mở Công Cụ Format USB Thủ Công
             </button>
           </div>
@@ -609,22 +637,15 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 text-[11.5px] font-medium">
-      {{ notice }}
-    </div>
-    <div v-if="errorMsg" class="px-3 py-1.5 rounded bg-red-500/15 border border-red-500/30 text-red-300 text-[11.5px] font-medium">
-      ⚠ {{ errorMsg }}
-    </div>
-
     <!-- Interactive NAS File Manager -->
     <div class="pro-card">
-      <div class="pro-card-header">
-        <div class="flex items-center gap-2">
+      <div class="pro-card-header flex-wrap">
+        <div class="flex items-center gap-2 min-w-0">
           <span class="pro-card-title">NAS File Browser</span>
-          <span class="mono text-xs text-sky-400 bg-black/40 px-2 py-0.5 rounded border border-white/10">{{ currentDir }}</span>
+          <span class="mono text-xs text-sky-400 bg-black/40 px-2 py-0.5 rounded border border-white/10 truncate max-w-[260px]">{{ currentDir }}</span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-1.5">
+        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
           <select :value="currentDir" class="pro-input mono text-[11px]" @change="loadNAS(($event.target as HTMLSelectElement).value)">
             <option value="/mnt/sda1">/mnt/sda1 (USB 3.0 500GB HDD Root)</option>
             <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads (ESP32 Bot Videos)</option>
@@ -634,13 +655,15 @@ onMounted(() => {
             <option value="/overlay/downloads">/overlay/downloads (NAND Downloads)</option>
             <option value="/tmp/downloads">/tmp/downloads (RAM Disk)</option>
           </select>
-          <button class="btn-secondary text-[11px]" @click="goUp">↑ Up</button>
-          <button class="btn-secondary text-[11px]" @click="showNewFolder = !showNewFolder">+ New Folder</button>
-          <label class="btn-primary text-[11px] cursor-pointer">
+          <button type="button" class="btn-secondary text-[11px]" @click="goUp">↑ Up</button>
+          <button type="button" class="btn-secondary text-[11px] min-w-[104px]" @click="showNewFolder = !showNewFolder">
+            {{ showNewFolder ? '✕ Cancel' : '+ New Folder' }}
+          </button>
+          <label class="btn-primary text-[11px] min-w-[108px] cursor-pointer">
             <span>{{ uploading ? 'Uploading…' : '↑ Upload File' }}</span>
             <input type="file" class="hidden" :disabled="uploading" @change="onFileSelected" />
           </label>
-          <button class="btn-secondary text-[11px]" :disabled="loading" @click="loadNAS()">↻</button>
+          <button type="button" class="btn-secondary text-[11px]" :disabled="loading" @click="loadNAS()">↻</button>
         </div>
       </div>
 
@@ -669,16 +692,17 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-for="f in files" :key="f.path">
-              <td>
+              <td class="max-w-xs">
                 <button
                   v-if="f.is_dir"
-                  class="font-semibold text-sky-400 hover:underline flex items-center gap-1.5"
+                  type="button"
+                  class="font-semibold text-sky-400 hover:underline flex items-center gap-1.5 truncate max-w-full"
                   @click="loadNAS(f.path)"
                 >
-                  <span>📁</span> {{ f.name }}
+                  <span>📁</span> <span class="truncate">{{ f.name }}</span>
                 </button>
-                <span v-else class="font-medium text-gray-200 flex items-center gap-1.5">
-                  <span>📄</span> {{ f.name }}
+                <span v-else class="font-medium text-gray-200 flex items-center gap-1.5 truncate">
+                  <span>📄</span> <span class="truncate">{{ f.name }}</span>
                 </span>
               </td>
               <td>
@@ -690,7 +714,7 @@ onMounted(() => {
               <td class="mono text-gray-400">{{ f.updated_at }}</td>
               <td>
                 <div class="flex items-center gap-1.5">
-                  <button v-if="f.is_dir" class="btn-secondary text-[10px] py-0.5 px-2" @click="loadNAS(f.path)">
+                  <button v-if="f.is_dir" type="button" class="btn-secondary text-[10px] py-0.5 px-2" @click="loadNAS(f.path)">
                     Open
                   </button>
                   <a
@@ -700,7 +724,7 @@ onMounted(() => {
                   >
                     Download
                   </a>
-                  <button class="btn-danger text-[10px] py-0.5 px-2" @click="deleteEntry(f.path)">
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2" @click="deleteEntry(f.path)">
                     Delete
                   </button>
                 </div>
@@ -715,8 +739,8 @@ onMounted(() => {
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Configured NAS Shared Folders ({{ shares.length }})</span>
-        <button class="btn-primary text-[11px] py-1" @click="showAddShare = !showAddShare">
-          {{ showAddShare ? 'Cancel' : '+ Add Share' }}
+        <button type="button" class="btn-primary text-[11px] py-1 min-w-[104px]" @click="showAddShare = !showAddShare">
+          {{ showAddShare ? '✕ Cancel' : '+ Add Share' }}
         </button>
       </div>
 
@@ -742,7 +766,7 @@ onMounted(() => {
             <tr v-for="s in shares" :key="s.name">
               <td class="mono font-semibold text-sky-300">\\192.168.2.1\{{ s.name }}</td>
               <td>
-                <button class="mono text-emerald-400 hover:underline" @click="loadNAS(s.path)">{{ s.path }}</button>
+                <button type="button" class="mono text-emerald-400 hover:underline" @click="loadNAS(s.path)">{{ s.path }}</button>
               </td>
               <td>
                 <span class="badge" :class="s.read_only ? 'badge-orange' : 'badge-green'">
@@ -752,8 +776,8 @@ onMounted(() => {
               <td class="text-gray-400">{{ s.comment }}</td>
               <td>
                 <div class="flex items-center gap-1.5">
-                  <button class="btn-secondary text-[10px] py-0.5 px-2" @click="loadNAS(s.path)">Browse</button>
-                  <button class="btn-danger text-[10px] py-0.5 px-2" @click="removeShare(s.name)">Remove</button>
+                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2" @click="loadNAS(s.path)">Browse</button>
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2" @click="removeShare(s.name)">Remove</button>
                 </div>
               </td>
             </tr>

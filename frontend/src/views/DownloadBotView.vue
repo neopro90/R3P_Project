@@ -219,35 +219,35 @@ onUnmounted(() => {
 
 <template>
   <div class="p-4 space-y-4 max-w-7xl mx-auto">
-    <!-- Notice Toast -->
+    <!-- Floating Non-Shifting Notice Toast -->
     <div
       v-if="notice"
-      class="p-3 rounded-lg border text-sm font-medium flex items-center justify-between shadow-lg"
-      :class="notice.includes('Lỗi') ? 'bg-red-500/15 border-red-500/30 text-red-200' : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'"
+      class="r3p-toast"
+      :class="notice.includes('Lỗi') ? 'r3p-toast-error' : 'r3p-toast-success'"
     >
-      <span>{{ notice }}</span>
-      <button class="text-xs opacity-75 hover:opacity-100" @click="notice = null">✕</button>
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-75 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
     </div>
 
     <!-- Top Telemetry & Control Bar -->
     <div class="pro-card p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-md border-sky-500/20">
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 min-w-0">
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-        <div>
+        <div class="min-w-0">
           <h1 class="text-[16px] font-bold text-gray-100 flex items-center gap-2">
-            Trung Tâm Tải Xuống Tự Động (R3P Linux Downloader)
+            <span class="truncate">Trung Tâm Tải Xuống Tự Động (R3P Linux Downloader)</span>
             <span class="badge badge-green text-xs font-mono font-bold">PORT 8787 ONLINE</span>
           </h1>
-          <p class="text-xs text-gray-400 font-medium">
+          <p class="text-xs text-gray-400 font-medium truncate">
             Tự động tải đa luồng qua yt-dlp & aria2 vào USB 3.0 · Nhận lệnh tự động từ Telegram Bot & Trợ Lý Root AI.
           </p>
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          class="btn-primary py-1.5 px-3 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
+          class="btn-primary py-1.5 px-3 min-w-[205px] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
           @click="toggleDebugPanel"
         >
           <span>⚡</span>
@@ -373,7 +373,7 @@ onUnmounted(() => {
 
           <button
             type="submit"
-            class="btn-primary py-2 px-4 text-[13px] font-bold shrink-0 cursor-pointer shadow-md flex items-center gap-1.5"
+            class="btn-primary py-2 px-4 min-w-[144px] text-[13px] font-bold shrink-0 cursor-pointer shadow-md flex items-center gap-1.5"
             :disabled="addingJob"
           >
             <span>⚡</span>
@@ -535,7 +535,7 @@ onUnmounted(() => {
           <RouterLink to="/files" class="text-xs text-sky-400 hover:underline font-semibold">
             Mở Trình Duyệt Tệp Cây (File Explorer) →
           </RouterLink>
-          <button class="btn-secondary text-xs py-1 px-2.5" @click="fetchDownloadedFiles">↻</button>
+          <button type="button" class="btn-secondary text-xs py-1 px-2.5" @click="fetchDownloadedFiles">↻</button>
         </div>
       </div>
 

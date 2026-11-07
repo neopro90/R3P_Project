@@ -144,8 +144,8 @@ function generateAreaPath(data: number[], maxVal = 100, width = 300, height = 70
   return `M 0,${height} L ${pts} L ${width},${height} Z`
 }
 
-async function refreshDashboard() {
-  loading.value = true
+async function refreshDashboard(silent = false) {
+  if (!silent) loading.value = true
   try {
     await Promise.all([
       system.refresh(),
@@ -183,7 +183,7 @@ async function refreshDashboard() {
   } catch (err) {
     console.warn('Dashboard refresh error:', err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -191,10 +191,11 @@ async function flushCache() {
   try {
     await apiRequest('/system/drop-caches', { method: 'POST' })
     actionNotice.value = 'Đã giải phóng bộ nhớ RAM cache thành công!'
-    await refreshDashboard()
+    await refreshDashboard(true)
     setTimeout(() => { actionNotice.value = null }, 3500)
   } catch (err: any) {
     actionNotice.value = `Thất bại: ${err?.message || err}`
+    setTimeout(() => { actionNotice.value = null }, 4000)
   }
 }
 
@@ -203,20 +204,21 @@ async function quickServiceRestart(name: string) {
     actionNotice.value = `Đang khởi động lại dịch vụ ${name}…`
     await apiRequest('/services/control', {
       method: 'POST',
-      body: JSON.stringify({ name, action: 'restart' }),
+      body: JSON.stringify({ service: name, name, action: 'restart' }),
     })
     actionNotice.value = `Dịch vụ ${name} đã được khởi động lại!`
-    await refreshDashboard()
+    await refreshDashboard(true)
     setTimeout(() => { actionNotice.value = null }, 3500)
   } catch (err: any) {
     actionNotice.value = `Lỗi: ${err?.message || err}`
+    setTimeout(() => { actionNotice.value = null }, 4000)
   }
 }
 
 onMounted(() => {
-  void refreshDashboard()
+  void refreshDashboard(false)
   pollTimer = setInterval(() => {
-    void refreshDashboard()
+    void refreshDashboard(true)
   }, 4000)
 })
 
@@ -227,24 +229,31 @@ onUnmounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-2 sm:p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Non-Shifting Toast -->
+    <div
+      v-if="actionNotice"
+      class="r3p-toast"
+      :class="actionNotice.includes('Lỗi') || actionNotice.includes('Thất bại') ? 'r3p-toast-error' : 'r3p-toast-success'"
+    >
+      <span class="r3p-toast-text">{{ actionNotice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="actionNotice = null">✕</button>
+    </div>
+
     <!-- Action bar & Host Info Banner -->
     <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0d1322] border border-white/10 rounded-lg px-3.5 py-2">
-      <div class="flex items-center gap-2.5 text-[13px]">
-        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span class="font-bold text-gray-100">{{ system.hostname || 'R3P-Router' }}</span>
-        <span class="text-gray-500">·</span>
-        <span class="mono text-sky-400 font-semibold">MediaTek MT7621AT @ 880MHz</span>
-        <span class="text-gray-500 hidden sm:inline">·</span>
-        <span class="text-purple-300 mono font-semibold hidden sm:inline">Linux {{ system.kernel || '6.12.94' }}</span>
-        <span v-if="actionNotice" class="ml-2 px-2.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[12px] font-semibold">
-          {{ actionNotice }}
-        </span>
+      <div class="flex items-center gap-2.5 text-[13px] min-w-0">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+        <span class="font-bold text-gray-100 truncate">{{ system.hostname || 'R3P-Router' }}</span>
+        <span class="text-gray-500 shrink-0">·</span>
+        <span class="mono text-sky-400 font-semibold truncate">MediaTek MT7621AT @ 880MHz</span>
+        <span class="text-gray-500 hidden sm:inline shrink-0">·</span>
+        <span class="text-purple-300 mono font-semibold hidden sm:inline shrink-0">Linux {{ system.kernel || '6.12.94' }}</span>
       </div>
-      <div class="flex items-center gap-2">
-        <button class="btn-secondary text-[12px] py-1 px-3" @click="flushCache">
+      <div class="flex items-center gap-2 shrink-0">
+        <button type="button" class="btn-secondary text-[12px] py-1 px-3" @click="flushCache">
           🧹 Giải Phóng Cache
         </button>
-        <button class="btn-primary text-[12px] py-1 px-3.5" :disabled="loading" @click="refreshDashboard">
+        <button type="button" class="btn-primary text-[12px] py-1 px-3.5 min-w-[116px]" :disabled="loading" @click="refreshDashboard(false)">
           {{ loading ? 'Đang đồng bộ…' : 'Đồng Bộ ↻' }}
         </button>
       </div>
@@ -492,9 +501,9 @@ onUnmounted(() => {
             :key="r.device"
             class="flex items-center justify-between p-2.5 rounded-lg bg-black/30 border border-white/10"
           >
-            <div>
-              <div class="font-bold text-[15px] text-gray-100">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
-              <div class="mono text-[12px] text-gray-300 font-medium mt-0.5">
+            <div class="min-w-0 flex-1 pr-2">
+              <div class="font-bold text-[15px] text-gray-100 truncate">{{ r.band }} ({{ r.ssid || 'OpenWrt' }})</div>
+              <div class="mono text-[12px] text-gray-300 font-medium mt-0.5 truncate">
                 Kênh {{ r.channel || 'Auto' }} · {{ r.htmode || 'VHT80' }}
               </div>
             </div>
@@ -528,6 +537,7 @@ onUnmounted(() => {
               </div>
             </div>
             <button
+              type="button"
               class="btn-secondary text-[12px] py-1 px-2.5 shrink-0 font-bold hover:text-white"
               title="Khởi động lại dịch vụ"
               @click="quickServiceRestart(s.name)"
@@ -602,7 +612,7 @@ onUnmounted(() => {
           <RouterLink to="/access" class="text-[12px] text-sky-400 hover:underline font-semibold">DHCP & Leases →</RouterLink>
         </div>
 
-        <div class="overflow-x-auto max-h-52">
+        <div class="overflow-x-auto h-52">
           <table class="pro-table">
             <thead>
               <tr>
@@ -630,24 +640,24 @@ onUnmounted(() => {
       <!-- Live Kernel & Daemon Log Feed -->
       <div class="pro-card flex flex-col">
         <div class="pro-card-header">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 min-w-0">
             <span class="pro-card-title">Live System Log (logread)</span>
-            <span class="text-[12px] text-gray-300 font-medium hidden sm:inline">(Mới nhất ở trên cùng)</span>
+            <span class="text-[12px] text-gray-300 font-medium hidden sm:inline truncate">(Mới nhất ở trên cùng)</span>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              class="px-3 py-1 text-[12px] rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-500/40 transition font-bold cursor-pointer"
+              class="px-3 py-1 min-w-[92px] text-[12px] rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-500/40 transition font-bold cursor-pointer"
               :disabled="clearingLogs"
               @click="clearLogs"
             >
-              {{ clearingLogs ? 'Đang xóa...' : '🗑 Xóa Log' }}
+              {{ clearingLogs ? 'Đang xóa…' : '🗑 Xóa Log' }}
             </button>
-            <RouterLink to="/system" class="text-[12px] text-sky-400 hover:underline font-semibold">Xem Tất Cả →</RouterLink>
+            <RouterLink to="/system" class="text-[12px] text-sky-400 hover:underline font-semibold shrink-0">Xem Tất Cả →</RouterLink>
           </div>
         </div>
 
-        <div class="bg-black/50 rounded-lg border border-white/5 p-2.5 font-mono text-[12px] text-gray-200 overflow-y-auto max-h-52 space-y-1">
+        <div class="bg-black/50 rounded-lg border border-white/5 p-2.5 font-mono text-[12px] text-gray-200 overflow-y-auto h-52 space-y-1">
           <div v-if="!recentLogs.length" class="text-gray-400 py-3 text-center">Bộ đệm log trống sạch sẽ.</div>
           <div v-for="(line, idx) in recentLogs" :key="idx" class="leading-relaxed hover:bg-white/[0.04] px-1 rounded truncate">
             <span class="text-sky-400 select-none font-bold">›</span> {{ line }}

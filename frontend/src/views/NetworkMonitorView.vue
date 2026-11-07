@@ -68,6 +68,30 @@ const savingIface = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const loading = ref(false)
+const ifaceSectionRef = ref<HTMLElement | null>(null)
+
+function showNotice(msg: string, ms = 3800) {
+  notice.value = msg
+  errorMsg.value = null
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
+
+function showError(msg: string, ms = 4500) {
+  errorMsg.value = msg
+  notice.value = null
+  setTimeout(() => {
+    if (errorMsg.value === msg) errorMsg.value = null
+  }, ms)
+}
+
+function openEditLan() {
+  editingIface.value = 'lan'
+  setTimeout(() => {
+    ifaceSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, 50)
+}
 
 const pingHost = ref('1.1.1.1')
 const pingCount = ref(4)
@@ -142,14 +166,14 @@ async function saveQuickGateway() {
         dns_string: quickGatewayForm.value.dns_string,
       }),
     })
-    notice.value = res?.message || 'Đã cập nhật Default Gateway & DNS!'
+    showNotice(res?.message || 'Đã cập nhật Default Gateway & DNS!')
     showEditGateway.value = false
     setTimeout(async () => {
       await loadNetworkDetails()
       await systemStore.refreshInternet(true)
     }, 1500)
   } catch (err: any) {
-    errorMsg.value = 'Lỗi lưu Gateway: ' + (err?.message || err)
+    showError('Lỗi lưu Gateway: ' + (err?.message || err))
   } finally {
     savingGateway.value = false
   }
@@ -172,13 +196,13 @@ async function saveInterfaceConfig(cfg: NetworkInterfaceConfig) {
       }),
     })
     editingIface.value = null
-    notice.value = res?.message || `Đã lưu cấu hình cổng ${cfg.name.toUpperCase()}!`
+    showNotice(res?.message || `Đã lưu cấu hình cổng ${cfg.name.toUpperCase()}!`)
     setTimeout(async () => {
       await loadNetworkDetails()
       await systemStore.refreshInternet(true)
     }, 2000)
   } catch (err: any) {
-    errorMsg.value = `Lỗi lưu cổng ${cfg.name.toUpperCase()}: ` + (err?.message || err)
+    showError(`Lỗi lưu cổng ${cfg.name.toUpperCase()}: ` + (err?.message || err))
   } finally {
     savingIface.value = null
   }
@@ -191,13 +215,13 @@ async function triggerInterfaceAction(name: string, action: 'ifup' | 'ifdown' | 
       method: 'POST',
       body: JSON.stringify({ name, action }),
     })
-    notice.value = res?.message || 'Đã thực thi thành công!'
+    showNotice(res?.message || 'Đã thực thi thành công!')
     setTimeout(async () => {
       await loadNetworkDetails()
       await systemStore.refreshInternet(true)
     }, 2500)
   } catch (err: any) {
-    errorMsg.value = 'Lỗi thao tác interface: ' + (err?.message || err)
+    showError('Lỗi thao tác interface: ' + (err?.message || err))
   }
 }
 
@@ -247,14 +271,25 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Non-Shifting Notices -->
+    <div v-if="notice" class="r3p-toast r3p-toast-success">
+      <span class="r3p-toast-text">✓ {{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
+    </div>
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <span class="r3p-toast-text">⚠ {{ errorMsg }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="errorMsg = null">✕</button>
+    </div>
+
     <!-- Top Status & Quick Gateway / DNS Editor -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
       <div class="stat-mini">
         <div class="flex items-center justify-between">
           <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">LAN IPv4 Address</span>
           <button
+            type="button"
             class="text-[12px] text-sky-400 hover:underline font-bold cursor-pointer"
-            @click="editingIface = 'lan'"
+            @click="openEditLan"
           >
             ✎ Đổi IP LAN
           </button>
@@ -269,6 +304,7 @@ onMounted(() => {
         <div class="flex items-center justify-between">
           <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">Default IP Gateway</span>
           <button
+            type="button"
             class="text-[12px] text-emerald-400 hover:underline font-bold cursor-pointer"
             @click="showEditGateway = !showEditGateway"
           >
@@ -285,6 +321,7 @@ onMounted(() => {
         <div class="flex items-center justify-between">
           <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">DNS Resolvers</span>
           <button
+            type="button"
             class="text-[12px] text-purple-400 hover:underline font-bold cursor-pointer"
             @click="showEditGateway = !showEditGateway"
           >
@@ -300,21 +337,13 @@ onMounted(() => {
       <div class="stat-mini">
         <div class="flex items-center justify-between">
           <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">ARP & Interfaces</span>
-          <button class="text-[12px] text-amber-400 hover:underline font-bold cursor-pointer" @click="loadNetworkDetails">↻ Làm mới</button>
+          <button type="button" class="text-[12px] text-amber-400 hover:underline font-bold cursor-pointer" @click="loadNetworkDetails">↻ Làm mới</button>
         </div>
         <div class="mono text-[16px] font-bold text-amber-400 mt-1">
           {{ network.interfaces.length }} Ifaces · {{ arpTable.length }} ARP
         </div>
         <div class="text-[11.5px] text-gray-400 font-medium">Kernel Netifd & Switch</div>
       </div>
-    </div>
-
-    <!-- Notices -->
-    <div v-if="notice" class="px-3 py-2 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-medium">
-      ✓ {{ notice }}
-    </div>
-    <div v-if="errorMsg" class="px-3 py-2 rounded bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-medium">
-      ⚠ {{ errorMsg }}
     </div>
 
     <!-- Quick Edit IP Gateway & DNS Panel -->
@@ -366,14 +395,15 @@ onMounted(() => {
     </form>
 
     <!-- Full LAN / WAN / WWAN / USBWAN Interface Configuration Cards -->
-    <div class="pro-card border border-sky-500/30">
+    <div ref="ifaceSectionRef" class="pro-card border border-sky-500/30">
       <div class="pro-card-header">
-        <div class="flex items-center gap-2">
-          <span class="pro-card-title">🔌 Cấu Hình Cổng Mạng LAN / WAN / WWAN / USBWAN (UCI Network Interfaces)</span>
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="pro-card-title truncate">🔌 Cấu Hình Cổng Mạng LAN / WAN / WWAN / USBWAN (UCI Network Interfaces)</span>
           <span class="badge badge-blue">4 LOGICAL INTERFACES</span>
         </div>
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1.5 shrink-0">
           <button
+            type="button"
             class="btn-secondary text-[11px] py-1"
             @click="triggerInterfaceAction('all', 'reload')"
           >
@@ -382,60 +412,62 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
         <div
           v-for="cfg in ifaceConfigs"
           :key="cfg.name"
-          class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-2"
+          class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-2 min-w-0"
         >
           <!-- Card Header -->
-          <div class="flex items-center justify-between border-b border-white/10 pb-2">
-            <div class="flex items-center gap-2">
+          <div class="flex items-center justify-between border-b border-white/10 pb-2 gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <span
-                class="w-2.5 h-2.5 rounded-full"
+                class="w-2.5 h-2.5 rounded-full shrink-0"
                 :class="cfg.live_up ? 'bg-emerald-400' : 'bg-gray-500'"
               ></span>
-              <div>
-                <div class="font-bold text-[14px] text-white uppercase">{{ cfg.name }} — {{ cfg.label }}</div>
-                <div class="text-[12px] text-gray-300 mono font-medium">Device: {{ cfg.device }} · Proto: {{ cfg.proto.toUpperCase() }}</div>
+              <div class="min-w-0">
+                <div class="font-bold text-[14px] text-white uppercase truncate">{{ cfg.name }} — {{ cfg.label }}</div>
+                <div class="text-[12px] text-gray-300 mono font-medium truncate">Device: {{ cfg.device }} · Proto: {{ cfg.proto.toUpperCase() }}</div>
               </div>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 shrink-0">
               <span class="badge" :class="cfg.live_up ? 'badge-green' : 'badge-gray'">
                 {{ cfg.live_up ? `UP (${cfg.live_ipv4 || 'Active'})` : 'STANDBY' }}
               </span>
               <button
-                class="btn-primary text-[12px] py-1 px-3 font-semibold"
+                type="button"
+                class="btn-primary text-[12px] py-1 px-3 min-w-[96px] font-semibold"
                 @click="editingIface = editingIface === cfg.name ? null : cfg.name"
               >
-                {{ editingIface === cfg.name ? 'Đóng' : '⚙ Cấu Hình' }}
+                {{ editingIface === cfg.name ? '✕ Đóng' : '⚙ Cấu Hình' }}
               </button>
             </div>
           </div>
 
           <!-- Summary Read View -->
           <div v-if="editingIface !== cfg.name" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-            <div>
+            <div class="min-w-0">
               <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">Chế Độ (Proto)</div>
-              <div class="mono font-bold text-[14px] text-sky-400 uppercase mt-0.5">{{ cfg.proto }}</div>
+              <div class="mono font-bold text-[14px] text-sky-400 uppercase mt-0.5 truncate">{{ cfg.proto }}</div>
             </div>
-            <div>
+            <div class="min-w-0">
               <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">IPv4 Address</div>
-              <div class="mono font-bold text-[14px] text-gray-100 mt-0.5">{{ cfg.live_ipv4 || cfg.ipaddr || 'DHCP Auto' }}</div>
+              <div class="mono font-bold text-[14px] text-gray-100 mt-0.5 truncate">{{ cfg.live_ipv4 || cfg.ipaddr || 'DHCP Auto' }}</div>
             </div>
-            <div>
+            <div class="min-w-0">
               <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">Gateway</div>
-              <div class="mono font-bold text-[14px] text-emerald-400 mt-0.5">{{ cfg.gateway || defaultGateway || 'Auto' }}</div>
+              <div class="mono font-bold text-[14px] text-emerald-400 mt-0.5 truncate">{{ cfg.gateway || defaultGateway || 'Auto' }}</div>
             </div>
-            <div>
+            <div class="min-w-0">
               <div class="text-gray-300 text-[12px] font-bold uppercase tracking-wide">DNS / DHCP</div>
               <div class="mono font-bold text-[14px] text-purple-300 truncate mt-0.5">
                 {{ cfg.name === 'lan' ? (cfg.dhcp_enabled ? `DHCP .${cfg.dhcp_start}` : 'DHCP OFF') : ((cfg.dns || []).join(', ') || 'Auto DNS') }}
               </div>
             </div>
 
-            <div class="col-span-2 sm:col-span-4 flex justify-end gap-2 pt-1.5 border-t border-white/5">
+            <div class="col-span-2 sm:col-span-4 flex flex-wrap justify-end gap-2 pt-1.5 border-t border-white/5">
               <button
+                type="button"
                 class="btn-secondary text-[12px] py-1 px-3 font-semibold cursor-pointer"
                 @click="triggerInterfaceAction(cfg.name, 'ifup')"
               >
@@ -443,12 +475,14 @@ onMounted(() => {
               </button>
               <button
                 v-if="cfg.name !== 'lan'"
+                type="button"
                 class="btn-danger text-[12px] py-1 px-3 font-semibold cursor-pointer"
                 @click="triggerInterfaceAction(cfg.name, 'ifdown')"
               >
                 ⏸ Ngắt (ifdown)
               </button>
               <button
+                type="button"
                 class="btn-primary text-[12px] py-1 px-3 font-bold cursor-pointer"
                 @click="editingIface = cfg.name"
               >
@@ -566,7 +600,7 @@ onMounted(() => {
     <div class="pro-card">
       <div class="pro-card-header">
         <span class="pro-card-title">Live Network Interfaces (/proc/net/dev & Netifd)</span>
-        <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadNetworkDetails">
+        <button type="button" class="btn-secondary text-[11px] py-1 min-w-[136px]" :disabled="loading" @click="loadNetworkDetails">
           {{ loading ? 'Refreshing…' : 'Refresh Telemetry ↻' }}
         </button>
       </div>
@@ -629,7 +663,7 @@ onMounted(() => {
               <option :value="4">4 Pkts</option>
               <option :value="8">8 Pkts</option>
             </select>
-            <button :disabled="pingRunning" class="btn-primary text-[11.5px]" @click="runPing">
+            <button type="button" :disabled="pingRunning" class="btn-primary text-[11.5px] min-w-[92px]" @click="runPing">
               {{ pingRunning ? 'Pinging…' : 'Run Ping' }}
             </button>
           </div>
@@ -650,7 +684,7 @@ onMounted(() => {
               placeholder="Domain or IP (e.g. openwrt.org)"
               @keyup.enter="runNslookup"
             />
-            <button :disabled="dnsRunning" class="btn-primary text-[11.5px]" @click="runNslookup">
+            <button type="button" :disabled="dnsRunning" class="btn-primary text-[11.5px] min-w-[104px]" @click="runNslookup">
               {{ dnsRunning ? 'Querying…' : 'Lookup DNS' }}
             </button>
           </div>

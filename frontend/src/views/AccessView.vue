@@ -78,9 +78,19 @@ const notice = ref<string | null>(null)
 const newPassword = ref('')
 const confirmPassword = ref('')
 const savingPassword = ref(false)
+const savingSSH = ref(false)
+const savingDHCP = ref(false)
 
 const showAddStatic = ref(false)
 const newStatic = ref({ name: '', mac: '', ip: '192.168.2.' })
+const staticCardRef = ref<HTMLElement | null>(null)
+
+function showToast(msg: string, ms = 3800) {
+  notice.value = msg
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
 
 async function loadAccess() {
   loading.value = true
@@ -121,28 +131,32 @@ async function loadAccess() {
 }
 
 async function saveSSH() {
+  savingSSH.value = true
   try {
     await apiRequest('/access/ssh', {
       method: 'PUT',
       body: JSON.stringify(sshConfig.value),
     })
-    notice.value = 'Đã lưu cấu hình SSH Dropbear thành công!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showToast('Đã lưu cấu hình SSH Dropbear thành công!')
   } catch (err: any) {
-    notice.value = 'Lỗi lưu SSH: ' + (err?.message || err)
+    showToast('Lỗi lưu SSH: ' + (err?.message || err))
+  } finally {
+    savingSSH.value = false
   }
 }
 
 async function saveDHCP() {
+  savingDHCP.value = true
   try {
     await apiRequest('/access/dhcp', {
       method: 'PUT',
       body: JSON.stringify(dhcpConfig.value),
     })
-    notice.value = 'Đã lưu dải cấp phát DHCP pool và nạp lại dnsmasq!'
-    setTimeout(() => { notice.value = null }, 3000)
+    showToast('Đã lưu dải cấp phát DHCP pool và nạp lại dnsmasq!')
   } catch (err: any) {
-    notice.value = 'Lỗi lưu DHCP: ' + (err?.message || err)
+    showToast('Lỗi lưu DHCP: ' + (err?.message || err))
+  } finally {
+    savingDHCP.value = false
   }
 }
 
@@ -157,11 +171,10 @@ async function saveDDNS() {
       method: 'PUT',
       body: JSON.stringify(ddnsConfig.value),
     })
-    notice.value = res?.message || 'Đã lưu cấu hình DDNS thành công!'
+    showToast(res?.message || 'Đã lưu cấu hình DDNS thành công!')
     if (res?.ddns) ddnsConfig.value = res.ddns
-    setTimeout(() => { notice.value = null }, 3500)
   } catch (err: any) {
-    notice.value = 'Lỗi lưu DDNS: ' + (err?.message || err)
+    showToast('Lỗi lưu DDNS: ' + (err?.message || err))
   } finally {
     savingDdns.value = false
   }
@@ -181,11 +194,11 @@ async function forceUpdateDDNS() {
     const res = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns/update', {
       method: 'POST',
     })
-    notice.value = res?.message || 'Cập nhật DDNS thành công!'
+    showToast(res?.message || 'Cập nhật DDNS thành công!', 4500)
     if (res?.ddns) ddnsConfig.value = res.ddns
-    setTimeout(() => { notice.value = null }, 4000)
   } catch (err: any) {
-    notice.value = 'Cập nhật DDNS thất bại: ' + (err?.message || err)
+    const rawErr = String(err?.message || err).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    showToast('Cập nhật DDNS thất bại: ' + rawErr, 5000)
   } finally {
     updatingDdns.value = false
   }
@@ -193,7 +206,7 @@ async function forceUpdateDDNS() {
 
 async function updatePassword() {
   if (!newPassword.value || newPassword.value !== confirmPassword.value) {
-    notice.value = 'Mật khẩu mới và mật khẩu xác nhận không khớp!'
+    showToast('Lỗi: Mật khẩu mới và mật khẩu xác nhận không khớp!')
     return
   }
   savingPassword.value = true
@@ -202,12 +215,11 @@ async function updatePassword() {
       method: 'POST',
       body: JSON.stringify({ password: newPassword.value }),
     })
-    notice.value = 'Đã cập nhật mật khẩu root/admin Router R3P thành công!'
+    showToast('Đã cập nhật mật khẩu root/admin Router R3P thành công!')
     newPassword.value = ''
     confirmPassword.value = ''
-    setTimeout(() => { notice.value = null }, 3500)
   } catch (err: any) {
-    notice.value = 'Lỗi cập nhật mật khẩu: ' + (err?.message || err)
+    showToast('Lỗi cập nhật mật khẩu: ' + (err?.message || err))
   } finally {
     savingPassword.value = false
   }
@@ -215,7 +227,7 @@ async function updatePassword() {
 
 async function addStaticLease() {
   if (!newStatic.value.name || !newStatic.value.mac || !newStatic.value.ip) {
-    notice.value = 'Vui lòng điền đủ Tên, Địa chỉ MAC và Địa chỉ IP!'
+    showToast('Lỗi: Vui lòng điền đủ Tên, Địa chỉ MAC và Địa chỉ IP!')
     return
   }
   try {
@@ -223,13 +235,12 @@ async function addStaticLease() {
       method: 'POST',
       body: JSON.stringify(newStatic.value),
     })
-    notice.value = `Đã ghim IP cố định cho ${newStatic.value.name} (${newStatic.value.ip})!`
+    showToast(`Đã ghim IP cố định cho ${newStatic.value.name} (${newStatic.value.ip})!`)
     showAddStatic.value = false
     newStatic.value = { name: '', mac: '', ip: '192.168.2.' }
     await loadAccess()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Lỗi thêm ghim IP: ' + (err?.message || err)
+    showToast('Lỗi thêm ghim IP: ' + (err?.message || err))
   }
 }
 
@@ -240,11 +251,10 @@ async function deleteStaticLease(id: string) {
       method: 'DELETE',
       body: JSON.stringify({ id }),
     })
-    notice.value = 'Đã xóa ghim IP cố định!'
+    showToast('Đã xóa ghim IP cố định!')
     await loadAccess()
-    setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
-    notice.value = 'Lỗi xóa ghim IP: ' + (err?.message || err)
+    showToast('Lỗi xóa ghim IP: ' + (err?.message || err))
   }
 }
 
@@ -255,7 +265,9 @@ function pinActiveClient(client: ActiveLease) {
     ip: client.ip,
   }
   showAddStatic.value = true
-  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+  setTimeout(() => {
+    staticCardRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, 50)
 }
 
 function formatRemainingTime(expiresSec: number): string {
@@ -276,16 +288,16 @@ onMounted(() => {
 
 <template>
   <div class="p-4 space-y-4 max-w-7xl mx-auto">
-    <!-- Notice Toast Bar -->
+    <!-- Floating Non-Shifting Notice Toast Bar -->
     <div
       v-if="notice"
-      class="p-3 rounded-lg border text-sm font-medium flex items-center justify-between shadow-lg"
+      class="r3p-toast"
       :class="notice.includes('Lỗi') || notice.includes('Error') || notice.includes('thất bại')
-        ? 'bg-red-500/15 border-red-500/30 text-red-200'
-        : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'"
+        ? 'r3p-toast-error'
+        : 'r3p-toast-success'"
     >
-      <span>{{ notice }}</span>
-      <button class="text-xs opacity-75 hover:opacity-100" @click="notice = null">✕</button>
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-75 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
     </div>
 
     <!-- Row 1: SSH, DHCP Server, Admin Password -->
@@ -313,7 +325,9 @@ onMounted(() => {
           </div>
         </div>
         <div class="mt-4 pt-2.5 border-t border-white/10 flex justify-end">
-          <button type="submit" class="btn-primary text-xs">💾 Lưu Cấu Hình SSH</button>
+          <button type="submit" :disabled="savingSSH" class="btn-primary text-xs min-w-[145px]">
+            {{ savingSSH ? 'Đang lưu SSH…' : '💾 Lưu Cấu Hình SSH' }}
+          </button>
         </div>
       </form>
 
@@ -340,7 +354,9 @@ onMounted(() => {
           </div>
         </div>
         <div class="mt-4 pt-2.5 border-t border-white/10 flex justify-end">
-          <button type="submit" class="btn-primary text-xs">💾 Lưu Cấu Hình DHCP</button>
+          <button type="submit" :disabled="savingDHCP" class="btn-primary text-xs min-w-[152px]">
+            {{ savingDHCP ? 'Đang lưu DHCP…' : '💾 Lưu Cấu Hình DHCP' }}
+          </button>
         </div>
       </form>
 
@@ -363,7 +379,7 @@ onMounted(() => {
           </div>
         </div>
         <div class="mt-4 pt-2.5 border-t border-white/10 flex justify-end">
-          <button type="submit" :disabled="savingPassword" class="btn-primary text-xs">
+          <button type="submit" :disabled="savingPassword" class="btn-primary text-xs min-w-[152px]">
             {{ savingPassword ? 'Đang cập nhật…' : '🔑 Đổi Mật Khẩu Root' }}
           </button>
         </div>
@@ -463,18 +479,22 @@ onMounted(() => {
 
       <!-- Status & Action Footer -->
       <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-white/10 text-xs">
-        <div class="flex items-center gap-2">
-          <span class="text-gray-400">Trạng thái gần nhất:</span>
-          <span class="font-bold mono" :class="ddnsConfig.last_status.includes('Thành công') || ddnsConfig.last_status.includes('OK') ? 'text-emerald-400' : 'text-amber-300'">
-            {{ ddnsConfig.last_status || 'Chưa cập nhật' }}
+        <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+          <span class="text-gray-400 shrink-0">Trạng thái gần nhất:</span>
+          <span
+            class="font-bold mono truncate block max-w-[360px] lg:max-w-[500px]"
+            :class="ddnsConfig.last_status.includes('Thành công') || ddnsConfig.last_status.includes('OK') ? 'text-emerald-400' : 'text-amber-300'"
+            :title="ddnsConfig.last_status"
+          >
+            {{ (ddnsConfig.last_status || 'Chưa cập nhật').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }}
           </span>
-          <span class="text-gray-500 font-mono">· {{ ddnsConfig.last_update }}</span>
+          <span class="text-gray-500 font-mono shrink-0">· {{ ddnsConfig.last_update }}</span>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            class="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5 cursor-pointer"
+            class="btn-secondary text-xs py-1.5 px-3 min-w-[184px] flex items-center gap-1.5 cursor-pointer"
             :disabled="updatingDdns"
             @click="forceUpdateDDNS"
           >
@@ -483,7 +503,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="btn-primary text-xs py-1.5 px-3.5 flex items-center gap-1.5 cursor-pointer shadow-sm font-bold"
+            class="btn-primary text-xs py-1.5 px-3.5 min-w-[156px] flex items-center gap-1.5 cursor-pointer shadow-sm font-bold"
             :disabled="savingDdns"
             @click="saveDDNS"
           >
@@ -501,7 +521,7 @@ onMounted(() => {
           <span class="pro-card-title">Thiết Bị Đang Kết Nối (Active DHCP Leases)</span>
           <span class="badge badge-green">{{ activeLeases.length }} thiết bị</span>
         </div>
-        <button class="btn-secondary text-xs py-1 px-3" :disabled="loading" @click="loadAccess">Làm mới ↻</button>
+        <button type="button" class="btn-secondary text-xs py-1 px-3" :disabled="loading" @click="loadAccess">Làm mới ↻</button>
       </div>
 
       <div class="overflow-x-auto">
@@ -545,14 +565,14 @@ onMounted(() => {
     </div>
 
     <!-- Row 4: Static DHCP Reservations -->
-    <div class="pro-card p-4 space-y-3">
+    <div ref="staticCardRef" class="pro-card p-4 space-y-3">
       <div class="pro-card-header flex items-center justify-between pb-2 border-b border-white/10">
         <div class="flex items-center gap-2">
           <span class="pro-card-title">Danh Sách IP Cố Định Đã Ghim (Static Reservations)</span>
           <span class="badge badge-blue">{{ staticLeases.length }} quy tắc</span>
         </div>
-        <button class="btn-primary text-xs py-1 px-3" @click="showAddStatic = !showAddStatic">
-          {{ showAddStatic ? 'Hủy Bỏ' : '+ Ghim Thêm IP Cố Định' }}
+        <button type="button" class="btn-primary text-xs py-1 px-3 min-w-[162px]" @click="showAddStatic = !showAddStatic">
+          {{ showAddStatic ? '✕ Hủy Bỏ' : '+ Ghim Thêm IP Cố Định' }}
         </button>
       </div>
 

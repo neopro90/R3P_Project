@@ -58,6 +58,22 @@ const notice = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const terminalOutput = ref<string>('')
 
+function showNotice(msg: string, ms = 4000) {
+  notice.value = msg
+  errorMsg.value = null
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
+
+function showError(msg: string, ms = 4500) {
+  errorMsg.value = msg
+  notice.value = null
+  setTimeout(() => {
+    if (errorMsg.value === msg) errorMsg.value = null
+  }, ms)
+}
+
 const filteredPackages = computed(() => {
   const q = pkgFilter.value.trim().toLowerCase()
   if (!q) return packages.value
@@ -126,12 +142,12 @@ async function addGitHubOrFeedRepo() {
       }),
     })
     if (res.repos) repos.value = res.repos
-    notice.value = res.message || 'Đã thêm kho ứng dụng GitHub / OpenWrt thành công!'
+    showNotice(res.message || 'Đã thêm kho ứng dụng GitHub / OpenWrt thành công!')
     newRepoName.value = ''
     newRepoUrl.value = ''
     await searchOpenWrtPackages()
   } catch (err: any) {
-    errorMsg.value = 'Lỗi thêm Repo: ' + (err?.message || err)
+    showError('Lỗi thêm Repo: ' + (err?.message || err))
   } finally {
     addingRepo.value = false
   }
@@ -145,10 +161,10 @@ async function deleteRepo(id: string) {
       { method: 'DELETE' },
     )
     if (res.repos) repos.value = res.repos
-    notice.value = res.message || 'Đã xóa kho ứng dụng.'
+    showNotice(res.message || 'Đã xóa kho ứng dụng.')
     await searchOpenWrtPackages()
   } catch (err: any) {
-    errorMsg.value = 'Không thể xóa kho: ' + (err?.message || err)
+    showError('Không thể xóa kho: ' + (err?.message || err))
   }
 }
 
@@ -164,10 +180,10 @@ async function syncAllFeeds() {
     }>('/packages/update-feeds', { method: 'POST' })
     if (res.repos) repos.value = res.repos
     if (res.output) terminalOutput.value = res.output
-    notice.value = res.message || 'Đã cập nhật danh sách gói thành công!'
+    showNotice(res.message || 'Đã cập nhật danh sách gói thành công!')
     await searchOpenWrtPackages()
   } catch (err: any) {
-    errorMsg.value = 'Lỗi đồng bộ kho gói: ' + (err?.message || err)
+    showError('Lỗi đồng bộ kho gói: ' + (err?.message || err))
   } finally {
     syncingFeeds.value = false
   }
@@ -192,11 +208,11 @@ async function installPackage(pkgName: string, downloadUrl = '') {
       }),
     })
     terminalOutput.value = res.output || ''
-    notice.value = res.message || `Đã cài đặt ${target} thành công!`
+    showNotice(res.message || `Đã cài đặt ${target} thành công!`)
     directInstallInput.value = ''
     await loadApps()
   } catch (err: any) {
-    errorMsg.value = `Lỗi cài đặt ${target}: ` + (err?.message || err)
+    showError(`Lỗi cài đặt ${target}: ` + (err?.message || err))
   } finally {
     pkgActionLoading.value = null
   }
@@ -216,10 +232,10 @@ async function removePackage(pkgName: string) {
       body: JSON.stringify({ package: pkgName }),
     })
     terminalOutput.value = res.output || ''
-    notice.value = res.message || `Đã gỡ cài đặt ${pkgName}.`
+    showNotice(res.message || `Đã gỡ cài đặt ${pkgName}.`)
     await loadApps()
   } catch (err: any) {
-    errorMsg.value = `Lỗi gỡ cài đặt ${pkgName}: ` + (err?.message || err)
+    showError(`Lỗi gỡ cài đặt ${pkgName}: ` + (err?.message || err))
   } finally {
     pkgActionLoading.value = null
   }
@@ -261,27 +277,28 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
-    <!-- Notifications -->
-    <div v-if="notice" class="px-3 py-1.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11.5px] font-medium flex items-center justify-between">
-      <span>{{ notice }}</span>
-      <button class="text-xs text-gray-400 hover:text-white" @click="notice = null">✕</button>
+    <!-- Floating Non-Shifting Notifications -->
+    <div v-if="notice" class="r3p-toast r3p-toast-success">
+      <span class="r3p-toast-text">{{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
     </div>
-    <div v-if="errorMsg" class="px-3 py-1.5 rounded bg-red-500/15 border border-red-500/30 text-red-300 text-[11.5px] font-medium flex items-center justify-between">
-      <span>{{ errorMsg }}</span>
-      <button class="text-xs text-gray-400 hover:text-white" @click="errorMsg = null">✕</button>
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <span class="r3p-toast-text">{{ errorMsg }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="errorMsg = null">✕</button>
     </div>
 
     <!-- 1. GitHub Repository & OpenWrt Package Feed Manager -->
     <div class="pro-card border border-sky-500/25">
-      <div class="pro-card-header">
-        <div>
+      <div class="pro-card-header flex-wrap">
+        <div class="min-w-0">
           <span class="pro-card-title text-sky-400">📦 Quản Lý Nguồn Ứng Dụng GitHub & OpenWrt Package Feeds</span>
           <p class="text-[11px] text-gray-400 mt-0.5">
             Thêm URL kho lưu trữ GitHub chứa ứng dụng OpenWrt (<code class="mono text-sky-300">https://github.com/owner/repo</code>) hoặc APK/OPKG Feed URL để tìm kiếm và cài đặt trực tiếp.
           </p>
         </div>
         <button
-          class="btn-primary text-[11px]"
+          type="button"
+          class="btn-primary text-[11px] min-w-[295px]"
           :disabled="syncingFeeds"
           @click="syncAllFeeds"
         >
@@ -360,6 +377,7 @@ onMounted(() => {
               <td>
                 <button
                   v-if="r.id !== 'repo-openwrt-official'"
+                  type="button"
                   class="btn-danger text-[10px] py-0.5 px-2"
                   @click="deleteRepo(r.id)"
                 >
@@ -411,7 +429,7 @@ onMounted(() => {
             placeholder="Tìm ứng dụng OpenWrt (VD: wireguard, tailscale, samba, htop, tcpdump, aria2, mosquitto,luci-app...)..."
             @keyup.enter="searchOpenWrtPackages"
           />
-          <button class="btn-secondary text-xs px-3" :disabled="searching" @click="searchOpenWrtPackages">
+          <button type="button" class="btn-secondary text-xs px-3 min-w-[104px]" :disabled="searching" @click="searchOpenWrtPackages">
             {{ searching ? 'Đang tìm…' : '🔍 Tìm Kiếm' }}
           </button>
         </div>
@@ -420,6 +438,7 @@ onMounted(() => {
           <button
             v-for="cat in ['All', ...categories.filter(c => c !== 'All')]"
             :key="cat"
+            type="button"
             class="px-2.5 py-1 rounded text-[11px] border transition whitespace-nowrap cursor-pointer"
             :class="selectedCategory === cat
               ? 'bg-sky-500/20 border-sky-500/50 text-sky-300 font-semibold'
@@ -436,13 +455,13 @@ onMounted(() => {
         <div
           v-for="app in catalog"
           :key="app.name + app.source"
-          class="p-3 rounded-xl bg-black/40 border border-white/10 hover:border-sky-500/40 transition flex flex-col justify-between gap-2.5 shadow-sm"
+          class="p-3 rounded-xl bg-black/40 border border-white/10 hover:border-sky-500/40 transition flex flex-col justify-between gap-2.5 shadow-sm min-w-0"
         >
           <div>
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
-                <span class="mono font-bold text-[18px] text-sky-300">{{ app.name }}</span>
-                <span class="mono text-[13px] text-gray-300 font-semibold ml-2">{{ app.version }}</span>
+                <span class="mono font-bold text-[18px] text-sky-300 truncate block">{{ app.name }}</span>
+                <span class="mono text-[13px] text-gray-300 font-semibold">{{ app.version }}</span>
               </div>
               <span class="badge text-[11px] font-bold px-2.5 py-0.5 shrink-0" :class="app.installed ? 'badge-green' : 'badge-gray'">
                 {{ app.installed ? 'INSTALLED' : app.category }}
@@ -458,7 +477,8 @@ onMounted(() => {
             <div class="flex items-center gap-1.5">
               <button
                 v-if="!app.installed"
-                class="btn-primary text-[11.5px] font-bold py-1 px-3"
+                type="button"
+                class="btn-primary text-[11.5px] font-bold py-1 px-3 min-w-[92px]"
                 :disabled="pkgActionLoading !== null"
                 @click="installPackage(app.name, app.download_url || '')"
               >
@@ -466,7 +486,8 @@ onMounted(() => {
               </button>
               <button
                 v-else
-                class="btn-danger text-[11.5px] font-bold py-1 px-3"
+                type="button"
+                class="btn-danger text-[11.5px] font-bold py-1 px-3 min-w-[86px]"
                 :disabled="pkgActionLoading !== null"
                 @click="removePackage(app.name)"
               >
@@ -481,7 +502,7 @@ onMounted(() => {
       <div v-if="terminalOutput" class="mt-3 rounded bg-black/75 border border-white/10 p-2.5">
         <div class="flex items-center justify-between mb-1">
           <span class="text-[10.5px] font-bold uppercase text-emerald-400 mono">Package Manager Console Output (apk / opkg)</span>
-          <button class="text-[10.5px] text-gray-400 hover:text-white" @click="terminalOutput = ''">✕ Xóa Log</button>
+          <button type="button" class="text-[10.5px] text-gray-400 hover:text-white cursor-pointer" @click="terminalOutput = ''">✕ Xóa Log</button>
         </div>
         <pre class="mono text-[10.5px] text-gray-300 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ terminalOutput }}</pre>
       </div>
@@ -493,7 +514,7 @@ onMounted(() => {
         <span class="pro-card-title">⚙ Quản Lý Dịch Vụ Hệ Thống (/etc/init.d & procd)</span>
         <div class="flex items-center gap-2">
           <span class="text-[11px] text-gray-400">{{ services.filter(s => s.running).length }} / {{ services.length }} Running</span>
-          <button class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadApps">Refresh ↻</button>
+          <button type="button" class="btn-secondary text-[11px] py-1" :disabled="loading" @click="loadApps">Refresh ↻</button>
         </div>
       </div>
 
@@ -530,13 +551,15 @@ onMounted(() => {
                 <div class="flex items-center gap-1">
                   <button
                     v-if="s.name !== 'r3p-api'"
-                    class="btn-secondary text-[10px] py-0.5 px-2"
+                    type="button"
+                    class="btn-secondary text-[10px] py-0.5 px-2 min-w-[46px]"
                     :disabled="actionLoading !== null"
                     @click="controlService(s.name, s.running ? 'stop' : 'start')"
                   >
                     {{ s.running ? 'Stop' : 'Start' }}
                   </button>
                   <button
+                    type="button"
                     class="btn-primary text-[10px] py-0.5 px-2"
                     :disabled="actionLoading !== null"
                     @click="controlService(s.name, 'restart')"
@@ -544,7 +567,8 @@ onMounted(() => {
                     Restart
                   </button>
                   <button
-                    class="btn-secondary text-[10px] py-0.5 px-2"
+                    type="button"
+                    class="btn-secondary text-[10px] py-0.5 px-2 min-w-[82px]"
                     :disabled="actionLoading !== null"
                     @click="controlService(s.name, s.enabled ? 'disable' : 'enable')"
                   >

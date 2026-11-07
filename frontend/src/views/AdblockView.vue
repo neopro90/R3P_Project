@@ -100,21 +100,22 @@ async function blockDomainFromStream(domain: string) {
       body: JSON.stringify({ domain }),
     })
     if (res?.blocked) {
-      notice.value = `Đã nhận diện & thêm tên miền luồng quảng cáo "${domain}" vào Blacklist!`
+      showNotice(`Đã nhận diện & thêm tên miền luồng quảng cáo "${domain}" vào Blacklist!`)
       await loadAdStreams()
       await loadAdblock()
     }
   } catch (err: any) {
-    errorMsg.value = 'Lỗi: ' + (err?.message || err)
+    showError('Lỗi: ' + (err?.message || err))
   }
 }
 
 async function clearStreamHistory() {
   try {
     await apiRequest('/adblock/streams', { method: 'DELETE' })
+    showNotice('Đã xóa lịch sử luồng phân tích!')
     await loadAdStreams()
-  } catch (e) {
-    console.warn(e)
+  } catch (e: any) {
+    showError('Lỗi xóa lịch sử: ' + (e?.message || e))
   }
 }
 
@@ -143,6 +144,22 @@ const saving = ref(false)
 const updatingLists = ref(false)
 const notice = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
+
+function showNotice(msg: string, ms = 3800) {
+  notice.value = msg
+  errorMsg.value = null
+  setTimeout(() => {
+    if (notice.value === msg) notice.value = null
+  }, ms)
+}
+
+function showError(msg: string, ms = 4500) {
+  errorMsg.value = msg
+  notice.value = null
+  setTimeout(() => {
+    if (errorMsg.value === msg) errorMsg.value = null
+  }, ms)
+}
 
 const upstreamDnsInput = ref('1.1.1.1, 8.8.8.8')
 
@@ -270,10 +287,10 @@ async function updateBlocklistsNow() {
       message: string
     }>('/adblock/update', { method: 'POST' })
     if (res?.config) config.value = res.config
-    notice.value = res?.message || `Đã cập nhật ${res?.total_blocked || 0} tên miền chặn!`
+    showNotice(res?.message || `Đã cập nhật ${res?.total_blocked || 0} tên miền chặn!`, 4500)
     await loadAdblock()
   } catch (err: any) {
-    errorMsg.value = 'Cập nhật danh sách lỗi: ' + (err?.message || err)
+    showError('Cập nhật danh sách lỗi: ' + (err?.message || err))
   } finally {
     updatingLists.value = false
   }
@@ -289,9 +306,9 @@ async function addSourceList() {
     if (res?.config) config.value = res.config
     newSource.value = { name: '', url: '', category: 'Ads & Trackers' }
     showAddSource.value = false
-    notice.value = res?.message || 'Đã thêm nguồn danh sách chặn!'
+    showNotice(res?.message || 'Đã thêm nguồn danh sách chặn!')
   } catch (err: any) {
-    errorMsg.value = 'Thêm danh sách thất bại: ' + (err?.message || err)
+    showError('Thêm danh sách thất bại: ' + (err?.message || err))
   }
 }
 
@@ -302,8 +319,9 @@ async function toggleSource(src: AdblockSource) {
       body: JSON.stringify({ id: src.id, enabled: !src.enabled }),
     })
     if (res?.config) config.value = res.config
+    showNotice(`Đã ${!src.enabled ? 'bật' : 'tắt'} nguồn "${src.name}"!`)
   } catch (err: any) {
-    errorMsg.value = 'Lỗi: ' + (err?.message || err)
+    showError('Lỗi: ' + (err?.message || err))
   }
 }
 
@@ -313,8 +331,9 @@ async function deleteSource(id: string) {
       method: 'DELETE',
     })
     if (res?.config) config.value = res.config
+    showNotice('Đã xóa nguồn danh sách chặn!')
   } catch (err: any) {
-    errorMsg.value = 'Lỗi xóa danh sách: ' + (err?.message || err)
+    showError('Lỗi xóa danh sách: ' + (err?.message || err))
   }
 }
 
@@ -329,10 +348,10 @@ async function addCustomDomain(listType: 'blacklist' | 'whitelist') {
     if (res?.config) config.value = res.config
     if (listType === 'blacklist') newBlacklistDomain.value = ''
     else newWhitelistDomain.value = ''
-    notice.value = res?.message || 'Đã cập nhật danh sách tên miền!'
+    showNotice(res?.message || 'Đã cập nhật danh sách tên miền!')
     await loadAdblock()
   } catch (err: any) {
-    errorMsg.value = 'Lỗi thêm tên miền: ' + (err?.message || err)
+    showError('Lỗi thêm tên miền: ' + (err?.message || err))
   }
 }
 
@@ -343,9 +362,10 @@ async function removeCustomDomain(listType: 'blacklist' | 'whitelist', domain: s
       { method: 'DELETE' },
     )
     if (res?.config) config.value = res.config
+    showNotice(`Đã xóa "${domain}" khỏi ${listType === 'blacklist' ? 'Blacklist' : 'Whitelist'}!`)
     await loadAdblock()
   } catch (err: any) {
-    errorMsg.value = 'Lỗi xóa tên miền: ' + (err?.message || err)
+    showError('Lỗi xóa tên miền: ' + (err?.message || err))
   }
 }
 
@@ -378,25 +398,37 @@ onMounted(() => {
 
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
+    <!-- Floating Non-Shifting Notices -->
+    <div v-if="notice" class="r3p-toast r3p-toast-success">
+      <span class="r3p-toast-text">✓ {{ notice }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="notice = null">✕</button>
+    </div>
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <span class="r3p-toast-text">⚠ {{ errorMsg }}</span>
+      <button type="button" class="text-xs opacity-80 hover:opacity-100 px-1 cursor-pointer" @click="errorMsg = null">✕</button>
+    </div>
+
     <!-- Top Banner & Master Controls -->
     <div class="pro-card border border-sky-500/30">
-      <div class="pro-card-header">
-        <div class="flex flex-wrap items-center gap-2.5">
+      <div class="pro-card-header flex-wrap">
+        <div class="flex flex-wrap items-center gap-2 min-w-0">
           <span
-            class="w-3 h-3 rounded-full"
+            class="w-3 h-3 rounded-full shrink-0"
             :class="config.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"
           ></span>
-          <span class="pro-card-title text-sm">R3P AdBlock DNS Shield (Chặn Quảng Cáo, Theo Dõi & Mã Độc Toàn Mạng)</span>
+          <span class="pro-card-title text-sm truncate">R3P AdBlock DNS Shield (Chặn Quảng Cáo & Mã Độc)</span>
           <span class="badge" :class="config.enabled ? 'badge-green' : 'badge-orange'">
             {{ config.enabled ? 'ADBLOCK ACTIVE' : 'ADBLOCK DISABLED' }}
           </span>
-          <span v-if="config.force_dns" class="badge badge-blue">FORCE LAN DNS: ON (PORT 53)</span>
-          <span v-if="config.safe_search" class="badge badge-purple">SAFESEARCH: ON</span>
+          <span class="badge" :class="config.force_dns ? 'badge-blue' : 'badge-gray'">
+            FORCE DNS: {{ config.force_dns ? 'ON' : 'OFF' }}
+          </span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
           <button
-            class="text-[11.5px] py-1 px-3 rounded font-semibold transition"
+            type="button"
+            class="text-[11.5px] py-1 px-3 min-w-[138px] rounded font-semibold transition"
             :class="config.enabled ? 'btn-danger' : 'btn-primary'"
             :disabled="saving"
             @click="toggleAdblockMaster"
@@ -404,13 +436,14 @@ onMounted(() => {
             {{ config.enabled ? '⏸ Tắt AdBlock' : '▶ Bật AdBlock Ngay' }}
           </button>
           <button
-            class="btn-primary text-[11.5px] py-1 px-3"
+            type="button"
+            class="btn-primary text-[11.5px] py-1 px-3 min-w-[218px]"
             :disabled="updatingLists"
             @click="updateBlocklistsNow"
           >
             {{ updatingLists ? '⏳ Đang Tải & Cập Nhật…' : '🔄 Cập Nhật Danh Sách Chặn Ngay' }}
           </button>
-          <button class="btn-secondary text-[11.5px] py-1" :disabled="loading" @click="loadAdblock">
+          <button type="button" class="btn-secondary text-[11.5px] py-1" :disabled="loading" @click="loadAdblock">
             ↻ Làm mới
           </button>
         </div>
@@ -450,25 +483,17 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Notices -->
-    <div v-if="notice" class="px-3 py-2 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-medium">
-      ✓ {{ notice }}
-    </div>
-    <div v-if="errorMsg" class="px-3 py-2 rounded bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-medium">
-      ⚠ {{ errorMsg }}
-    </div>
-
     <!-- Gateway DNS Setup Guide (When R3P operates as a Client on Upstream Router) -->
     <div class="pro-card border border-emerald-500/35 bg-gradient-to-r from-emerald-500/[0.06] to-sky-500/[0.05]">
       <div class="pro-card-header flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span class="pro-card-title text-emerald-300">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+          <span class="pro-card-title text-emerald-300 truncate">
             💡 Gợi Ý Setup DNS Cho Gateway Chính (Do R3P Đang Chạy Chế Độ Client · {{ gatewaySetup.r3p_client_iface || 'WWAN/WAN' }})
           </span>
           <span class="badge badge-green">PORT 53 WAN/WWAN: ĐÃ MỞ SẴN</span>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 shrink-0">
           <a
             v-if="gatewaySetup.upstream_gateway_ip"
             :href="`http://${gatewaySetup.upstream_gateway_ip}`"
@@ -489,26 +514,26 @@ onMounted(() => {
             R3P đã tự động mở cổng DNS <code class="mono text-emerald-300">53 (TCP/UDP)</code> trên cả mạng chính và mạng LAN nội bộ:
           </p>
           <div class="flex items-center justify-between p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
-            <div>
-              <div class="text-[10px] text-emerald-300 uppercase font-semibold">IP R3P Trên Mạng Gateway Chính ({{ gatewaySetup.r3p_client_iface || 'WWAN' }})</div>
+            <div class="min-w-0 pr-2">
+              <div class="text-[10px] text-emerald-300 uppercase font-semibold truncate">IP R3P Trên Mạng Gateway Chính ({{ gatewaySetup.r3p_client_iface || 'WWAN' }})</div>
               <div class="mono text-sm font-bold text-white">{{ gatewaySetup.r3p_client_ip || '192.168.1.6' }}</div>
             </div>
             <button
               type="button"
-              class="btn-primary text-[10.5px] py-1 px-2.5"
+              class="btn-primary text-[10.5px] py-1 px-2.5 min-w-[96px]"
               @click="copyToClipboard(gatewaySetup.r3p_client_ip || '192.168.1.6', 'client_ip')"
             >
               {{ copiedText === 'client_ip' ? '✓ Đã Copy!' : '📋 Copy IP' }}
             </button>
           </div>
           <div class="flex items-center justify-between p-2 rounded bg-sky-500/10 border border-sky-500/25">
-            <div>
-              <div class="text-[10px] text-sky-300 uppercase font-semibold">IP R3P Trên Mạng LAN Nội Bộ (br-lan)</div>
+            <div class="min-w-0 pr-2">
+              <div class="text-[10px] text-sky-300 uppercase font-semibold truncate">IP R3P Trên Mạng LAN Nội Bộ (br-lan)</div>
               <div class="mono text-sm font-bold text-white">{{ gatewaySetup.r3p_lan_ip || '192.168.2.1' }}</div>
             </div>
             <button
               type="button"
-              class="btn-secondary text-[10.5px] py-1 px-2.5"
+              class="btn-secondary text-[10.5px] py-1 px-2.5 min-w-[96px]"
               @click="copyToClipboard(gatewaySetup.r3p_lan_ip || '192.168.2.1', 'lan_ip')"
             >
               {{ copiedText === 'lan_ip' ? '✓ Đã Copy!' : '📋 Copy IP' }}
@@ -590,10 +615,10 @@ onMounted(() => {
           <span class="badge badge-purple">AI PATTERN RECOGNIZER</span>
         </div>
         <div class="flex items-center gap-2">
-          <button class="btn-secondary text-[11px] py-1" :disabled="loadingStreams" @click="loadAdStreams">
+          <button type="button" class="btn-secondary text-[11px] py-1 min-w-[126px]" :disabled="loadingStreams" @click="loadAdStreams">
             {{ loadingStreams ? 'Đang phân tích…' : 'Làm mới luồng ↻' }}
           </button>
-          <button class="btn-danger text-[11px] py-1" @click="clearStreamHistory">
+          <button type="button" class="btn-danger text-[11px] py-1" @click="clearStreamHistory">
             Xóa lịch sử
           </button>
         </div>
@@ -679,6 +704,7 @@ onMounted(() => {
               <td class="py-1.5 px-3 text-right">
                 <button
                   v-if="st.action !== 'BLOCKED'"
+                  type="button"
                   class="btn-danger text-[10px] py-0.5 px-2"
                   @click="blockDomainFromStream(st.domain)"
                 >
@@ -693,12 +719,12 @@ onMounted(() => {
     </div>
 
     <!-- Global AdBlock Settings & Domain Tester Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
       <!-- Left 2 Cols: Full AdBlock Settings -->
       <form class="pro-card lg:col-span-2 space-y-3" @submit.prevent="saveGlobalConfig">
         <div class="pro-card-header">
           <span class="pro-card-title">⚙ Cài Đặt Chuyên Sâu Hệ Thống AdBlock DNS</span>
-          <button type="submit" class="btn-primary text-[11px] py-1 px-3" :disabled="saving">
+          <button type="submit" class="btn-primary text-[11px] py-1 px-3 min-w-[164px]" :disabled="saving">
             {{ saving ? 'Đang lưu & áp dụng…' : '💾 Lưu Cài Đặt AdBlock' }}
           </button>
         </div>
@@ -781,22 +807,30 @@ onMounted(() => {
             <input
               v-model="testDomainInput"
               type="text"
-              class="pro-input flex-1 mono text-xs"
+              class="pro-input flex-1 mono text-xs min-w-0"
               placeholder="Nhập tên miền cần test…"
             />
-            <button type="submit" class="btn-primary text-xs px-3" :disabled="testingDomain">
+            <button type="submit" class="btn-primary text-xs px-3 min-w-[96px]" :disabled="testingDomain">
               {{ testingDomain ? 'Đang test…' : 'Kiểm Tra' }}
             </button>
           </form>
 
-          <div v-if="testResult" class="p-2.5 rounded bg-black/50 border text-xs space-y-1.5" :class="testResult.blocked ? 'border-emerald-500/40' : 'border-amber-500/40'">
-            <div class="flex items-center justify-between">
-              <span class="mono font-bold text-gray-100">{{ testResult.domain }}</span>
-              <span class="badge" :class="testResult.blocked ? 'badge-green' : 'badge-orange'">
-                {{ testResult.blocked ? '🛡 ĐÃ CHẶN (0.0.0.0)' : '✓ CHO PHÉP TRUY CẬP' }}
-              </span>
+          <div
+            class="p-2.5 rounded bg-black/50 border text-xs h-36 flex flex-col justify-between"
+            :class="testResult ? (testResult.blocked ? 'border-emerald-500/40' : 'border-amber-500/40') : 'border-white/10'"
+          >
+            <template v-if="testResult">
+              <div class="flex items-center justify-between gap-2 shrink-0">
+                <span class="mono font-bold text-gray-100 truncate">{{ testResult.domain }}</span>
+                <span class="badge" :class="testResult.blocked ? 'badge-green' : 'badge-orange'">
+                  {{ testResult.blocked ? '🛡 ĐÃ CHẶN (0.0.0.0)' : '✓ CHO PHÉP TRUY CẬP' }}
+                </span>
+              </div>
+              <pre class="mono text-[10px] text-gray-300 flex-1 overflow-y-auto whitespace-pre-wrap bg-black/40 p-1.5 rounded mt-1.5">{{ testResult.dns_output }}</pre>
+            </template>
+            <div v-else class="h-full flex items-center justify-center text-gray-500 text-center text-[11.5px] px-3">
+              Bấm "Kiểm Tra" hoặc chọn một tên miền mẫu bên dưới để xem kết quả phân giải nslookup thực tế.
             </div>
-            <pre class="mono text-[10px] text-gray-300 max-h-28 overflow-y-auto whitespace-pre-wrap bg-black/40 p-1.5 rounded">{{ testResult.dns_output }}</pre>
           </div>
         </div>
 
@@ -822,7 +856,7 @@ onMounted(() => {
           <span class="pro-card-title">📋 Nguồn Danh Sách Chặn Quảng Cáo & Mã Độc (Blocklist Subscriptions)</span>
           <span class="badge badge-blue">{{ config.sources.length }} Nguồn</span>
         </div>
-        <button class="btn-primary text-[11px] py-1" @click="showAddSource = !showAddSource">
+        <button type="button" class="btn-primary text-[11px] py-1 min-w-[205px]" @click="showAddSource = !showAddSource">
           {{ showAddSource ? '✕ Đóng' : '+ Thêm URL Danh Sách Chặn Mới' }}
         </button>
       </div>
@@ -889,12 +923,14 @@ onMounted(() => {
               <td>
                 <div class="flex items-center gap-1.5">
                   <button
-                    class="btn-secondary text-[10.5px] py-0.5 px-2"
+                    type="button"
+                    class="btn-secondary text-[10.5px] py-0.5 px-2 min-w-[44px]"
                     @click="toggleSource(s)"
                   >
                     {{ s.enabled ? 'Tắt' : 'Bật' }}
                   </button>
                   <button
+                    type="button"
                     class="btn-danger text-[10.5px] py-0.5 px-2"
                     @click="deleteSource(s.id)"
                   >
@@ -922,7 +958,7 @@ onMounted(() => {
           <input
             v-model="newBlacklistDomain"
             type="text"
-            class="pro-input flex-1 mono text-xs"
+            class="pro-input flex-1 mono text-xs min-w-0"
             placeholder="VD: ads.example.com, tracker.net"
           />
           <button type="submit" class="btn-danger text-xs px-3">+ Chặn Tên Miền</button>
@@ -935,7 +971,7 @@ onMounted(() => {
             class="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-red-500/15 border border-red-500/30 text-red-200 mono text-[11px]"
           >
             {{ d }}
-            <button class="text-red-400 hover:text-white font-bold" title="Xóa" @click="removeCustomDomain('blacklist', d)">✕</button>
+            <button type="button" class="text-red-400 hover:text-white font-bold cursor-pointer" title="Xóa" @click="removeCustomDomain('blacklist', d)">✕</button>
           </span>
         </div>
       </div>
@@ -952,7 +988,7 @@ onMounted(() => {
           <input
             v-model="newWhitelistDomain"
             type="text"
-            class="pro-input flex-1 mono text-xs"
+            class="pro-input flex-1 mono text-xs min-w-0"
             placeholder="VD: analytics.google.com, github.com"
           />
           <button type="submit" class="btn-primary text-xs px-3">+ Cho Phép</button>
@@ -965,7 +1001,7 @@ onMounted(() => {
             class="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 mono text-[11px]"
           >
             {{ d }}
-            <button class="text-emerald-400 hover:text-white font-bold" title="Xóa" @click="removeCustomDomain('whitelist', d)">✕</button>
+            <button type="button" class="text-emerald-400 hover:text-white font-bold cursor-pointer" title="Xóa" @click="removeCustomDomain('whitelist', d)">✕</button>
           </span>
         </div>
       </div>
@@ -985,7 +1021,7 @@ onMounted(() => {
             class="pro-input w-52 mono text-[11px]"
             placeholder="Lọc theo tên miền hoặc IP…"
           />
-          <button class="btn-secondary text-[11px] py-1" @click="loadAdblock">↻ Tải lại</button>
+          <button type="button" class="btn-secondary text-[11px] py-1" @click="loadAdblock">↻ Tải lại</button>
           <button
             type="button"
             class="px-2.5 py-1 text-[11px] rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition font-semibold cursor-pointer"

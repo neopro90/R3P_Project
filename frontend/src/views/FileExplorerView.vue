@@ -290,14 +290,18 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-4 max-w-7xl mx-auto p-2 sm:p-4">
-    <!-- Notice Banners -->
-    <div v-if="errorMsg" class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-center justify-between">
-      <span>⚠️ {{ errorMsg }}</span>
-      <button class="text-rose-400 hover:text-white" @click="errorMsg = null">✕</button>
+    <!-- Floating Toast Notifications (Never shift layout) -->
+    <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">⚠️ {{ errorMsg }}</span>
+        <button type="button" class="text-rose-300 hover:text-white shrink-0 font-bold" @click="errorMsg = null">✕</button>
+      </div>
     </div>
-    <div v-if="successMsg" class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center justify-between">
-      <span>✅ {{ successMsg }}</span>
-      <button class="text-emerald-400 hover:text-white" @click="successMsg = null">✕</button>
+    <div v-else-if="successMsg" class="r3p-toast r3p-toast-success">
+      <div class="flex items-start justify-between gap-3">
+        <span class="r3p-toast-text">✅ {{ successMsg }}</span>
+        <button type="button" class="text-emerald-300 hover:text-white shrink-0 font-bold" @click="successMsg = null">✕</button>
+      </div>
     </div>
 
     <!-- Quick Location Shortcuts -->
@@ -326,8 +330,9 @@ onUnmounted(() => {
     <!-- Path Bar & Action Toolbar -->
     <div class="pro-card p-3 flex flex-col md:flex-row items-center justify-between gap-2.5">
       <!-- Breadcrumbs -->
-      <div class="flex items-center gap-1 overflow-x-auto w-full md:w-auto text-xs py-1">
+      <div class="flex items-center gap-1 overflow-x-auto w-full md:w-auto text-xs py-1 min-w-0">
         <button
+          type="button"
           class="btn-secondary px-2 py-1 text-xs shrink-0"
           :disabled="currentPath === '/' || loading"
           title="Lên thư mục cha"
@@ -336,7 +341,8 @@ onUnmounted(() => {
           ⬆️ Lên
         </button>
         <button
-          class="hover:underline font-bold text-sky-400 shrink-0 px-1"
+          type="button"
+          class="hover:underline font-bold text-sky-400 shrink-0 px-1 cursor-pointer"
           @click="loadDirectory('/')"
         >
           root/
@@ -344,7 +350,8 @@ onUnmounted(() => {
         <template v-for="(seg, idx) in pathSegments" :key="seg.fullPath">
           <span class="text-gray-600">/</span>
           <button
-            class="hover:underline font-semibold shrink-0 px-1"
+            type="button"
+            class="hover:underline font-semibold shrink-0 px-1 cursor-pointer"
             :class="idx === pathSegments.length - 1 ? 'text-gray-200' : 'text-sky-300'"
             @click="loadDirectory(seg.fullPath)"
           >
@@ -362,7 +369,8 @@ onUnmounted(() => {
           class="pro-input py-1 text-xs w-36 md:w-44"
         />
         <button
-          class="btn-secondary py-1 text-xs flex items-center gap-1"
+          type="button"
+          class="btn-secondary py-1 text-xs flex items-center gap-1 min-w-[84px] justify-center"
           :disabled="loading"
           @click="loadDirectory(currentPath)"
         >
@@ -370,13 +378,15 @@ onUnmounted(() => {
           <span class="hidden sm:inline">Làm mới</span>
         </button>
         <button
-          class="btn-primary py-1 text-xs flex items-center gap-1"
+          type="button"
+          class="btn-primary py-1 text-xs flex items-center gap-1 min-w-[68px] justify-center"
           @click="createType = 'file'; showCreateModal = true"
         >
           <span>+ Tệp</span>
         </button>
         <button
-          class="btn-secondary py-1 text-xs flex items-center gap-1"
+          type="button"
+          class="btn-secondary py-1 text-xs flex items-center gap-1 min-w-[88px] justify-center"
           @click="createType = 'dir'; showCreateModal = true"
         >
           <span>+ Thư mục</span>
@@ -390,7 +400,7 @@ onUnmounted(() => {
       <div class="px-4 py-2.5 bg-black/40 border-b border-white/10 flex flex-wrap items-center justify-between gap-2">
         <div class="flex items-center gap-2 min-w-0">
           <span class="text-base">📝</span>
-          <div>
+          <div class="min-w-0">
             <div class="text-xs font-bold text-sky-300 mono truncate">{{ editingFile.path }}</div>
             <div class="text-[10px] text-gray-500 mono">
               {{ editingFile.mode }} · {{ formatBytes(editingFile.content.length) }}
@@ -405,7 +415,8 @@ onUnmounted(() => {
             <span>Tạo file .bak</span>
           </label>
           <button
-            class="btn-primary py-1 text-xs flex items-center gap-1"
+            type="button"
+            class="btn-primary py-1 text-xs flex items-center gap-1 min-w-[104px] justify-center"
             :disabled="savingFile"
             @click="saveCurrentFile"
           >
@@ -413,13 +424,15 @@ onUnmounted(() => {
             <span>{{ savingFile ? 'Đang lưu...' : 'Lưu Tệp' }}</span>
           </button>
           <button
-            class="btn-secondary py-1 text-xs"
+            type="button"
+            class="btn-secondary py-1 text-xs min-w-[80px] justify-center"
             @click="openEditor(editingFile.path)"
           >
             🔄 Tải lại
           </button>
           <button
-            class="btn-danger py-1 text-xs"
+            type="button"
+            class="btn-danger py-1 text-xs min-w-[68px] justify-center"
             @click="closeEditor"
           >
             ✕ Đóng
@@ -441,9 +454,9 @@ onUnmounted(() => {
 
     <!-- File & Folder List -->
     <div class="pro-card p-0 overflow-hidden">
-      <div class="px-4 py-2 bg-black/20 border-b border-white/10 flex items-center justify-between text-xs text-gray-400">
-        <span>Danh mục: {{ currentPath }} ({{ filteredEntries.length }} mục)</span>
-        <span v-if="loading" class="text-sky-400 animate-pulse">Đang tải dữ liệu...</span>
+      <div class="px-4 py-2 bg-black/20 border-b border-white/10 flex items-center justify-between text-xs text-gray-400 gap-2">
+        <span class="truncate">Danh mục: {{ currentPath }} ({{ filteredEntries.length }} mục)</span>
+        <span class="text-sky-400 min-w-[110px] text-right shrink-0">{{ loading ? 'Đang tải dữ liệu...' : '' }}</span>
       </div>
 
       <div class="overflow-x-auto">
@@ -472,25 +485,26 @@ onUnmounted(() => {
               <td class="py-2 px-4 text-base cursor-pointer" @click="openEntry(entry)">
                 {{ getFileIcon(entry) }}
               </td>
-              <td class="py-2 px-3 cursor-pointer" @click="openEntry(entry)">
-                <div class="font-medium text-gray-200 group-hover:text-sky-400 transition flex items-center gap-1.5">
-                  <span>{{ entry.name }}</span>
-                  <span v-if="entry.is_dir" class="text-gray-500 text-[10px]">/</span>
+              <td class="py-2 px-3 cursor-pointer max-w-[280px] sm:max-w-[420px]" @click="openEntry(entry)">
+                <div class="font-medium text-gray-200 group-hover:text-sky-400 transition flex items-center gap-1.5 min-w-0">
+                  <span class="truncate" :title="entry.name">{{ entry.name }}</span>
+                  <span v-if="entry.is_dir" class="text-gray-500 text-[10px] shrink-0">/</span>
                 </div>
               </td>
-              <td class="py-2 px-3 mono text-gray-400">
+              <td class="py-2 px-3 mono text-gray-400 whitespace-nowrap">
                 {{ entry.is_dir ? '—' : formatBytes(entry.size) }}
               </td>
-              <td class="py-2 px-3 mono text-[11px] text-gray-500">
+              <td class="py-2 px-3 mono text-[11px] text-gray-500 whitespace-nowrap">
                 {{ entry.mode }}
               </td>
-              <td class="py-2 px-3 text-gray-500 hidden md:table-cell">
+              <td class="py-2 px-3 text-gray-500 hidden md:table-cell whitespace-nowrap">
                 {{ entry.mod_time }}
               </td>
-              <td class="py-2 px-4 text-right">
+              <td class="py-2 px-4 text-right whitespace-nowrap">
                 <div class="flex items-center justify-end gap-1">
                   <button
                     v-if="!entry.is_dir && entry.is_image"
+                    type="button"
                     class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 font-semibold text-[11px] cursor-pointer"
                     title="Xem ảnh trực tiếp (JPG/PNG/WebP/GIF/SVG)"
                     @click="openMediaPreview(entry)"
@@ -499,6 +513,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     v-if="!entry.is_dir && entry.is_video"
+                    type="button"
                     class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 font-semibold text-[11px] cursor-pointer flex items-center gap-1"
                     title="Phát video stream HTML5 nhẹ mượt (Không tốn RAM Router)"
                     @click="openMediaPreview(entry)"
@@ -507,6 +522,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     v-if="!entry.is_dir && entry.is_audio"
+                    type="button"
                     class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 font-semibold text-[11px] cursor-pointer"
                     title="Nghe nhạc trực tiếp"
                     @click="openMediaPreview(entry)"
@@ -515,7 +531,8 @@ onUnmounted(() => {
                   </button>
                   <button
                     v-if="!entry.is_dir && entry.is_editable"
-                    class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 font-semibold text-[11px]"
+                    type="button"
+                    class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 font-semibold text-[11px] cursor-pointer"
                     title="Chỉnh sửa tệp text/code trực tiếp"
                     @click="openEditor(entry.path)"
                   >
@@ -523,14 +540,16 @@ onUnmounted(() => {
                   </button>
                   <button
                     v-if="!entry.is_dir"
-                    class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 font-semibold text-[11px]"
+                    type="button"
+                    class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 font-semibold text-[11px] cursor-pointer"
                     title="Tải về máy tính"
                     @click="downloadFile(entry.path)"
                   >
                     ⬇️ Tải
                   </button>
                   <button
-                    class="px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 font-semibold text-[11px]"
+                    type="button"
+                    class="px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 font-semibold text-[11px] cursor-pointer"
                     title="Xóa tệp/thư mục"
                     @click="deleteItem(entry)"
                   >
