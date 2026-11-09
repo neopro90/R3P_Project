@@ -49,12 +49,16 @@ type NativeDownloadManager struct {
 var dlManager = newNativeDownloadManager()
 
 func newNativeDownloadManager() *NativeDownloadManager {
+	defDir := "/mnt/sda1/downloads"
+	if st, err := os.Stat("/mnt/sda1"); err != nil || !st.IsDir() {
+		defDir = "/tmp/downloads"
+	}
 	m := &NativeDownloadManager{
 		tasks:      make(map[string]*NativeDownloadTask),
 		cancels:    make(map[string]context.CancelFunc),
 		configFile: "/etc/r3p/downloads_state.json",
 		settings: DownloadSettings{
-			DefaultDir:    "/overlay/downloads",
+			DefaultDir:    defDir,
 			MaxConcurrent: 3,
 			SpeedLimitKBs: 0,
 		},
@@ -64,14 +68,14 @@ func newNativeDownloadManager() *NativeDownloadManager {
 
 func (m *NativeDownloadManager) init() {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	_ = os.MkdirAll("/overlay/downloads", 0755)
-	_ = os.MkdirAll("/overlay/share", 0755)
 	_ = os.MkdirAll("/tmp/downloads", 0755)
 	if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
 		_ = os.MkdirAll("/mnt/sda1/downloads", 0755)
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
 		_ = os.MkdirAll("/mnt/sda1/esp32-downloads", 0755)
 		m.settings.DefaultDir = "/mnt/sda1/downloads"
+	} else if m.settings.DefaultDir == "" || strings.HasPrefix(m.settings.DefaultDir, "/overlay") {
+		m.settings.DefaultDir = "/tmp/downloads"
 	}
 
 	data, err := os.ReadFile(m.configFile)
@@ -82,9 +86,11 @@ func (m *NativeDownloadManager) init() {
 		}
 		if json.Unmarshal(data, &saved) == nil {
 			if saved.Settings.DefaultDir != "" {
-				if saved.Settings.DefaultDir == "/overlay/downloads" {
+				if strings.HasPrefix(saved.Settings.DefaultDir, "/overlay") {
 					if st, err := os.Stat("/mnt/sda1/downloads"); err == nil && st.IsDir() {
 						saved.Settings.DefaultDir = "/mnt/sda1/downloads"
+					} else {
+						saved.Settings.DefaultDir = "/tmp/downloads"
 					}
 				}
 				m.settings = saved.Settings
@@ -122,15 +128,21 @@ func generateGID() string {
 
 func sanitizeDownloadDir(dir string) string {
 	dir = strings.TrimSpace(dir)
+	defaultFallback := "/mnt/sda1/downloads"
+	if st, err := os.Stat("/mnt/sda1"); err != nil || !st.IsDir() {
+		defaultFallback = "/tmp/downloads"
+	}
 	if dir == "" {
-		return "/overlay/downloads"
+		_ = os.MkdirAll(defaultFallback, 0755)
+		return defaultFallback
 	}
 	clean := filepath.Clean(dir)
-	if strings.HasPrefix(clean, "/overlay/") || strings.HasPrefix(clean, "/tmp/") || strings.HasPrefix(clean, "/mnt/") || strings.HasPrefix(clean, "/media/") {
+	if strings.HasPrefix(clean, "/mnt/") || strings.HasPrefix(clean, "/media/") || strings.HasPrefix(clean, "/tmp/") || strings.HasPrefix(clean, "/overlay/") {
 		_ = os.MkdirAll(clean, 0755)
 		return clean
 	}
-	return "/overlay/downloads"
+	_ = os.MkdirAll(defaultFallback, 0755)
+	return defaultFallback
 }
 
 func filenameFromURL(rawURL string) string {

@@ -802,6 +802,326 @@ func saveNASShares(list []ShareItem) {
 	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
 		_ = os.WriteFile(sharesConfigFile, b, 0644)
 	}
+	_ = syncSambaConfigFile(list)
+}
+
+func getServerLanIP() string {
+	netUCI := parseUCIConfigMap("network")
+	meta := interfaceMetadata("br-lan")
+	if ip, ok := meta["ipv4"].(string); ok && ip != "" {
+		return ip
+	}
+	if ip := netUCI["network.lan.ipaddr"]; ip != "" {
+		return ip
+	}
+	return "192.168.1.7"
+}
+
+func syncSambaConfigFile(shares []ShareItem) error {
+	sambaUCI := parseUCIConfigMap("samba4")
+	workgroup := sambaUCI["samba4.@samba[0].workgroup"]
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	desc := sambaUCI["samba4.@samba[0].description"]
+	if desc == "" {
+		desc = "R3P Mini Server NAS"
+	}
+	tuning := sambaUCI["samba4.@samba[0].enable_extra_tuning"]
+	if tuning == "" {
+		tuning = "1"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("config samba\n")
+	sb.WriteString(fmt.Sprintf("\toption workgroup '%s'\n", workgroup))
+	sb.WriteString("\toption charset 'UTF-8'\n")
+	sb.WriteString(fmt.Sprintf("\toption description '%s'\n", desc))
+	sb.WriteString("\toption interface 'lan'\n")
+	sb.WriteString(fmt.Sprintf("\toption enable_extra_tuning '%s'\n", tuning))
+
+	for _, s := range shares {
+		name := sanitizeFilename(s.Name)
+		if name == "" || s.Path == "" {
+			continue
+		}
+		_ = os.MkdirAll(s.Path, 0777)
+		ro := "no"
+		if s.ReadOnly {
+			ro = "yes"
+		}
+		guest := "yes"
+		if !s.GuestOk {
+			guest = "no"
+		}
+		sb.WriteString("\nconfig sambashare\n")
+		sb.WriteString(fmt.Sprintf("\toption name '%s'\n", name))
+		sb.WriteString(fmt.Sprintf("\toption path '%s'\n", s.Path))
+		sb.WriteString(fmt.Sprintf("\toption read_only '%s'\n", ro))
+		sb.WriteString(fmt.Sprintf("\toption guest_ok '%s'\n", guest))
+		sb.WriteString("\toption force_root '1'\n")
+		sb.WriteString("\toption browseable 'yes'\n")
+		sb.WriteString("\toption create_mask '0666'\n")
+		sb.WriteString("\toption dir_mask '0777'\n")
+	}
+
+	err := os.WriteFile("/etc/config/samba4", []byte(sb.String()), 0644)
+	if err == nil {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			_, _ = runCmd(8, "/etc/init.d/samba4", "restart")
+		}()
+	}
+	return err
+}
+
+// GET /api/v1/nas/services
+// PUT /api/v1/nas/services/samba
+// PUT /api/v1/nas/services/ftp
+func handleNASServices(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	lanIP := getServerLanIP()
+	sambaUCI := parseUCIConfigMap("samba4")
+
+	smbRunning := false
+	ftpRunning := false
+	if entries, err := os.ReadDir("/proc"); err == nil {
+		for _, e := range entries {
+			if _, err := strconv.Atoi(e.Name()); err == nil {
+				cmd := readFile("/proc/" + e.Name() + "/cmdline")
+				if strings.Contains(cmd, "smbd") {
+					smbRunning = true
+				}
+				if strings.Contains(cmd, "vsftpd") {
+					ftpRunning = true
+				}
+			}
+		}
+	}
+
+	smbEnabledMatches, _ := filepath.Glob("/etc/rc.d/S*samba4")
+	ftpEnabledMatches, _ := filepath.Glob("/etc/rc.d/S*vsftpd")
+
+	ftpPort := 21
+	ftpRootDir := "/mnt/sda1"
+	ftpWriteEnable := true
+	ftpAnonEnable := false
+	ftpLocalEnable := true
+
+	for _, line := range readFileLines("/etc/vsftpd.conf", 100) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		k := strings.ToLower(strings.TrimSpace(parts[0]))
+		v := strings.TrimSpace(parts[1])
+		switch k {
+		case "listen_port":
+			if p, err := strconv.Atoi(v); err == nil && p > 0 {
+				ftpPort = p
+			}
+		case "local_root", "anon_root":
+			if v != "" {
+				ftpRootDir = v
+			}
+		case "write_enable":
+			ftpWriteEnable = strings.ToUpper(v) == "YES"
+		case "anonymous_enable":
+			ftpAnonEnable = strings.ToUpper(v) == "YES"
+		case "local_enable":
+			ftpLocalEnable = strings.ToUpper(v) == "YES"
+		}
+	}
+
+	workgroup := sambaUCI["samba4.@samba[0].workgroup"]
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	desc := sambaUCI["samba4.@samba[0].description"]
+	if desc == "" {
+		desc = "R3P Mini Server NAS"
+	}
+	extraTuning := sambaUCI["samba4.@samba[0].enable_extra_tuning"] != "0"
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"server_ip": lanIP,
+			"samba": map[string]interface{}{
+				"running":      smbRunning,
+				"enabled":      len(smbEnabledMatches) > 0,
+				"workgroup":    workgroup,
+				"description":  desc,
+				"extra_tuning": extraTuning,
+				"allow_guest":  true,
+			},
+			"ftp": map[string]interface{}{
+				"running":          ftpRunning,
+				"enabled":          len(ftpEnabledMatches) > 0,
+				"port":             ftpPort,
+				"root_dir":         ftpRootDir,
+				"write_enable":     ftpWriteEnable,
+				"anonymous_enable": ftpAnonEnable,
+				"local_enable":     ftpLocalEnable,
+			},
+		})
+
+	case http.MethodPut:
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/samba") {
+			var body struct {
+				Enabled     *bool  `json:"enabled"`
+				Running     *bool  `json:"running"`
+				Action      string `json:"action"`
+				Workgroup   string `json:"workgroup"`
+				Description string `json:"description"`
+				ExtraTuning *bool  `json:"extra_tuning"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+				return
+			}
+			if body.Workgroup != "" && safeTokenKeyPattern.MatchString(body.Workgroup) {
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].workgroup=%s", body.Workgroup))
+			}
+			if body.Description != "" {
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].description=%s", body.Description))
+			}
+			if body.ExtraTuning != nil {
+				tunVal := "0"
+				if *body.ExtraTuning {
+					tunVal = "1"
+				}
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].enable_extra_tuning=%s", tunVal))
+			}
+			_, _ = runCmd(4, "uci", "commit", "samba4")
+
+			if body.Enabled != nil {
+				if *body.Enabled {
+					_, _ = runCmd(4, "/etc/init.d/samba4", "enable")
+				} else {
+					_, _ = runCmd(4, "/etc/init.d/samba4", "disable")
+				}
+			}
+
+			_ = syncSambaConfigFile(loadNASShares())
+
+			act := body.Action
+			if act == "" {
+				if body.Running != nil {
+					if *body.Running {
+						act = "restart"
+					} else {
+						act = "stop"
+					}
+				} else {
+					act = "restart"
+				}
+			}
+			_, _ = runCmd(8, "/etc/init.d/samba4", act)
+
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"saved":   true,
+				"message": "Đã lưu và áp dụng cấu hình Samba (SMB) thành công!",
+			})
+			return
+
+		} else if strings.HasSuffix(path, "/ftp") {
+			var body struct {
+				Enabled         *bool  `json:"enabled"`
+				Running         *bool  `json:"running"`
+				Action          string `json:"action"`
+				Port            int    `json:"port"`
+				RootDir         string `json:"root_dir"`
+				WriteEnable     *bool  `json:"write_enable"`
+				AnonymousEnable *bool  `json:"anonymous_enable"`
+				LocalEnable     *bool  `json:"local_enable"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+				return
+			}
+			if body.Port > 0 && body.Port <= 65535 {
+				ftpPort = body.Port
+			}
+			if body.RootDir != "" {
+				validPath, err := validateNASPath(body.RootDir)
+				if err == nil {
+					ftpRootDir = validPath
+				}
+			}
+			if body.WriteEnable != nil {
+				ftpWriteEnable = *body.WriteEnable
+			}
+			if body.AnonymousEnable != nil {
+				ftpAnonEnable = *body.AnonymousEnable
+			}
+			if body.LocalEnable != nil {
+				ftpLocalEnable = *body.LocalEnable
+			}
+
+			anonStr := "NO"
+			if ftpAnonEnable {
+				anonStr = "YES"
+			}
+			localStr := "NO"
+			if ftpLocalEnable {
+				localStr = "YES"
+			}
+			writeStr := "NO"
+			if ftpWriteEnable {
+				writeStr = "YES"
+			}
+
+			var sb strings.Builder
+			sb.WriteString("background=NO\nlisten=YES\n")
+			sb.WriteString(fmt.Sprintf("listen_port=%d\n", ftpPort))
+			sb.WriteString(fmt.Sprintf("anonymous_enable=%s\n", anonStr))
+			sb.WriteString(fmt.Sprintf("local_enable=%s\n", localStr))
+			sb.WriteString(fmt.Sprintf("write_enable=%s\n", writeStr))
+			sb.WriteString("local_umask=022\ncheck_shell=NO\nsession_support=NO\n")
+			sb.WriteString(fmt.Sprintf("local_root=%s\n", ftpRootDir))
+			sb.WriteString(fmt.Sprintf("anon_root=%s\n", ftpRootDir))
+
+			_ = os.WriteFile("/etc/vsftpd.conf", []byte(sb.String()), 0644)
+
+			if body.Enabled != nil {
+				if *body.Enabled {
+					_, _ = runCmd(4, "/etc/init.d/vsftpd", "enable")
+				} else {
+					_, _ = runCmd(4, "/etc/init.d/vsftpd", "disable")
+				}
+			}
+
+			act := body.Action
+			if act == "" {
+				if body.Running != nil {
+					if *body.Running {
+						act = "restart"
+					} else {
+						act = "stop"
+					}
+				} else {
+					act = "restart"
+				}
+			}
+			_, _ = runCmd(8, "/etc/init.d/vsftpd", act)
+
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"saved":   true,
+				"message": fmt.Sprintf("Đã lưu và áp dụng cấu hình máy chủ FTP (Cổng %d, thư mục %s) thành công!", ftpPort, ftpRootDir),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusBadRequest, false, "endpoint path must end with /samba or /ftp")
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
 }
 
 func validateNASPath(rawDir string) (string, error) {
@@ -930,6 +1250,7 @@ func handleNASOverview(w http.ResponseWriter, r *http.Request) {
 		"shares":      shares,
 		"current_dir": validDir,
 		"files":       files,
+		"server_ip":   getServerLanIP(),
 	})
 }
 

@@ -394,6 +394,8 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			_, _ = runCmd(8, "/sbin/ifup", targetSec)
 			if targetSec == "lan" {
 				_, _ = runCmd(8, "/etc/init.d/dnsmasq", "reload")
+				_, _ = runCmd(8, "/etc/init.d/samba4", "restart")
+				_, _ = runCmd(8, "/etc/init.d/vsftpd", "restart")
 				if targetGW != "" && net.ParseIP(targetGW) != nil {
 					_, _ = runCmd(4, "ip", "route", "replace", "default", "via", targetGW, "dev", "br-lan")
 				}

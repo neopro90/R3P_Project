@@ -1,9 +1,9 @@
 {
-    "version":  "v1.1.0",
-    "revision":  14,
-    "released_at":  "2026-11-07 02:27:01",
+    "version":  "v1.1.14",
+    "revision":  15,
+    "released_at":  "2026-11-09 14:18:37",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.1.0",
-    "changelog":  "Mobile 9:16 responsive layout with bottom quick nav bar \u0026 default 2.4GHz onboarding AP"
+    "commit_sha":  "v1.1.14",
+    "changelog":  "fix(nas): dynamic LAN IP for SMB/FTP shares, add SMB \u0026 FTP settings cards, resolve package aliases, protect overlay space"
 }

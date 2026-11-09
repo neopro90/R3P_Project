@@ -600,6 +600,24 @@ func handlePackagesUpdateFeeds(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var packageAliases = map[string]string{
+	"samba":          "samba4-server",
+	"samba-server":   "samba4-server",
+	"samba-sever":    "samba4-server",
+	"smb":            "samba4-server",
+	"cifs":           "samba4-server",
+	"ftp":            "vsftpd",
+	"ftp-server":     "vsftpd",
+	"wireguard":      "wireguard-tools",
+	"wg":             "wireguard-tools",
+	"shadowsocks":    "shadowsocks-libev-ss-server",
+	"v2ray":          "v2ray-core",
+	"xray":           "xray-core",
+	"aria2":          "aria2",
+	"iperf":          "iperf3",
+	"wget":           "wget-ssl",
+}
+
 // POST /api/v1/packages/install
 func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -621,21 +639,32 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 	pkgName := strings.TrimSpace(body.Package)
 	dlURL := strings.TrimSpace(body.DownloadURL)
 
+	// Resolve package aliases (e.g. samba-server -> samba4-server, ftp -> vsftpd)
+	lowerPkg := strings.ToLower(pkgName)
+	if alias, exists := packageAliases[lowerPkg]; exists {
+		pkgName = alias
+	}
+
 	// Guard against kmod-sound-core / ffmpeg which causes MT7621 kernel panic
 	if strings.Contains(strings.ToLower(pkgName), "kmod-sound") || strings.ToLower(pkgName) == "ffmpeg" || strings.ToLower(pkgName) == "alsa-lib" {
 		writeJSON(w, http.StatusBadRequest, false, "Gói này phụ thuộc vào kmod-sound-core gây xung đột phần cứng trên chip MT7621. Hệ thống đã chặn để bảo vệ Router!")
 		return
 	}
 
+	isDirectBinary := (strings.HasSuffix(strings.ToLower(dlURL), ".apk") ||
+		strings.HasSuffix(strings.ToLower(dlURL), ".ipk") ||
+		strings.HasSuffix(strings.ToLower(dlURL), ".sh") ||
+		strings.Contains(dlURL, "/releases/download/"))
+
 	// Case 1: Direct URL installation from GitHub (.apk, .ipk, .sh)
-	if dlURL != "" && (strings.HasPrefix(dlURL, "https://") || strings.HasPrefix(dlURL, "http://")) {
+	if dlURL != "" && isDirectBinary && (strings.HasPrefix(dlURL, "https://") || strings.HasPrefix(dlURL, "http://")) {
 		fileName := filepath.Base(dlURL)
 		if !safePkgNamePattern.MatchString(fileName) {
 			fileName = "github-pkg.apk"
 		}
 		tmpPath := "/tmp/" + fileName
 		_ = os.Remove(tmpPath)
-		dlOut, dlErr := runCmd(40, "curl", "-L", "-s", "-o", tmpPath, dlURL)
+		dlOut, dlErr := runCmd(60, "curl", "-L", "-s", "-o", tmpPath, dlURL)
 		if dlErr != nil {
 			writeJSON(w, http.StatusInternalServerError, false, "Tải gói từ GitHub thất bại: "+dlErr.Error()+" "+dlOut)
 			return
@@ -643,10 +672,10 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 		var instOut string
 		var instErr error
 		if strings.HasSuffix(strings.ToLower(fileName), ".apk") {
-			instOut, instErr = runCmd(45, "apk", "add", "--allow-untrusted", tmpPath)
+			instOut, instErr = runCmd(60, "apk", "add", "--allow-untrusted", tmpPath)
 		} else if strings.HasSuffix(strings.ToLower(fileName), ".sh") {
 			_ = os.Chmod(tmpPath, 0755)
-			instOut, instErr = runCmd(45, "sh", tmpPath)
+			instOut, instErr = runCmd(60, "sh", tmpPath)
 		} else {
 			instOut = fmt.Sprintf("Đã tải gói %s về %s thành công.", fileName, tmpPath)
 		}
@@ -673,9 +702,9 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := runCmd(60, "apk", "add", pkgName)
-	if err != nil && (strings.Contains(out, "UNTRUSTED") || strings.Contains(out, "not found") || strings.Contains(out, "Unable to select")) {
-		_, _ = runCmd(30, "apk", "update")
-		out, err = runCmd(60, "apk", "add", pkgName)
+	if err != nil && (strings.Contains(out, "UNTRUSTED") || strings.Contains(out, "not found") || strings.Contains(out, "unable to select") || strings.Contains(out, "Unable to select")) {
+		_, _ = runCmd(40, "apk", "update")
+		out, err = runCmd(60, "apk", "add", "--allow-untrusted", pkgName)
 	}
 	_, _ = runCmd(3, "sync")
 	if err != nil {

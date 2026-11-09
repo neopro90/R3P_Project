@@ -138,24 +138,170 @@ const uploading = ref(false)
 const showAddShare = ref(false)
 const newShare = ref<ShareItem>({ name: '', path: '/mnt/sda1/share', read_only: false, guest_ok: true, comment: '' })
 
+interface SambaServiceState {
+  installed: boolean
+  running: boolean
+  enabled: boolean
+  version: string
+  workgroup: string
+  description: string
+  interface: string
+  shares_count: number
+  server_ip: string
+  active_shares: string[]
+}
+
+interface FTPServiceState {
+  installed: boolean
+  running: boolean
+  enabled: boolean
+  version: string
+  port: number
+  root_dir: string
+  write_enable: boolean
+  anonymous_enable: boolean
+  local_enable: boolean
+  server_ip: string
+}
+
+const serverIp = ref(typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : '192.168.1.7')
+
+const sambaService = ref<SambaServiceState>({
+  installed: false,
+  running: false,
+  enabled: true,
+  version: '',
+  workgroup: 'WORKGROUP',
+  description: 'R3P Home Server NAS',
+  interface: 'lan',
+  shares_count: 0,
+  server_ip: '',
+  active_shares: [],
+})
+
+const ftpService = ref<FTPServiceState>({
+  installed: false,
+  running: false,
+  enabled: true,
+  version: '',
+  port: 21,
+  root_dir: '/mnt/sda1',
+  write_enable: true,
+  anonymous_enable: false,
+  local_enable: true,
+  server_ip: '',
+})
+
+const savingSamba = ref(false)
+const savingFTP = ref(false)
+const installingPkg = ref<string | null>(null)
+
+function copyToClipboard(text: string, label = 'Đường dẫn') {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showNotice(`Đã sao chép ${label}: ${text}`)
+    }).catch(() => {
+      showNotice(`Đã sao chép: ${text}`)
+    })
+  } else {
+    showNotice(`Đã sao chép: ${text}`)
+  }
+}
+
+async function saveSambaConfig(restart = false) {
+  savingSamba.value = true
+  try {
+    const res = await apiRequest<{ message: string }>('/nas/services/samba', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workgroup: sambaService.value.workgroup,
+        description: sambaService.value.description,
+        enabled: sambaService.value.enabled,
+        restart,
+      }),
+    })
+    showNotice(res?.message || (restart ? 'Đã khởi động lại Samba 4!' : 'Đã lưu cấu hình Samba 4!'))
+    await loadNAS()
+  } catch (err: any) {
+    showError('Lỗi cập nhật Samba: ' + (err?.message || err))
+  } finally {
+    savingSamba.value = false
+  }
+}
+
+async function saveFTPConfig(restart = false) {
+  savingFTP.value = true
+  try {
+    const res = await apiRequest<{ message: string }>('/nas/services/ftp', {
+      method: 'PUT',
+      body: JSON.stringify({
+        port: Number(ftpService.value.port) || 21,
+        root_dir: ftpService.value.root_dir,
+        write_enable: ftpService.value.write_enable,
+        anonymous_enable: ftpService.value.anonymous_enable,
+        local_enable: ftpService.value.local_enable,
+        enabled: ftpService.value.enabled,
+        restart,
+      }),
+    })
+    showNotice(res?.message || (restart ? 'Đã khởi động lại vsftpd!' : 'Đã lưu cấu hình FTP!'))
+    await loadNAS()
+  } catch (err: any) {
+    showError('Lỗi cập nhật FTP: ' + (err?.message || err))
+  } finally {
+    savingFTP.value = false
+  }
+}
+
+async function installServicePackage(pkg: string) {
+  installingPkg.value = pkg
+  showNotice(`Đang tải và cài đặt gói ${pkg} qua APK... Vui lòng đợi trong giây lát!`, 8000)
+  try {
+    const res = await apiRequest<{ message: string }>('/packages/install', {
+      method: 'POST',
+      body: JSON.stringify({ package: pkg }),
+    })
+    showNotice(res?.message || `Đã cài đặt thành công ${pkg}!`, 6000)
+    await loadNAS()
+  } catch (err: any) {
+    showError(`Lỗi cài đặt ${pkg}: ` + (err?.message || err), 7000)
+  } finally {
+    installingPkg.value = null
+  }
+}
+
 async function loadNAS(dir?: string) {
   loading.value = true
   const target = dir || currentDir.value
   try {
-    const [res, usb] = await Promise.all([
+    const [res, usb, services] = await Promise.all([
       apiRequest<{
         volumes: DiskVolume[]
         shares: ShareItem[]
         current_dir: string
         files: FileItem[]
+        server_ip?: string
       }>(`/nas?dir=${encodeURIComponent(target)}`),
       apiRequest<USBDualRoleStatus>('/usb/status').catch(() => null),
+      apiRequest<{
+        samba: SambaServiceState
+        ftp: FTPServiceState
+        server_ip: string
+      }>('/nas/services').catch(() => null),
     ])
     if (res) {
       volumes.value = res.volumes || []
       shares.value = res.shares || []
       currentDir.value = res.current_dir || target
       files.value = res.files || []
+      if (res.server_ip) {
+        serverIp.value = res.server_ip
+      }
+    }
+    if (services) {
+      if (services.samba) sambaService.value = services.samba
+      if (services.ftp) ftpService.value = services.ftp
+      if (services.server_ip) serverIp.value = services.server_ip
     }
     if (usb) {
       usbStatus.value = usb
@@ -764,7 +910,19 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-for="s in shares" :key="s.name">
-              <td class="mono font-semibold text-sky-300">\\192.168.2.1\{{ s.name }}</td>
+              <td class="mono font-semibold text-sky-300">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="truncate">\\{{ serverIp }}\{{ s.name }}</span>
+                  <button
+                    type="button"
+                    class="btn-secondary text-[10px] py-0.5 px-1.5"
+                    title="Sao chép đường dẫn UNC"
+                    @click="copyToClipboard('\\\\' + serverIp + '\\' + s.name, 'Đường dẫn UNC')"
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              </td>
               <td>
                 <button type="button" class="mono text-emerald-400 hover:underline" @click="loadNAS(s.path)">{{ s.path }}</button>
               </td>
@@ -783,6 +941,209 @@ onMounted(() => {
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- NAS Services Configuration: SMB (Samba 4) & FTP (vsftpd) -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <!-- SMB / Samba 4 Configuration Card -->
+      <div class="pro-card border border-sky-500/30 flex flex-col justify-between">
+        <div>
+          <div class="pro-card-header flex-wrap">
+            <div class="flex items-center gap-2 min-w-0">
+              <span
+                class="w-2.5 h-2.5 rounded-full shrink-0"
+                :class="sambaService.running ? 'bg-emerald-400 animate-pulse' : (sambaService.installed ? 'bg-amber-400' : 'bg-red-500')"
+              ></span>
+              <span class="pro-card-title truncate">Cấu hình Dịch Vụ SMB (Samba 4 / Windows Share)</span>
+              <span
+                class="badge uppercase text-[10px]"
+                :class="sambaService.running ? 'badge-green' : (sambaService.installed ? 'badge-orange' : 'badge-red')"
+              >
+                {{ sambaService.running ? 'ĐANG CHẠY' : (sambaService.installed ? 'ĐÃ DỪNG' : 'CHƯA CÀI ĐẶT') }}
+              </span>
+            </div>
+            <button
+              v-if="sambaService.installed"
+              type="button"
+              class="btn-secondary text-[11px] py-1 px-2.5"
+              :disabled="savingSamba"
+              @click="saveSambaConfig(true)"
+            >
+              🔄 Khởi động lại
+            </button>
+          </div>
+
+          <p class="text-[11.5px] text-gray-400 mb-3">
+            Dịch vụ chia sẻ tệp nội bộ SMB/CIFS cho Windows Explorer, macOS Finder, Smart TV và điện thoại Android/iOS.
+          </p>
+
+          <div v-if="!sambaService.installed" class="p-3 bg-red-950/30 border border-red-500/30 rounded text-xs space-y-2 mb-3">
+            <div class="text-red-300 font-semibold">Gói Samba4 chưa được cài đặt trên thiết bị!</div>
+            <p class="text-gray-300 text-[11px]">
+              Bạn có thể nhấn nút bên dưới để tự động tải và cài đặt <code class="mono text-sky-300">samba4-server</code> qua OpenWrt APK.
+            </p>
+            <button
+              type="button"
+              class="btn-primary text-xs py-1.5 px-3 font-semibold"
+              :disabled="installingPkg === 'samba4-server'"
+              @click="installServicePackage('samba4-server')"
+            >
+              {{ installingPkg === 'samba4-server' ? '⏳ Đang cài đặt Samba4...' : '📦 Cài đặt Samba 4 Server' }}
+            </button>
+          </div>
+
+          <div class="space-y-2.5 text-xs">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Workgroup Mạng</label>
+                <input v-model="sambaService.workgroup" class="pro-input mono w-full" placeholder="WORKGROUP" />
+              </div>
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Tên Hiển Thị Máy Chủ</label>
+                <input v-model="sambaService.description" class="pro-input w-full" placeholder="R3P Home Server NAS" />
+              </div>
+            </div>
+
+            <div class="p-2 bg-black/30 rounded border border-white/5 space-y-1.5">
+              <label class="flex items-center gap-2 cursor-pointer text-[11.5px] text-gray-300">
+                <input v-model="sambaService.enabled" type="checkbox" class="rounded accent-sky-500" />
+                <span>Tự động khởi động Samba cùng hệ thống khi boot (Autostart)</span>
+              </label>
+              <div class="text-[11px] text-gray-400 flex items-center gap-2 flex-wrap pt-1 border-t border-white/5">
+                <span>Đường dẫn truy cập từ máy tính Windows:</span>
+                <span class="mono text-sky-300 font-semibold select-all">\\{{ serverIp }}\</span>
+                <button
+                  type="button"
+                  class="btn-secondary text-[10px] py-0.5 px-2"
+                  @click="copyToClipboard('\\\\' + serverIp + '\\', 'Đường dẫn UNC')"
+                >
+                  📋 Copy
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 mt-3 border-t border-white/10 flex items-center justify-between gap-2">
+          <div class="text-[11px] text-gray-400">
+            Số thư mục chia sẻ: <span class="mono text-emerald-400 font-semibold">{{ sambaService.shares_count || shares.length }}</span>
+          </div>
+          <button
+            type="button"
+            class="btn-primary text-xs py-1.5 px-4 font-semibold"
+            :disabled="savingSamba || !sambaService.installed"
+            @click="saveSambaConfig(false)"
+          >
+            {{ savingSamba ? '⏳ Đang lưu...' : '💾 Lưu cấu hình SMB' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- FTP / vsftpd Configuration Card -->
+      <div class="pro-card border border-emerald-500/30 flex flex-col justify-between">
+        <div>
+          <div class="pro-card-header flex-wrap">
+            <div class="flex items-center gap-2 min-w-0">
+              <span
+                class="w-2.5 h-2.5 rounded-full shrink-0"
+                :class="ftpService.running ? 'bg-emerald-400 animate-pulse' : (ftpService.installed ? 'bg-amber-400' : 'bg-red-500')"
+              ></span>
+              <span class="pro-card-title truncate">Cấu hình Dịch Vụ FTP (vsftpd Server)</span>
+              <span
+                class="badge uppercase text-[10px]"
+                :class="ftpService.running ? 'badge-green' : (ftpService.installed ? 'badge-orange' : 'badge-red')"
+              >
+                {{ ftpService.running ? 'ĐANG CHẠY' : (ftpService.installed ? 'ĐÃ DỪNG' : 'CHƯA CÀI ĐẶT') }}
+              </span>
+            </div>
+            <button
+              v-if="ftpService.installed"
+              type="button"
+              class="btn-secondary text-[11px] py-1 px-2.5"
+              :disabled="savingFTP"
+              @click="saveFTPConfig(true)"
+            >
+              🔄 Khởi động lại
+            </button>
+          </div>
+
+          <p class="text-[11.5px] text-gray-400 mb-3">
+            Máy chủ FTP tốc độ cao nhẹ tải (vsftpd) dành cho truyền tải tệp lớn, FileZilla, Total Commander và sao lưu tự động.
+          </p>
+
+          <div v-if="!ftpService.installed" class="p-3 bg-red-950/30 border border-red-500/30 rounded text-xs space-y-2 mb-3">
+            <div class="text-red-300 font-semibold">Gói vsftpd chưa được cài đặt trên thiết bị!</div>
+            <p class="text-gray-300 text-[11px]">
+              Bạn có thể nhấn nút bên dưới để tự động tải và cài đặt <code class="mono text-sky-300">vsftpd</code> (chỉ 75 KB) qua OpenWrt APK.
+            </p>
+            <button
+              type="button"
+              class="btn-primary text-xs py-1.5 px-3 font-semibold"
+              :disabled="installingPkg === 'vsftpd'"
+              @click="installServicePackage('vsftpd')"
+            >
+              {{ installingPkg === 'vsftpd' ? '⏳ Đang cài đặt vsftpd...' : '📦 Cài đặt vsftpd FTP Server' }}
+            </button>
+          </div>
+
+          <div class="space-y-2.5 text-xs">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Cổng Kết Nối (Port)</label>
+                <input v-model.number="ftpService.port" type="number" min="1" max="65535" class="pro-input mono w-full" placeholder="21" />
+              </div>
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Thư Mục Gốc (Root Directory)</label>
+                <input v-model="ftpService.root_dir" class="pro-input mono w-full" placeholder="/mnt/sda1" />
+              </div>
+            </div>
+
+            <div class="p-2 bg-black/30 rounded border border-white/5 space-y-1.5">
+              <label class="flex items-center gap-2 cursor-pointer text-[11.5px] text-gray-300">
+                <input v-model="ftpService.write_enable" type="checkbox" class="rounded accent-emerald-500" />
+                <span>Cho phép tải lên và chỉnh sửa tệp (Write Enable)</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer text-[11.5px] text-gray-300">
+                <input v-model="ftpService.local_enable" type="checkbox" class="rounded accent-emerald-500" />
+                <span>Cho phép tài khoản hệ thống (root) đăng nhập</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer text-[11.5px] text-gray-300">
+                <input v-model="ftpService.anonymous_enable" type="checkbox" class="rounded accent-emerald-500" />
+                <span>Cho phép truy cập vô danh (Anonymous Download)</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer text-[11.5px] text-gray-300">
+                <input v-model="ftpService.enabled" type="checkbox" class="rounded accent-emerald-500" />
+                <span>Tự động chạy FTP server cùng hệ thống khi khởi động (Autostart)</span>
+              </label>
+              <div class="text-[11px] text-gray-400 flex items-center gap-2 flex-wrap pt-1 border-t border-white/5">
+                <span>Liên kết kết nối FTP:</span>
+                <span class="mono text-emerald-400 font-semibold select-all">ftp://{{ serverIp }}:{{ ftpService.port }}/</span>
+                <button
+                  type="button"
+                  class="btn-secondary text-[10px] py-0.5 px-2"
+                  @click="copyToClipboard('ftp://' + serverIp + ':' + ftpService.port + '/', 'Liên kết FTP')"
+                >
+                  📋 Copy
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 mt-3 border-t border-white/10 flex items-center justify-between gap-2">
+          <div class="text-[11px] text-gray-400">
+            Thư mục: <span class="mono text-sky-400 font-semibold">{{ ftpService.root_dir }}</span>
+          </div>
+          <button
+            type="button"
+            class="btn-primary text-xs py-1.5 px-4 font-semibold"
+            :disabled="savingFTP || !ftpService.installed"
+            @click="saveFTPConfig(false)"
+          >
+            {{ savingFTP ? '⏳ Đang lưu...' : '💾 Lưu cấu hình FTP' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
