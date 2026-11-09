@@ -412,35 +412,112 @@ func runCmd(timeoutSec int, name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// ─── Thermal temperature ──────────────────────────────────────────────────
+// ─── Thermal temperature & Disk Power Management ─────────────────────────
+
+var (
+	cachedDiskTemp float64
+	lastDiskCheck  time.Time
+	diskTempMu     sync.Mutex
+)
+
+func getDiskTempAndState() (float64, string) {
+	diskTempMu.Lock()
+	defer diskTempMu.Unlock()
+
+	state := "active"
+	if out, err := runCmd(2, "hdparm", "-C", "/dev/sda"); err == nil {
+		if strings.Contains(out, "standby") {
+			state = "standby"
+			return cachedDiskTemp, state
+		}
+	}
+
+	if time.Since(lastDiskCheck) > 15*time.Second || cachedDiskTemp == 0 {
+		lastDiskCheck = time.Now()
+		out, err := runCmd(3, "smartctl", "-a", "-d", "sntjmicron", "/dev/sda")
+		if err != nil || !strings.Contains(out, "Temperature") {
+			out, _ = runCmd(3, "smartctl", "-a", "/dev/sda")
+		}
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Temperature:") {
+				f := strings.Fields(line)
+				if len(f) >= 2 {
+					if t, pErr := strconv.ParseFloat(f[1], 64); pErr == nil && t > 0 {
+						cachedDiskTemp = t
+						break
+					}
+				}
+			}
+		}
+	}
+	return cachedDiskTemp, state
+}
 
 func readTemperatures() []map[string]interface{} {
-	zones, err := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
-	if err != nil || len(zones) == 0 {
-		return []map[string]interface{}{}
-	}
 	var temps []map[string]interface{}
-	for _, z := range zones {
-		raw := readFile(z)
-		if raw == "" {
-			continue
+
+	// 1. Read SoC / MT7615 Wi-Fi thermal sensors
+	hwmonFiles, _ := filepath.Glob("/sys/class/hwmon/hwmon*/temp*_input")
+	var socTemps []float64
+	for _, f := range hwmonFiles {
+		raw := strings.TrimSpace(readFile(f))
+		if millic, err := strconv.ParseInt(raw, 10, 64); err == nil && millic > 0 {
+			socTemps = append(socTemps, float64(millic)/1000.0)
 		}
-		millic, _ := strconv.ParseInt(raw, 10, 64)
-		// Extract zone index from path
-		dir := filepath.Dir(z)
-		zone := filepath.Base(dir)
-		// Read type if available
-		ztype := readFile(filepath.Join(dir, "type"))
-		if ztype == "" {
-			ztype = zone
+	}
+	if len(socTemps) > 0 {
+		var sum float64
+		for _, t := range socTemps {
+			sum += t
 		}
+		avg := sum / float64(len(socTemps))
 		temps = append(temps, map[string]interface{}{
-			"zone":         zone,
-			"type":         ztype,
-			"temp_milli":   millic,
-			"temp_celsius": float64(millic) / 1000.0,
+			"zone":         "soc",
+			"type":         "CPU / Bo Mạch (MT7621/MT7615)",
+			"temp_celsius": avg,
+			"temp_milli":   int64(avg * 1000),
+			"status":       "Bình Thường",
 		})
 	}
+
+	// 2. Read USB 3.0 NVMe SSD Temperature (JMicron JMS583 / WD SN530)
+	diskTemp, diskState := getDiskTempAndState()
+	if diskTemp > 0 || diskState != "" {
+		st := "Bình Thường"
+		if diskTemp >= 70 {
+			st = "Quá Nóng"
+		} else if diskTemp >= 60 {
+			st = "Cảnh Báo Nóng"
+		} else if diskState == "standby" {
+			st = "Đang Nghỉ (Sleep)"
+		}
+		temps = append(temps, map[string]interface{}{
+			"zone":         "usb_disk",
+			"type":         "Ổ Cứng NVMe USB 3.0 (WDC SN530)",
+			"temp_celsius": diskTemp,
+			"temp_milli":   int64(diskTemp * 1000),
+			"disk_state":   diskState,
+			"status":       st,
+		})
+	}
+
+	// 3. Fallback to standard thermal zones if present
+	if len(temps) == 0 {
+		zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+		for _, z := range zones {
+			raw := strings.TrimSpace(readFile(z))
+			if millic, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				temps = append(temps, map[string]interface{}{
+					"zone":         filepath.Base(filepath.Dir(z)),
+					"type":         "Thermal Zone",
+					"temp_celsius": float64(millic) / 1000.0,
+					"temp_milli":   millic,
+				})
+			}
+		}
+	}
+
 	return temps
 }
 
@@ -1626,6 +1703,12 @@ func main() {
 	mux.HandleFunc("/api/v1/nas/services", cors(handleNASServices, "GET", "PUT"))
 	mux.HandleFunc("/api/v1/nas/services/samba", cors(handleNASServices, "PUT"))
 	mux.HandleFunc("/api/v1/nas/services/ftp", cors(handleNASServices, "PUT"))
+	mux.HandleFunc("/api/v1/nas/users", cors(handleNASUsers, "GET", "POST", "DELETE"))
+	mux.HandleFunc("/api/v1/usb/standby", cors(handleUSBStandby, "GET", "POST"))
+	mux.HandleFunc("/api/v1/download/files", cors(handleDownloadFiles, "GET"))
+	mux.HandleFunc("/api/v1/download/file", cors(handleDownloadFileServe, "GET"))
+	mux.HandleFunc("/api/v1/download/settings", cors(handleDownloadSettings, "GET", "POST", "PUT"))
+	mux.HandleFunc("/api/v1/network/speedtest", cors(handleInterfaceSpeedtest, "POST"))
 	mux.HandleFunc("/api/v1/access", cors(handleAccessGet, "GET"))
 	mux.HandleFunc("/api/v1/access/ssh", cors(handleAccessSSH, "PUT"))
 	mux.HandleFunc("/api/v1/access/dhcp", cors(handleAccessDHCP, "PUT"))

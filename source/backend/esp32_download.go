@@ -1394,11 +1394,11 @@ func espTelegramPollerLoop() {
 			for _, u := range urls {
 				job, dup, err := enqueueEspJob(u, "telegram", chatStr, false)
 				if err != nil {
-					_ = sendEspTelegramMsg(chatStr, "❌ Không thêm được URL: "+err.Error())
+					_ = sendEspTelegramMsg(chatStr, "❌ Lỗi: "+err.Error())
 				} else if dup {
-					_ = sendEspTelegramMsg(chatStr, "ℹ️ URL này đã có trong hàng đợi: #"+job.ID)
+					_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("ℹ️ [R3P] URL này đã có trong hàng đợi (#%s):\n%s", job.ID, u))
 				} else {
-					_ = sendEspTelegramMsg(chatStr, "📥 Đã thêm vào hàng đợi R3P Linux: #"+job.ID)
+					_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("📥 [R3P] Đã nhận URL, đang tải về ổ cứng USB 3.0 (#%s):\n%s", job.ID, u))
 				}
 			}
 			// If message has text beyond just bare URLs, forward to Root AI Agent and reply on Telegram!

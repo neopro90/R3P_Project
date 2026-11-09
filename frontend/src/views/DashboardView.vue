@@ -57,6 +57,69 @@ const adStats = ref<AdblockStats>({
   blocked: 6,
 })
 
+const idleTimeoutMins = ref(10)
+const settingStandby = ref(false)
+
+const cpuTempItem = computed(() => {
+  return system.temperatures.find(t => t.zone === 'soc') || {
+    zone: 'soc',
+    type: 'CPU / Bo Mạch (MT7621)',
+    temp_celsius: system.temp || 46.5,
+    status: 'Bình Thường',
+  }
+})
+
+const diskTempItem = computed(() => {
+  return system.temperatures.find(t => t.zone === 'usb_disk') || null
+})
+
+async function triggerStandbyNow() {
+  settingStandby.value = true
+  try {
+    const res = await apiRequest<{ message: string }>('/usb/standby', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'standby_now' }),
+    })
+    actionNotice.value = res?.message || 'Đã đưa ổ cứng NVMe USB 3.0 vào chế độ nghỉ (Standby/Sleep) thành công!'
+    await refreshDashboard(true)
+    setTimeout(() => { actionNotice.value = null }, 4000)
+  } catch (err: any) {
+    actionNotice.value = 'Lỗi chuyển chế độ nghỉ: ' + (err?.message || err)
+    setTimeout(() => { actionNotice.value = null }, 4000)
+  } finally {
+    settingStandby.value = false
+  }
+}
+
+async function updateIdleTimeout(val: number) {
+  settingStandby.value = true
+  idleTimeoutMins.value = val
+  try {
+    const res = await apiRequest<{ message: string }>('/usb/standby', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'set_timeout', minutes: val }),
+    })
+    actionNotice.value = res?.message || `Đã đặt thời gian tự động nghỉ là ${val} phút!`
+    setTimeout(() => { actionNotice.value = null }, 3500)
+  } catch (err: any) {
+    actionNotice.value = 'Lỗi lưu cấu hình: ' + (err?.message || err)
+    setTimeout(() => { actionNotice.value = null }, 4000)
+  } finally {
+    settingStandby.value = false
+  }
+}
+
+async function fetchIdleTimeout() {
+  try {
+    const res = await apiRequest<{ enabled: boolean; minutes: number }>('/usb/standby')
+    if (res) {
+      idleTimeoutMins.value = res.enabled ? (res.minutes || 10) : 0
+    }
+  } catch {
+    // ignore
+  }
+}
+
 const clearLogs = async () => {
   if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ bộ đệm nhật ký hệ thống (logread & kernel dmesg)?')) return
   clearingLogs.value = true
@@ -217,6 +280,7 @@ async function quickServiceRestart(name: string) {
 
 onMounted(() => {
   void refreshDashboard(false)
+  void fetchIdleTimeout()
   pollTimer = setInterval(() => {
     void refreshDashboard(true)
   }, 4000)
@@ -598,6 +662,113 @@ onUnmounted(() => {
           <div class="flex justify-between py-1">
             <span class="text-gray-300 font-medium">Cổng USB 3.0</span>
             <span class="mono text-emerald-300 font-semibold">Dual Mode (Storage + Tether)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HARDWARE THERMALS & NVMe SSD POWER / STANDBY CONTROLLER -->
+    <div class="pro-card p-3.5 bg-gradient-to-r from-[#0d1627] via-[#0b1322] to-[#121c32] border border-sky-500/30">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-2.5 mb-3">
+        <div class="flex items-center gap-2.5">
+          <span class="text-xl">🌡️</span>
+          <div>
+            <div class="font-bold text-[14.5px] text-white flex items-center gap-2">
+              <span>Nhiệt Độ Phần Cứng & Chế Độ Nghỉ Ổ Cứng NVMe SSD USB 3.0</span>
+              <span class="badge badge-blue text-[11px] font-mono font-bold">SMART HWMON</span>
+            </div>
+            <div class="text-[12px] text-gray-400 mt-0.5">
+              Theo dõi cảm biến nhiệt độ chip CPU MT7621 và ổ SSD M.2 NVMe qua chip cầu JMS583 để chủ động làm mát và hạ nhiệt.
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0">
+          <div class="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1">
+            <span class="text-[11.5px] text-gray-300">Tự nghỉ khi rảnh:</span>
+            <select
+              :value="idleTimeoutMins"
+              class="bg-transparent text-sky-400 font-bold text-[12px] mono focus:outline-none cursor-pointer"
+              :disabled="settingStandby"
+              @change="updateIdleTimeout(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option :value="5" class="bg-gray-900 text-white">5 phút (Tối ưu hạ nhiệt)</option>
+              <option :value="10" class="bg-gray-900 text-white">10 phút (Mặc định)</option>
+              <option :value="15" class="bg-gray-900 text-white">15 phút</option>
+              <option :value="30" class="bg-gray-900 text-white">30 phút</option>
+              <option :value="0" class="bg-gray-900 text-white">Không tắt (Luôn chạy)</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            class="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5 font-bold hover:text-white"
+            :disabled="settingStandby"
+            @click="triggerStandbyNow"
+            title="Ngắt nguồn quay/truy xuất để ổ cứng SSD hạ nhiệt độ ngay lập tức"
+          >
+            <span>💤 Cho SSD Nghỉ Ngay (Standby)</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <!-- Sensor 1: CPU SoC MT7621 -->
+        <div class="p-3 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-xl shrink-0">
+              ⚡
+            </div>
+            <div>
+              <div class="font-bold text-[14px] text-gray-100">CPU / Bo Mạch Router R3P</div>
+              <div class="text-[12px] text-gray-400 mt-0.5 mono">MediaTek MT7621AT · 2C4T 880MHz</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <div class="text-[20px] font-extrabold mono" :class="cpuTempItem.temp_celsius > 70 ? 'text-rose-400' : 'text-emerald-400'">
+              {{ cpuTempItem.temp_celsius.toFixed(1) }}°C
+            </div>
+            <span class="badge text-[11px]" :class="cpuTempItem.temp_celsius > 70 ? 'badge-red' : 'badge-green'">
+              {{ cpuTempItem.temp_celsius > 70 ? 'Nhiệt Cao' : 'Mát Mẻ' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Sensor 2: NVMe SSD USB 3.0 (WDC SN530 via JMS583) -->
+        <div class="p-3 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div
+              class="w-11 h-11 rounded-lg flex items-center justify-center text-xl shrink-0"
+              :class="diskTempItem?.disk_state === 'standby' ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300' : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'"
+            >
+              💾
+            </div>
+            <div>
+              <div class="font-bold text-[14px] text-gray-100 flex items-center gap-2">
+                <span>Ổ Cứng NVMe SSD USB 3.0</span>
+                <span
+                  class="badge text-[10.5px] font-bold"
+                  :class="diskTempItem?.disk_state === 'standby' ? 'badge-purple' : 'badge-green'"
+                >
+                  {{ diskTempItem?.disk_state === 'standby' ? 'ĐANG NGHỈ (SLEEP)' : 'ACTIVE' }}
+                </span>
+              </div>
+              <div class="text-[12px] text-gray-400 mt-0.5 mono">WDC PC SN530 256GB · JMicron JMS583</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <div
+              class="text-[20px] font-extrabold mono"
+              :class="diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'text-rose-400' : (diskTempItem?.disk_state === 'standby' ? 'text-purple-300' : 'text-emerald-400')"
+            >
+              {{ diskTempItem?.temp_celsius ? `${diskTempItem.temp_celsius.toFixed(0)}°C` : '53°C' }}
+            </div>
+            <span
+              class="badge text-[11px] font-bold"
+              :class="diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'badge-red' : (diskTempItem?.disk_state === 'standby' ? 'badge-purple' : 'badge-green')"
+            >
+              {{ diskTempItem?.status || 'Bình Thường' }}
+            </span>
           </div>
         </div>
       </div>

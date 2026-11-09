@@ -15,6 +15,15 @@ export interface InternetStatus {
   checked_at: string
 }
 
+export interface TemperatureItem {
+  zone: string
+  type: string
+  temp_celsius: number
+  temp_milli?: number
+  disk_state?: string
+  status?: string
+}
+
 interface SystemResponse {
   hostname: string
   kernel: string
@@ -24,7 +33,7 @@ interface SystemResponse {
   cpu_aggregate_pct: number
   uptime_seconds: number
   load_avg: { load1: number; load5: number; load15: number }
-  temperatures: Array<{ temp_celsius: number }>
+  temperatures: TemperatureItem[]
   internet?: InternetStatus
 }
 
@@ -59,6 +68,7 @@ export const useSystemStore = defineStore('system', () => {
   const ramTotal = ref(0)
   const ramUsed = ref(0)
   const temp = ref<number | null>(null)
+  const temperatures = ref<TemperatureItem[]>([])
   const uptime = ref(0)
   const loadAvg = ref<[number, number, number]>([0, 0, 0])
   const hostname = ref('—')
@@ -154,6 +164,7 @@ export const useSystemStore = defineStore('system', () => {
       ramTotal.value = Math.round(memory.total_kb / 1024)
       ramUsed.value = Math.round(memory.used_kb / 1024)
       ram.value = Math.round(memory.used_percent)
+      temperatures.value = system.temperatures || []
       temp.value = (system.temperatures ?? []).length > 0
         ? system.temperatures[0].temp_celsius
         : null
@@ -173,7 +184,7 @@ export const useSystemStore = defineStore('system', () => {
   }
 
   return {
-    cpu, cpuHistory, ram, ramTotal, ramUsed, temp, uptime,
+    cpu, cpuHistory, ram, ramTotal, ramUsed, temp, temperatures, uptime,
     loadAvg, hostname, kernel, arch, firmwareVersion, connected, lastUpdate, error,
     internet,
     uptimeFormatted, cpuColor, tempColor, ramPercent, dataAvailable,

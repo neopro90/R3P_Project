@@ -161,6 +161,70 @@ const newShare = ref<ShareItem>({
   password: '',
 })
 
+interface NASUser {
+  username: string
+  is_root: boolean
+  status: string
+}
+const nasUsers = ref<NASUser[]>([])
+const showAddUserModal = ref(false)
+const newUserName = ref('')
+const newUserPassword = ref('')
+const savingUser = ref(false)
+
+async function fetchNASUsers() {
+  try {
+    const res = await apiRequest<{ users: NASUser[] }>('/nas/users')
+    if (res?.users) {
+      nasUsers.value = res.users
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function createNASUser() {
+  const u = newUserName.value.trim()
+  const p = newUserPassword.value.trim()
+  if (!u || !p) {
+    showError('Vui lòng nhập đầy đủ Tên người dùng và Mật khẩu!')
+    return
+  }
+  savingUser.value = true
+  try {
+    const res = await apiRequest<{ message: string }>('/nas/users', {
+      method: 'POST',
+      body: JSON.stringify({ username: u, password: p }),
+    })
+    showNotice(res?.message || `Đã tạo tài khoản ${u} thành công!`)
+    newUserName.value = ''
+    newUserPassword.value = ''
+    showAddUserModal.value = false
+    await fetchNASUsers()
+  } catch (err: any) {
+    showError('Lỗi tạo user: ' + (err?.message || err))
+  } finally {
+    savingUser.value = false
+  }
+}
+
+async function deleteNASUser(username: string) {
+  if (username === 'root') {
+    showError('Không thể xóa tài khoản quản trị root!')
+    return
+  }
+  if (!confirm(`Bạn có chắc muốn xóa tài khoản Samba '${username}'?`)) return
+  try {
+    await apiRequest(`/nas/users?username=${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+    })
+    showNotice(`Đã xóa tài khoản '${username}' thành công!`)
+    await fetchNASUsers()
+  } catch (err: any) {
+    showError('Lỗi xóa user: ' + (err?.message || err))
+  }
+}
+
 const serverIp = ref(typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : '')
 
 const sambaService = ref<SambaServiceState>({
@@ -330,6 +394,7 @@ async function loadNAS() {
         formatForm.value.device = usb.storage_devices[0].device
       }
     }
+    void fetchNASUsers()
   } catch (err: any) {
     notice.value = 'Lỗi nạp dữ liệu: ' + (err?.message || err)
   } finally {
@@ -807,6 +872,85 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- SMB User Management & Password Control -->
+        <div class="p-3.5 rounded-lg bg-black/30 border border-sky-500/20 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sky-400 font-bold text-xs uppercase">👥 Tài Khoản Người Dùng & Phân Quyền (Samba Users)</span>
+              <span class="badge badge-blue font-mono font-bold">{{ nasUsers.length }} Users</span>
+            </div>
+            <button
+              type="button"
+              class="btn-secondary text-xs py-1 px-2.5 font-bold flex items-center gap-1 cursor-pointer"
+              @click="showAddUserModal = !showAddUserModal"
+            >
+              <span>{{ showAddUserModal ? '✕ Đóng' : '+ Thêm Tài Khoản Mới' }}</span>
+            </button>
+          </div>
+
+          <!-- Add User Form -->
+          <div v-if="showAddUserModal" class="p-3 rounded-lg bg-[#0e1724] border border-sky-500/30 space-y-2.5 text-xs">
+            <div class="font-bold text-sky-300">Tạo hoặc Cập Nhật Mật Khẩu Tài Khoản Samba</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Tên Người Dùng (Username)</label>
+                <input
+                  v-model="newUserName"
+                  type="text"
+                  class="pro-input mono w-full"
+                  placeholder="Ví dụ: family, backup, nhanvien"
+                />
+              </div>
+              <div>
+                <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Mật Khẩu (Password)</label>
+                <input
+                  v-model="newUserPassword"
+                  type="password"
+                  class="pro-input mono w-full"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-1">
+              <button type="button" class="btn-secondary text-xs" @click="showAddUserModal = false">Hủy</button>
+              <button
+                type="button"
+                class="btn-primary text-xs py-1 px-3 font-bold"
+                :disabled="savingUser"
+                @click="createNASUser"
+              >
+                {{ savingUser ? 'Đang tạo…' : '✓ Lưu Tài Khoản' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Users List -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+            <div
+              v-for="u in nasUsers"
+              :key="u.username"
+              class="p-2.5 rounded bg-black/40 border border-white/5 flex items-center justify-between"
+            >
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-base">{{ u.is_root ? '👑' : '👤' }}</span>
+                <div class="min-w-0">
+                  <div class="font-bold text-gray-100 mono text-xs truncate">{{ u.username }}</div>
+                  <div class="text-[11px] text-gray-400 truncate">{{ u.status }}</div>
+                </div>
+              </div>
+              <button
+                v-if="!u.is_root"
+                type="button"
+                class="btn-danger text-[10px] py-0.5 px-2"
+                title="Xóa tài khoản này"
+                @click="deleteNASUser(u.username)"
+              >
+                Xóa
+              </button>
+            </div>
+          </div>
+        </div>
+
         <!-- Configured SMB Shares Table & Add Modal -->
         <div class="space-y-2">
           <div class="flex items-center justify-between">
@@ -901,23 +1045,28 @@ onMounted(() => {
             <!-- Username & Password inputs if GuestOk is false -->
             <div v-if="!newShare.guest_ok" class="grid grid-cols-1 md:grid-cols-2 gap-2.5 p-2.5 rounded bg-amber-950/20 border border-amber-500/30">
               <div>
-                <label class="block text-[10.5px] text-amber-300 uppercase mb-1">Tên Người Dùng (Samba User)</label>
-                <input
-                  v-model="newShare.users"
-                  type="text"
-                  required
-                  class="pro-input mono w-full"
-                  placeholder="root hoặc tên user"
-                />
+                <label class="block text-[10.5px] text-amber-300 uppercase mb-1 font-bold">Chọn Tài Khoản Cấp Quyền</label>
+                <div class="flex gap-1.5">
+                  <select
+                    v-model="newShare.users"
+                    class="pro-input mono flex-1"
+                    required
+                  >
+                    <option value="" disabled>-- Chọn tài khoản --</option>
+                    <option v-for="u in nasUsers" :key="u.username" :value="u.username">
+                      {{ u.username }} ({{ u.is_root ? 'Quản trị root' : 'Samba User' }})
+                    </option>
+                  </select>
+                </div>
               </div>
               <div>
-                <label class="block text-[10.5px] text-amber-300 uppercase mb-1">Mật Khẩu Thư Mục (Password)</label>
+                <label class="block text-[10.5px] text-amber-300 uppercase mb-1 font-bold">Mật Khẩu Của User Này</label>
                 <input
                   v-model="newShare.password"
                   type="password"
                   required
                   class="pro-input mono w-full"
-                  placeholder="••••••••"
+                  placeholder="Nhập mật khẩu của user"
                 />
               </div>
             </div>

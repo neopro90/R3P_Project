@@ -22,21 +22,25 @@ async function submit() {
 
 <template>
   <main class="fixed inset-0 z-50 w-screen h-screen flex items-center justify-center p-4 bg-[#070a0f] overflow-y-auto">
-    <div class="pro-card w-full max-w-[380px] p-6 bg-[#0f1422] border border-white/10 rounded-2xl shadow-2xl shrink-0">
+    <!-- Card is strictly constrained to 380px via inline style & login-card class -->
+    <div
+      class="pro-card login-card p-6 bg-[#0f1422] border border-white/10 rounded-2xl shadow-2xl shrink-0"
+      style="max-width: 380px !important; width: 100% !important; margin: auto !important;"
+    >
       <div class="flex items-center gap-3 mb-5 pb-4 border-b border-white/10">
-        <div class="w-9 h-9 rounded-lg bg-sky-500 flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-cyan-400 flex items-center justify-center text-white font-black text-base tracking-wider shadow-lg shrink-0">
           R3
         </div>
-        <div>
-          <h1 class="text-sm font-bold text-white tracking-wide">R3P HOME SERVER OS</h1>
-          <p class="text-[11px] text-gray-400">MediaTek MT7621AT · 512MB RAM · 256MB NAND</p>
+        <div class="min-w-0">
+          <h1 class="text-sm font-bold text-white tracking-wide truncate">R3P HOME SERVER OS</h1>
+          <p class="text-[11px] text-gray-400 truncate">MediaTek MT7621AT · 512MB RAM · 256MB NAND</p>
         </div>
       </div>
 
-      <form class="space-y-3.5" @submit.prevent="submit">
+      <form class="space-y-4" @submit.prevent="submit">
         <div>
-          <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1" for="username">
-            Username
+          <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="username">
+            Tài Khoản (Username)
           </label>
           <input
             id="username"
@@ -44,14 +48,14 @@ async function submit() {
             type="text"
             autocomplete="username"
             required
-            class="w-full pro-input mono"
+            class="w-full pro-input mono text-sm py-2 px-3"
             placeholder="root"
           />
         </div>
 
         <div>
-          <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1" for="password">
-            Password
+          <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="password">
+            Mật Khẩu (Password)
           </label>
           <input
             id="password"
@@ -59,7 +63,7 @@ async function submit() {
             type="password"
             autocomplete="current-password"
             required
-            class="w-full pro-input mono"
+            class="w-full pro-input mono text-sm py-2 px-3"
             placeholder="••••••••"
           />
         </div>
@@ -71,15 +75,15 @@ async function submit() {
         <button
           type="submit"
           :disabled="submitting || !password"
-          class="w-full btn-primary justify-center py-2 text-[12.5px] font-semibold disabled:opacity-50"
+          class="w-full btn-primary justify-center py-2.5 text-[13px] font-bold disabled:opacity-50 shadow-md cursor-pointer transition-all"
         >
-          {{ submitting ? 'Authenticating…' : 'Sign In to Server' }}
+          {{ submitting ? 'Đang xác thực…' : 'Đăng Nhập Máy Chủ' }}
         </button>
       </form>
 
-      <div class="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-500">
-        <span>Default: <code class="mono text-gray-400">root / root</code></span>
-        <span>OpenWrt 25.12.5</span>
+      <div class="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-400">
+        <span>Mặc định: <code class="mono text-gray-300">root / root</code></span>
+        <span class="mono text-sky-400">OpenWrt 25.12.5</span>
       </div>
     </div>
   </main>

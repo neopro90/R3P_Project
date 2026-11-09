@@ -102,6 +102,35 @@ const dnsQuery = ref('openwrt.org')
 const dnsRunning = ref(false)
 const dnsOutput = ref('')
 
+const selectedSpeedTestIface = ref('wwan')
+const speedDown = ref<number | null>(null)
+const speedUp = ref<number | null>(null)
+const testingSpeed = ref(false)
+
+async function runInterfaceSpeedtest() {
+  testingSpeed.value = true
+  try {
+    const res = await apiRequest<{
+      interface: string
+      download_mbps: number
+      upload_mbps: number
+      latency_ms: number
+      message: string
+    }>(`/network/speedtest?interface=${encodeURIComponent(selectedSpeedTestIface.value)}`, {
+      method: 'POST',
+    })
+    if (res) {
+      speedDown.value = res.download_mbps
+      speedUp.value = res.upload_mbps
+      showNotice(res.message || `Đo tốc độ ${res.interface.toUpperCase()} thành công!`)
+    }
+  } catch (err: any) {
+    showError('Lỗi đo tốc độ: ' + (err?.message || err))
+  } finally {
+    testingSpeed.value = false
+  }
+}
+
 async function loadNetworkDetails() {
   loading.value = true
   try {
@@ -396,18 +425,56 @@ onMounted(() => {
 
     <!-- Full LAN / WAN / WWAN / USBWAN Interface Configuration Cards -->
     <div ref="ifaceSectionRef" class="pro-card border border-sky-500/30">
-      <div class="pro-card-header">
+      <div class="pro-card-header flex flex-wrap items-center justify-between gap-2.5">
         <div class="flex items-center gap-2 min-w-0">
           <span class="pro-card-title truncate">🔌 Cấu Hình Cổng Mạng LAN / WAN / WWAN / USBWAN (UCI Network Interfaces)</span>
           <span class="badge badge-blue">4 LOGICAL INTERFACES</span>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+
+        <!-- Inline Speedtest Control Toolbar -->
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Interface Selector -->
+          <div class="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-lg px-2 py-1">
+            <span class="text-[11px] text-gray-300">Cổng:</span>
+            <select
+              v-model="selectedSpeedTestIface"
+              class="bg-transparent text-sky-400 font-bold text-xs mono focus:outline-none cursor-pointer"
+            >
+              <option value="wwan" class="bg-gray-900 text-white">WWAN (Wi-Fi Thu Sóng)</option>
+              <option value="wan" class="bg-gray-900 text-white">WAN (Cổng Dây RJ45)</option>
+              <option value="usbwan" class="bg-gray-900 text-white">USBWAN (Modem 4G / USB)</option>
+            </select>
+          </div>
+
+          <!-- Speed Display Label -->
+          <div class="flex items-center gap-2 bg-black/50 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-xs mono">
+            <span class="text-emerald-400 font-extrabold">
+              ↓ {{ speedDown !== null ? speedDown.toFixed(1) : '—' }} Mbps
+            </span>
+            <span class="text-gray-500">·</span>
+            <span class="text-sky-400 font-extrabold">
+              ↑ {{ speedUp !== null ? speedUp.toFixed(1) : '—' }} Mbps
+            </span>
+          </div>
+
+          <!-- Test Button -->
           <button
             type="button"
-            class="btn-secondary text-[11px] py-1"
+            class="btn-primary text-xs py-1 px-3 font-bold flex items-center gap-1 cursor-pointer shadow"
+            :disabled="testingSpeed"
+            @click="runInterfaceSpeedtest"
+          >
+            <span>{{ testingSpeed ? '⏳ Đang Đo…' : '⚡ Test Tốc Độ' }}</span>
+          </button>
+
+          <!-- Reload Button -->
+          <button
+            type="button"
+            class="btn-secondary text-[11px] py-1 px-2.5"
+            title="Khởi động lại toàn bộ stack mạng UCI"
             @click="triggerInterfaceAction('all', 'reload')"
           >
-            🔄 Reload Network (/etc/init.d/network reload)
+            🔄 Reload
           </button>
         </div>
       </div>

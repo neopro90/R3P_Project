@@ -17,17 +17,22 @@ interface DownloadJob {
   finishedAt: string
 }
 
-interface FileEntry {
+interface DownloadFileItem {
   name: string
+  sub_path: string
+  full_path: string
   size: number
-  is_dir: boolean
   mod_time: string
-  path: string
+  category: string
 }
 
 const jobs = ref<DownloadJob[]>([])
-const downloadedFiles = ref<FileEntry[]>([])
+const downloadedFiles = ref<DownloadFileItem[]>([])
 const activeTab = ref<'all' | 'running' | 'completed' | 'failed'>('all')
+
+const outputDir = ref('/mnt/sda1/esp32-downloads')
+const savingOutputDir = ref(false)
+const showEditOutputDir = ref(false)
 
 const newUrl = ref('')
 const selectedQuality = ref('best')
@@ -78,11 +83,46 @@ async function fetchJobs() {
   }
 }
 
+async function fetchDownloadSettings() {
+  try {
+    const res = await apiRequest<{ output_directory: string }>('/download/settings')
+    if (res?.output_directory) {
+      outputDir.value = res.output_directory
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function saveOutputDir() {
+  const p = outputDir.value.trim()
+  if (!p) return
+  savingOutputDir.value = true
+  try {
+    const res = await apiRequest<{ message: string; output_directory: string }>('/download/settings', {
+      method: 'POST',
+      body: JSON.stringify({ output_dir: p }),
+    })
+    notice.value = res?.message || `Đã đổi thư mục lưu trữ thành: ${p}`
+    showEditOutputDir.value = false
+    await fetchDownloadedFiles()
+    setTimeout(() => { notice.value = null }, 3500)
+  } catch (err: any) {
+    notice.value = 'Lỗi lưu thư mục: ' + (err?.message || err)
+    setTimeout(() => { notice.value = null }, 4000)
+  } finally {
+    savingOutputDir.value = false
+  }
+}
+
 async function fetchDownloadedFiles() {
   try {
-    const res = await apiRequest<{ files: FileEntry[] }>('/files?path=/mnt/sda1/esp32-downloads')
+    const res = await apiRequest<{ output_directory: string; total: number; files: DownloadFileItem[] }>('/download/files')
     if (res?.files) {
-      downloadedFiles.value = res.files.filter(f => !f.is_dir && !f.name.startsWith('.'))
+      downloadedFiles.value = res.files
+      if (res.output_directory) {
+        outputDir.value = res.output_directory
+      }
     }
   } catch {
     // USB might not have files yet
@@ -206,6 +246,7 @@ function statusLabel(st: string): string {
 onMounted(() => {
   void fetchJobs()
   void fetchDownloadedFiles()
+  void fetchDownloadSettings()
   void runDiagnostic(false)
   pollTimer = setInterval(() => {
     void fetchJobs()
@@ -524,26 +565,70 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Media Library Card: Downloaded Files in USB (/mnt/sda1/esp32-downloads) -->
+    <!-- Media Library Card: Downloaded Files in USB -->
     <div class="pro-card p-4 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-white/10">
+      <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-white/10">
         <div class="flex items-center gap-2">
           <span class="pro-card-title">📁 Thư Viện Tệp Đã Tải Về Trên Ổ Cứng USB 3.0</span>
           <span class="badge badge-green font-mono font-bold">{{ downloadedFiles.length }} Tệp</span>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="btn-secondary text-xs py-1 px-2.5 font-semibold flex items-center gap-1 cursor-pointer"
+            @click="showEditOutputDir = !showEditOutputDir"
+          >
+            ⚙️ {{ showEditOutputDir ? 'Đóng Cài Đặt Thư Mục' : 'Đổi Thư Mục Lưu Trữ' }}
+          </button>
           <RouterLink to="/files" class="text-xs text-sky-400 hover:underline font-semibold">
-            Mở Trình Duyệt Tệp Cây (File Explorer) →
+            Mở Trình Duyệt Tệp Cây →
           </RouterLink>
           <button type="button" class="btn-secondary text-xs py-1 px-2.5" @click="fetchDownloadedFiles">↻</button>
         </div>
+      </div>
+
+      <!-- Output Directory Settings Panel -->
+      <div v-if="showEditOutputDir" class="p-3 rounded-lg bg-[#0d1627] border border-sky-500/30 space-y-2 text-xs">
+        <div class="font-bold text-sky-300 flex items-center justify-between">
+          <span>⚙️ Cấu Hình Thư Mục Lưu Trữ Video Tải Về</span>
+          <span class="text-gray-400 font-mono text-[11px]">Đường dẫn tuyệt đối trên R3P</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            v-model="outputDir"
+            type="text"
+            class="pro-input mono flex-1 min-w-[280px]"
+            placeholder="/mnt/sda1/esp32-downloads"
+          />
+          <button
+            type="button"
+            class="btn-primary text-xs py-1.5 px-3 font-bold"
+            :disabled="savingOutputDir"
+            @click="saveOutputDir"
+          >
+            {{ savingOutputDir ? 'Đang lưu…' : '✓ Lưu Thư Mục Mới' }}
+          </button>
+        </div>
+        <p class="text-[11px] text-gray-400">
+          Khuyên dùng các đường dẫn nằm trên ổ cứng USB 3.0 (ví dụ: <code class="mono text-sky-300">/mnt/sda1/esp32-downloads</code> hoặc <code class="mono text-sky-300">/mnt/sda1/videos</code>) để tránh đầy bộ nhớ Flash nội bộ NAND.
+        </p>
+      </div>
+
+      <!-- Current Directory Indicator -->
+      <div class="flex items-center justify-between text-xs text-gray-400 bg-black/30 px-3 py-1.5 rounded border border-white/5 mono">
+        <div class="truncate">
+          <span>Thư mục hiện tại: </span>
+          <span class="text-emerald-400 font-bold select-all">{{ outputDir }}</span>
+        </div>
+        <span class="shrink-0 text-gray-500">Đã quét cả thư mục con (Youtube, TikTok, Facebook)</span>
       </div>
 
       <div class="overflow-x-auto">
         <table class="pro-table">
           <thead>
             <tr>
-              <th>Tên Tệp Tin</th>
+              <th>Nguồn</th>
+              <th>Tên Tệp Tin & Thư Mục Con</th>
               <th>Định Dạng</th>
               <th>Dung Lượng</th>
               <th>Thời Gian Tải</th>
@@ -552,14 +637,27 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr v-if="!downloadedFiles.length">
-              <td colspan="5" class="text-center text-gray-400 py-4 text-xs">
-                Chưa có file nào trong thư mục <code>/mnt/sda1/esp32-downloads</code>.
+              <td colspan="6" class="text-center text-gray-400 py-6 text-xs">
+                Chưa có file nào trong thư mục <code>{{ outputDir }}</code>. Gửi link vào Telegram bot hoặc dán URL ở trên để tải về!
               </td>
             </tr>
-            <tr v-for="f in downloadedFiles" :key="f.path">
-              <td class="font-bold text-gray-100 flex items-center gap-2">
-                <span>{{ f.name.endsWith('.mp3') ? '🎵' : '🎬' }}</span>
-                <span class="truncate max-w-md" :title="f.name">{{ f.name }}</span>
+            <tr v-for="f in downloadedFiles" :key="f.sub_path">
+              <td>
+                <span
+                  class="badge text-[10.5px] font-bold"
+                  :class="f.category === 'YouTube' ? 'badge-red' : (f.category === 'TikTok' ? 'badge-blue' : (f.category === 'Facebook' ? 'badge-purple' : 'badge-gray'))"
+                >
+                  {{ f.category }}
+                </span>
+              </td>
+              <td class="font-bold text-gray-100">
+                <div class="flex items-center gap-1.5">
+                  <span>{{ f.name.endsWith('.mp3') ? '🎵' : '🎬' }}</span>
+                  <span class="truncate max-w-sm" :title="f.name">{{ f.name }}</span>
+                </div>
+                <div class="text-[11px] text-gray-400 mono font-normal truncate mt-0.5">
+                  📁 {{ f.sub_path }}
+                </div>
               </td>
               <td class="mono font-bold text-sky-400 uppercase text-xs">
                 {{ f.name.split('.').pop() || 'FILE' }}
@@ -572,7 +670,7 @@ onUnmounted(() => {
               </td>
               <td class="text-right">
                 <a
-                  :href="`/api/v1/files/download?path=${encodeURIComponent(f.path)}`"
+                  :href="`/api/v1/download/file?sub_path=${encodeURIComponent(f.sub_path)}`"
                   download
                   class="btn-primary text-xs py-1 px-2.5 font-semibold inline-flex items-center gap-1"
                 >

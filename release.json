@@ -1,9 +1,9 @@
 {
-    "version":  "v1.1.16",
-    "revision":  18,
-    "released_at":  "2026-11-09 20:31:03",
+    "version":  "v1.1.18",
+    "revision":  19,
+    "released_at":  "2026-11-09 21:23:36",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.1.16",
-    "changelog":  "feat: native yt-dlp on r3p without esp32, fix adblock ipv6 leak \u0026 subdomains, unify share \u0026 usb (smb \u0026 ftp with on/off \u0026 user/pwd auth), dynamic lan ip, full dhcp leases 1-254 with arp, center login card"
+    "commit_sha":  "v1.1.18",
+    "changelog":  "Release v1.1.18 (Revision #19) - R3P Home Server OS update"
 }
