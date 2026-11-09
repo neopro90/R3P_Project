@@ -60,7 +60,7 @@ var builtinAdDomains = []string{
 	"ads.youtube.com", "ad.doubleclick.net", "static.doubleclick.net", "m.doubleclick.net",
 	"mediavisor.doubleclick.net", "afs.googlesyndication.com", "tpc.googlesyndication.com",
 	"an.facebook.com", "pixel.facebook.com", "graph.facebook.com", "connect.facebook.net",
-	"ads.tiktok.com", "analytics.tiktok.com", "log.byteoversea.com", "mon.byteoversea.com",
+	"ads.tiktok.com", "analytics.tiktok.com",
 	"ads-api.twitter.com", "ads.twitter.com", "analytics.twitter.com", "static.ads-twitter.com",
 	"ad.yahoo.com", "ads.yahoo.com", "analytics.query.yahoo.com", "gemini.yahoo.com",
 	"aax.amazon-adsystem.com", "c.amazon-adsystem.com", "fls-na.amazon-adsystem.com", "s.amazon-adsystem.com",
@@ -88,6 +88,20 @@ var builtinAdDomains = []string{
 	"rad.msn.com", "ads1.msn.com", "ads.msn.com", "acdn.adnxs.com",
 	"tracking.miui.com", "data.mistat.xiaomi.com", "sdkconfig.ad.xiaomi.com", "api.ad.xiaomi.com",
 	"log.tbs.qq.com", "adsmind.gdtimg.com", "mi.gdt.qq.com", "hm.baidu.com", "pos.baidu.com",
+}
+
+func isDomainWhitelisted(d string, whiteList []string) bool {
+	d = strings.ToLower(strings.TrimSpace(d))
+	for _, w := range whiteList {
+		w = strings.ToLower(strings.TrimSpace(w))
+		if w == "" {
+			continue
+		}
+		if d == w || strings.HasSuffix(d, "."+w) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultAdblockConfig() AdblockConfig {
@@ -167,9 +181,16 @@ func defaultAdblockConfig() AdblockConfig {
 			"raw.githubusercontent.com",
 			"openwrt.org",
 			"downloads.openwrt.org",
+			"tiktok.com",
+			"tiktokcdn.com",
+			"tiktokv.com",
+			"byteoversea.com",
+			"ibytedtos.com",
+			"ibyteimg.com",
+			"bytedance.com",
+			"musical.ly",
 		},
 		Blacklist: []string{
-			"ads.tiktok.com",
 			"doubleclick.net",
 			"googleadservices.com",
 		},
@@ -311,13 +332,13 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	domainSet := map[string]bool{}
 	for _, d := range builtinAdDomains {
 		nd := normalizeDomain(d)
-		if nd != "" && !whiteMap[nd] {
+		if nd != "" && !whiteMap[nd] && !isDomainWhitelisted(nd, cfg.Whitelist) {
 			domainSet[nd] = true
 		}
 	}
 	for _, d := range cfg.Blacklist {
 		nd := normalizeDomain(d)
-		if nd != "" && !whiteMap[nd] {
+		if nd != "" && !whiteMap[nd] && !isDomainWhitelisted(nd, cfg.Whitelist) {
 			domainSet[nd] = true
 		}
 	}
@@ -328,7 +349,7 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		if f, err := os.Open(persistHosts); err == nil {
 			sc := bufio.NewScanner(f)
 			for sc.Scan() {
-				if nd := normalizeDomain(sc.Text()); nd != "" && !whiteMap[nd] {
+				if nd := normalizeDomain(sc.Text()); nd != "" && !whiteMap[nd] && !isDomainWhitelisted(nd, cfg.Whitelist) {
 					domainSet[nd] = true
 				}
 			}
@@ -356,7 +377,7 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 				}
 				if nd := normalizeDomain(line); nd != "" {
 					count++
-					if !whiteMap[nd] && len(domainSet) < 85000 { // Cap at 85k domains to keep dnsmasq RAM < 18MB on 512MB router
+					if !whiteMap[nd] && !isDomainWhitelisted(nd, cfg.Whitelist) && len(domainSet) < 85000 { // Cap at 85k domains to keep dnsmasq RAM < 18MB on 512MB router
 						domainSet[nd] = true
 					}
 				}
@@ -371,7 +392,7 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	// Sort and write /tmp/r3p-adblock.hosts
 	allDomains := make([]string, 0, len(domainSet))
 	for d := range domainSet {
-		if !whiteMap[d] {
+		if !whiteMap[d] && !isDomainWhitelisted(d, cfg.Whitelist) {
 			allDomains = append(allDomains, d)
 		}
 	}
