@@ -964,7 +964,8 @@ func startEspJobDownload(job *EspRuntimeJob) {
 
 		args := []string{
 			"--newline", "--no-warnings", "--progress",
-			"--extractor-args", "youtube:player_client=android,web",
+			"--no-check-certificates",
+			"--extractor-args", "youtube:player_client=android",
 			"--http-chunk-size", "10M",
 			"-o", fullTemplate,
 			"--print", "after_move:__OUTPUT__%(filepath)s",
@@ -990,12 +991,11 @@ func startEspJobDownload(job *EspRuntimeJob) {
 		} else {
 			// When ffmpeg is not installed, select progressive combined stream (single file with video & audio)
 			// Format 22 = 720p MP4, Format 18 = 360p MP4, b/best = combined progressive stream
-			// Strictly avoids separate video & audio files (*.f400.mp4 and *.f251.webm)
 			switch settings.VideoQuality {
 			case "audio":
-				formatSel = "ba/b"
+				formatSel = "ba/b/best"
 			case "720p":
-				formatSel = "22/best[height<=720]/b/best"
+				formatSel = "22/18/best[height<=720]/b/best"
 			default:
 				formatSel = "22/18/b/best"
 			}
@@ -1024,7 +1024,7 @@ func startEspJobDownload(job *EspRuntimeJob) {
 		} else {
 			args = append(args, "--no-overwrites")
 		}
-		if cfg.FfmpegPath != "" {
+		if hasFfmpeg && cfg.FfmpegPath != "" {
 			args = append(args, "--ffmpeg-location", cfg.FfmpegPath)
 		}
 		args = append(args, job.URL)
@@ -1184,9 +1184,17 @@ func finishEspJob(job *EspRuntimeJob, success, cancelled bool, outPath string, o
 			}
 			msg = fmt.Sprintf("✅ [R3P Linux] Tải xong:\n%s (%s)", base, fmtBytesHuman(totalBytes))
 		} else if cancelled {
-			msg = fmt.Sprintf("⏹ Đã dừng job %s.", job.ID)
+			msg = fmt.Sprintf("⏹ Đã dừng job #%s.", job.ID)
 		} else {
-			msg = fmt.Sprintf("❌ Job %s thất bại: %s", job.ID, errMsg)
+			cleanErr := errMsg
+			if strings.Contains(errMsg, "Unsupported URL") && strings.Contains(errMsg, "stories") {
+				cleanErr = "Link này là Facebook Story (tin ngắn riêng tư), Facebook yêu cầu đăng nhập tài khoản nên không thể tải nặc danh."
+			} else if strings.Contains(errMsg, "Unsupported URL") && strings.Contains(errMsg, "/photo/") {
+				cleanErr = "Link này là Album/Trình chiếu ảnh (TikTok Photo), yt-dlp hiện chỉ hỗ trợ tải định dạng video/âm thanh."
+			} else if strings.Contains(errMsg, "Cannot parse data") || strings.Contains(errMsg, "login.php") {
+				cleanErr = "Nội dung này ở chế độ riêng tư (bạn bè/nhóm kín) hoặc Facebook yêu cầu đăng nhập."
+			}
+			msg = fmt.Sprintf("❌ Job #%s thất bại:\n%s", job.ID, cleanErr)
 		}
 		_ = sendEspTelegramMsg(job.TelegramChatID, msg)
 	}
@@ -1206,7 +1214,7 @@ func fmtBytesHuman(b int64) string {
 }
 
 func enqueueEspJob(rawURL, source, chatID string, force bool) (*EspRuntimeJob, bool, error) {
-	u := strings.TrimSpace(rawURL)
+	u := strings.TrimRight(strings.TrimSpace(rawURL), ".,;:!?)>\"'")
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return nil, false, fmt.Errorf("URL phải bắt đầu bằng http:// hoặc https://")
 	}
@@ -1215,7 +1223,7 @@ func enqueueEspJob(rawURL, source, chatID string, force bool) (*EspRuntimeJob, b
 
 	if espConfig.DownloadSettings.DuplicateUrlPolicy == "skip_pending" && !force {
 		for _, existing := range espQueue {
-			if existing.URL == u && existing.RuntimeStatus != "FAILED" && existing.RuntimeStatus != "CANCELLED" {
+			if existing.URL == u && (existing.RuntimeStatus == "QUEUED" || existing.RuntimeStatus == "RUNNING") {
 				return existing, true, nil
 			}
 		}
