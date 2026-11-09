@@ -21,10 +21,10 @@ async function submit() {
 </script>
 
 <template>
-  <main class="h-full flex items-center justify-center p-4 bg-[#070a0f]">
-    <div class="pro-card w-full max-w-sm p-6 bg-[#0f1422] border-[rgba(255,255,255,0.08)] shadow-2xl">
+  <main class="fixed inset-0 z-50 w-screen h-screen flex items-center justify-center p-4 bg-[#070a0f] overflow-y-auto">
+    <div class="pro-card w-full max-w-[380px] p-6 bg-[#0f1422] border border-white/10 rounded-2xl shadow-2xl shrink-0">
       <div class="flex items-center gap-3 mb-5 pb-4 border-b border-white/10">
-        <div class="w-8 h-8 rounded bg-sky-500 flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
+        <div class="w-9 h-9 rounded-lg bg-sky-500 flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
           R3
         </div>
         <div>

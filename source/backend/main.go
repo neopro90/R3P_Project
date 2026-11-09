@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -30,7 +31,7 @@ import (
 	"time"
 )
 
-var Version = "v1.0.0"
+var Version = "v1.1.16"
 
 // BuildDate is injected at compile time via -ldflags="-X main.BuildDate=..."
 var BuildDate = "2026-11-06"
@@ -544,7 +545,59 @@ type dhcpLease struct {
 }
 
 func parseDHCPLeases(path string) []dhcpLease {
-	return parseDHCPLeaseData(readFile(path), time.Now().Unix())
+	leases := parseDHCPLeaseData(readFile(path), time.Now().Unix())
+	seenIP := make(map[string]bool)
+	seenMAC := make(map[string]bool)
+	for _, l := range leases {
+		seenIP[l.IP] = true
+		seenMAC[strings.ToLower(l.MAC)] = true
+	}
+
+	// Read /proc/net/arp to discover all LAN devices (e.g. static IPs 1-99, gateway, etc.)
+	if arpData := readFile("/proc/net/arp"); arpData != "" {
+		for _, line := range strings.Split(arpData, "\n") {
+			parts := strings.Fields(line)
+			if len(parts) >= 6 && parts[0] != "IP" {
+				ip := parts[0]
+				mac := strings.ToLower(parts[3])
+				flags := parts[2]
+				// 0x2 is valid complete ARP resolution, mac != 00:00:00:00:00:00
+				if flags != "0x0" && mac != "00:00:00:00:00:00" && !seenIP[ip] && net.ParseIP(ip) != nil {
+					seenIP[ip] = true
+					seenMAC[mac] = true
+					hostname := "Static / LAN"
+					if strings.HasSuffix(ip, ".1") {
+						hostname = "Gateway / Modem"
+					}
+					leases = append(leases, dhcpLease{
+						Expiry:      0,
+						MAC:         mac,
+						IP:          ip,
+						Hostname:    hostname,
+						Vendor:      "ARP",
+						OUI:         ouiLookup(mac),
+						LeaseActive: true,
+					})
+				}
+			}
+		}
+	}
+
+	// Sort leases numerically by IPv4 address
+	sort.Slice(leases, func(i, j int) bool {
+		ipA := net.ParseIP(leases[i].IP)
+		ipB := net.ParseIP(leases[j].IP)
+		if ipA != nil && ipB != nil {
+			v4A := ipA.To4()
+			v4B := ipB.To4()
+			if v4A != nil && v4B != nil {
+				return bytes.Compare(v4A, v4B) < 0
+			}
+		}
+		return leases[i].IP < leases[j].IP
+	})
+
+	return leases
 }
 
 func parseDHCPLeaseData(data string, now int64) []dhcpLease {

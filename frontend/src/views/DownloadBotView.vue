@@ -235,11 +235,11 @@ onUnmounted(() => {
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
         <div class="min-w-0">
           <h1 class="text-[16px] font-bold text-gray-100 flex items-center gap-2">
-            <span class="truncate">Trung Tâm Tải Xuống Tự Động (R3P Linux Downloader)</span>
-            <span class="badge badge-green text-xs font-mono font-bold">PORT 8787 ONLINE</span>
+            <span class="truncate">Trình Tải Video yt-dlp Trực Tiếp Trên R3P (Native Downloader)</span>
+            <span class="badge badge-green text-xs font-mono font-bold">NATIVE YT-DLP</span>
           </h1>
           <p class="text-xs text-gray-400 font-medium truncate">
-            Tự động tải đa luồng qua yt-dlp & aria2 vào USB 3.0 · Nhận lệnh tự động từ Telegram Bot & Trợ Lý Root AI.
+            R3P nhận link trực tiếp và giao cho yt-dlp tải về ổ cứng USB 3.0 (/mnt/sda1) · Tự động nhận link qua Telegram Bot & Web.
           </p>
         </div>
       </div>

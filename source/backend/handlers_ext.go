@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -753,6 +754,8 @@ type ShareItem struct {
 	ReadOnly  bool   `json:"read_only"`
 	GuestOk   bool   `json:"guest_ok"`
 	Comment   string `json:"comment"`
+	Users     string `json:"users,omitempty"`
+	Password  string `json:"password,omitempty"`
 }
 
 const sharesConfigFile = "/etc/r3p/shares.json"
@@ -806,15 +809,7 @@ func saveNASShares(list []ShareItem) {
 }
 
 func getServerLanIP() string {
-	netUCI := parseUCIConfigMap("network")
-	meta := interfaceMetadata("br-lan")
-	if ip, ok := meta["ipv4"].(string); ok && ip != "" {
-		return ip
-	}
-	if ip := netUCI["network.lan.ipaddr"]; ip != "" {
-		return ip
-	}
-	return "192.168.1.7"
+	return getRouterLanIP()
 }
 
 func syncSambaConfigFile(shares []ShareItem) error {
@@ -859,6 +854,22 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		sb.WriteString(fmt.Sprintf("\toption path '%s'\n", s.Path))
 		sb.WriteString(fmt.Sprintf("\toption read_only '%s'\n", ro))
 		sb.WriteString(fmt.Sprintf("\toption guest_ok '%s'\n", guest))
+		if !s.GuestOk && strings.TrimSpace(s.Users) != "" {
+			usr := strings.TrimSpace(s.Users)
+			sb.WriteString(fmt.Sprintf("\toption users '%s'\n", usr))
+			if s.Password != "" {
+				pwd := s.Password
+				go func(u, p string) {
+					pContent, _ := os.ReadFile("/etc/passwd")
+					if !strings.Contains(string(pContent), u+":") {
+						_, _ = runCmd(3, "adduser", "-D", "-H", "-s", "/bin/false", u)
+					}
+					cmd := exec.Command("smbpasswd", "-a", "-s", u)
+					cmd.Stdin = strings.NewReader(p + "\n" + p + "\n")
+					_ = cmd.Run()
+				}(usr, pwd)
+			}
+		}
 		sb.WriteString("\toption force_root '1'\n")
 		sb.WriteString("\toption browseable 'yes'\n")
 		sb.WriteString("\toption create_mask '0666'\n")

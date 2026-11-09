@@ -290,9 +290,10 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	if !cfg.Enabled {
 		_ = os.Remove(adblockHostsFile)
 		_ = os.Remove(adblockDnsmasqCfg)
+		_ = os.Remove("/tmp/dnsmasq.d/r3p-adblock.conf")
 		_, _ = runCmd(5, "uci", "delete", "dhcp.@dnsmasq[0].addnhosts")
 		_, _ = runCmd(5, "uci", "commit", "dhcp")
-		_, _ = runCmd(8, "/etc/init.d/dnsmasq", "reload")
+		_, _ = runCmd(8, "/etc/init.d/dnsmasq", "restart")
 		_, _ = runCmd(8, "/etc/init.d/firewall", "reload")
 		saveAdblockConfig(*cfg)
 		return 0, nil
@@ -382,6 +383,9 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		sb.WriteString("0.0.0.0 ")
 		sb.WriteString(d)
 		sb.WriteByte('\n')
+		sb.WriteString(":: ")
+		sb.WriteString(d)
+		sb.WriteByte('\n')
 	}
 	hostsBytes := []byte(sb.String())
 	_ = os.WriteFile(adblockHostsFile, hostsBytes, 0644)
@@ -389,18 +393,26 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		_ = os.WriteFile(persistHosts, hostsBytes, 0644)
 	}
 
-	// Write dnsmasq config and UCI integration
+	// Write dnsmasq config with wildcard subdomains and UCI integration
+	_ = os.MkdirAll("/tmp/dnsmasq.d", 0755)
 	var dconf strings.Builder
-	dconf.WriteString("# R3P AdBlock Dnsmasq Configuration\n")
+	dconf.WriteString("# R3P AdBlock Dnsmasq Configuration & Wildcards\n")
 	dconf.WriteString("addn-hosts=" + adblockHostsFile + "\n")
+	for _, d := range allDomains {
+		dconf.WriteString("address=/" + d + "/0.0.0.0\n")
+		dconf.WriteString("address=/" + d + "/::\n")
+	}
 	if cfg.SafeSearch {
-		dconf.WriteString(" cname=www.google.com,forcesafesearch.google.com\n")
+		dconf.WriteString("cname=www.google.com,forcesafesearch.google.com\n")
 		dconf.WriteString("address=/forcesafesearch.google.com/216.239.38.120\n")
 		dconf.WriteString("address=/restrict.youtube.com/216.239.38.120\n")
 		dconf.WriteString("address=/strict.bing.com/204.79.197.220\n")
 	}
-	_ = os.WriteFile(adblockDnsmasqCfg, []byte(dconf.String()), 0644)
+	confBytes := []byte(dconf.String())
+	_ = os.WriteFile(adblockDnsmasqCfg, confBytes, 0644)
+	_ = os.WriteFile("/tmp/dnsmasq.d/r3p-adblock.conf", confBytes, 0644)
 
+	_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].confdir=/tmp/dnsmasq.d")
 	_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].addnhosts")
 	_, _ = runCmd(4, "uci", "add_list", "dhcp.@dnsmasq[0].addnhosts="+adblockHostsFile)
 	// Allow DNS queries from upstream Gateway subnet when R3P acts as a Client DNS Server (e.g. 192.168.1.6)
@@ -502,7 +514,7 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Detect R3P Client IP & Upstream Gateway IP so the UI can guide setting DNS on the main Gateway
-	r3pLanIP := "192.168.2.1"
+	r3pLanIP := getRouterLanIP()
 	if lanMeta := interfaceMetadata("br-lan"); lanMeta != nil {
 		if ip, ok := lanMeta["ipv4"].(string); ok && ip != "" {
 			r3pLanIP = ip

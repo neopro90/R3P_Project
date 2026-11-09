@@ -15,7 +15,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -327,12 +326,39 @@ func initEsp32DownloadRuntime() {
 	go espTelegramPollerLoop()
 }
 
-// getRouterLanIP retrieves the primary LAN IP of the router (default 192.168.2.1)
+// getRouterLanIP retrieves the primary LAN IP dynamically configured on the router
 func getRouterLanIP() string {
 	if out, err := runCmd(2, "uci", "-q", "get", "network.lan.ipaddr"); err == nil && strings.TrimSpace(out) != "" {
 		return strings.TrimSpace(out)
 	}
-	return "192.168.2.1"
+	meta := interfaceMetadata("br-lan")
+	if ip, ok := meta["ipv4"].(string); ok && ip != "" {
+		return ip
+	}
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+					return ip.String()
+				}
+			}
+		}
+	}
+	return "127.0.0.1"
 }
 
 // syncEspAndRouterSettings synchronizes:
@@ -636,18 +662,13 @@ func espOutputStorageStatus(dir string) map[string]interface{} {
 func buildEspLocalStatus() map[string]interface{} {
 	syncEspAndRouterSettings()
 
-	// Check ESP32 device status (with short timeout so UI stays snappy even when ESP32 is offline)
+	// Native R3P Downloader status
 	device := map[string]interface{}{
-		"connected":     false,
-		"apiReachable":  false,
-		"authenticated": nil,
-		"error":         "ESP32 đang ngoại tuyến (R3P Linux Runtime vẫn hoạt động độc lập 100%)",
-	}
-	if status, payload, err := callEspDevice("/api/v1/system", http.MethodGet, nil, 1200); err == nil && status >= 200 && status < 300 && payload != nil {
-		device = payload
-		device["connected"] = true
-		device["apiReachable"] = true
-		device["authenticated"] = true
+		"connected":     true,
+		"apiReachable":  true,
+		"authenticated": true,
+		"native":        true,
+		"model":         "R3P Native Downloader (yt-dlp)",
 	}
 
 	ytVer, ytErr := getYtDlpVer()
@@ -1161,18 +1182,6 @@ func finishEspJob(job *EspRuntimeJob, success, cancelled bool, outPath string, o
 	}
 	saveEspQueue()
 	espMu.Unlock()
-
-	// Report back to ESP32 if connected
-	if job.Source != "schedule" {
-		_, _, _ = callEspDevice("/api/v1/worker/jobs/"+url.PathEscape(job.ID)+"/result", http.MethodPost, map[string]interface{}{
-			"success":     success,
-			"cancelled":   cancelled,
-			"outputPath":  outPath,
-			"outputPaths": outPaths,
-			"outputBytes": totalBytes,
-			"error":       errMsg,
-		}, 3000)
-	}
 
 	// Send Telegram notification if chat ID present
 	if job.TelegramChatID != "" {
@@ -2063,20 +2072,15 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Device API Proxy (/api/device/api/v1/*) with Seamless Local Fallback when ESP32 is offline!
+	// 5. Direct R3P Native Download API (/api/device/api/v1/* and /api/runtime/*)
 	if strings.HasPrefix(p, "/api/device/") {
 		apiPath := strings.TrimPrefix(p, "/api/device")
 		var body interface{}
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 		}
-		status, payload, err := callEspDevice(apiPath, r.Method, body, 1800)
-		if err == nil && status >= 200 && status < 300 {
-			espWriteJSON(w, status, payload)
-			return
-		}
 
-		// Local R3P Linux Fallback when ESP32 board is not online:
+		// R3P Native Job Handling (No intermediate ESP32 required)
 		if apiPath == "/api/v1/jobs" && r.Method == http.MethodGet {
 			espMu.Lock()
 			var jobs []map[string]interface{}
