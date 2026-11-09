@@ -329,7 +329,10 @@ onUnmounted(() => {
       <div class="pro-card p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-[13.5px] mb-1">
           <div class="flex items-center gap-1.5">
-            <span class="text-sky-400 font-bold">⚡ Tải Vi Xử Lý (CPU)</span>
+            <span class="text-sky-400 font-bold">⚡ Tải CPU</span>
+            <span class="badge badge-blue text-[10.5px] mono font-bold">
+              🌡️ {{ cpuTempItem.temp_celsius.toFixed(1) }}°C
+            </span>
           </div>
           <span class="mono font-extrabold text-sky-300 text-[16px]">{{ (system.cpu || 0).toFixed(1) }}%</span>
         </div>
@@ -356,8 +359,8 @@ onUnmounted(() => {
         </div>
 
         <div class="flex items-center justify-between text-[12px] text-gray-300 mono pt-1 border-t border-white/5 font-medium">
-          <span>Load Avg: {{ system.loadAvg[0]?.toFixed(2) || '0.15' }}</span>
-          <span>4 Luồng Xử Lý</span>
+          <span>Load: {{ system.loadAvg[0]?.toFixed(2) || '0.15' }}</span>
+          <span class="text-emerald-400 font-bold">Nhiệt CPU: {{ cpuTempItem.temp_celsius.toFixed(1) }}°C</span>
         </div>
       </div>
 
@@ -515,16 +518,48 @@ onUnmounted(() => {
               <span class="absolute text-[12px] font-extrabold text-emerald-300 mono">{{ usbHddPercent }}%</span>
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
-              <div class="font-bold text-[13px] text-gray-100 truncate">USB (/mnt/sda1)</div>
+              <div class="font-bold text-[13px] text-gray-100 flex items-center justify-between">
+                <span class="truncate">USB NVMe</span>
+                <span
+                  class="text-[10.5px] mono font-bold px-1.5 py-0.5 rounded"
+                  :class="diskTempItem?.disk_state === 'standby' ? 'bg-purple-900/40 text-purple-300 border border-purple-500/30' : (diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'bg-rose-900/40 text-rose-300' : 'bg-emerald-900/40 text-emerald-300 border border-emerald-500/30')"
+                >
+                  {{ diskTempItem?.disk_state === 'standby' ? '💤 Sleep' : (diskTempItem?.temp_celsius ? `${diskTempItem.temp_celsius.toFixed(0)}°C` : '53°C') }}
+                </span>
+              </div>
               <div class="text-emerald-300 font-bold text-[12px] truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : '234.7 GB' }} trống</div>
               <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '0.3 MB' }}</div>
             </div>
           </div>
         </div>
 
-        <div class="flex justify-between text-[12px] text-gray-300 pt-1.5 border-t border-white/10 mono font-semibold">
-          <span>SLC Flash 256MB</span>
-          <span>USB 3.0 ext4 Fast I/O</span>
+        <div class="flex items-center justify-between text-[11.5px] text-gray-300 pt-1.5 border-t border-white/10 mono font-semibold">
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="text-sky-400 hover:text-white transition-colors cursor-pointer text-[11px] font-bold"
+              :disabled="settingStandby"
+              @click="triggerStandbyNow"
+              title="Ngắt truy xuất cho SSD NVMe nghỉ ngay để hạ nhiệt"
+            >
+              💤 {{ settingStandby ? 'Đang hạ nhiệt…' : 'Cho SSD Nghỉ' }}
+            </button>
+          </div>
+          <div class="flex items-center gap-1 text-[10.5px]">
+            <span class="text-gray-400">Tự nghỉ:</span>
+            <select
+              :value="idleTimeoutMins"
+              class="bg-black/60 text-emerald-400 font-bold rounded px-1 py-0.5 border border-white/10 text-[10.5px] cursor-pointer"
+              :disabled="settingStandby"
+              @change="updateIdleTimeout(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option :value="5" class="bg-gray-900 text-white">5p</option>
+              <option :value="10" class="bg-gray-900 text-white">10p</option>
+              <option :value="15" class="bg-gray-900 text-white">15p</option>
+              <option :value="30" class="bg-gray-900 text-white">30p</option>
+              <option :value="0" class="bg-gray-900 text-white">Tắt</option>
+            </select>
+          </div>
         </div>
       </div>
     </div>
@@ -662,113 +697,6 @@ onUnmounted(() => {
           <div class="flex justify-between py-1">
             <span class="text-gray-300 font-medium">Cổng USB 3.0</span>
             <span class="mono text-emerald-300 font-semibold">Dual Mode (Storage + Tether)</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- HARDWARE THERMALS & NVMe SSD POWER / STANDBY CONTROLLER -->
-    <div class="pro-card p-3.5 bg-gradient-to-r from-[#0d1627] via-[#0b1322] to-[#121c32] border border-sky-500/30">
-      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-2.5 mb-3">
-        <div class="flex items-center gap-2.5">
-          <span class="text-xl">🌡️</span>
-          <div>
-            <div class="font-bold text-[14.5px] text-white flex items-center gap-2">
-              <span>Nhiệt Độ Phần Cứng & Chế Độ Nghỉ Ổ Cứng NVMe SSD USB 3.0</span>
-              <span class="badge badge-blue text-[11px] font-mono font-bold">SMART HWMON</span>
-            </div>
-            <div class="text-[12px] text-gray-400 mt-0.5">
-              Theo dõi cảm biến nhiệt độ chip CPU MT7621 và ổ SSD M.2 NVMe qua chip cầu JMS583 để chủ động làm mát và hạ nhiệt.
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 shrink-0">
-          <div class="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1">
-            <span class="text-[11.5px] text-gray-300">Tự nghỉ khi rảnh:</span>
-            <select
-              :value="idleTimeoutMins"
-              class="bg-transparent text-sky-400 font-bold text-[12px] mono focus:outline-none cursor-pointer"
-              :disabled="settingStandby"
-              @change="updateIdleTimeout(Number(($event.target as HTMLSelectElement).value))"
-            >
-              <option :value="5" class="bg-gray-900 text-white">5 phút (Tối ưu hạ nhiệt)</option>
-              <option :value="10" class="bg-gray-900 text-white">10 phút (Mặc định)</option>
-              <option :value="15" class="bg-gray-900 text-white">15 phút</option>
-              <option :value="30" class="bg-gray-900 text-white">30 phút</option>
-              <option :value="0" class="bg-gray-900 text-white">Không tắt (Luôn chạy)</option>
-            </select>
-          </div>
-
-          <button
-            type="button"
-            class="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5 font-bold hover:text-white"
-            :disabled="settingStandby"
-            @click="triggerStandbyNow"
-            title="Ngắt nguồn quay/truy xuất để ổ cứng SSD hạ nhiệt độ ngay lập tức"
-          >
-            <span>💤 Cho SSD Nghỉ Ngay (Standby)</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <!-- Sensor 1: CPU SoC MT7621 -->
-        <div class="p-3 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div class="w-11 h-11 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-xl shrink-0">
-              ⚡
-            </div>
-            <div>
-              <div class="font-bold text-[14px] text-gray-100">CPU / Bo Mạch Router R3P</div>
-              <div class="text-[12px] text-gray-400 mt-0.5 mono">MediaTek MT7621AT · 2C4T 880MHz</div>
-            </div>
-          </div>
-          <div class="text-right">
-            <div class="text-[20px] font-extrabold mono" :class="cpuTempItem.temp_celsius > 70 ? 'text-rose-400' : 'text-emerald-400'">
-              {{ cpuTempItem.temp_celsius.toFixed(1) }}°C
-            </div>
-            <span class="badge text-[11px]" :class="cpuTempItem.temp_celsius > 70 ? 'badge-red' : 'badge-green'">
-              {{ cpuTempItem.temp_celsius > 70 ? 'Nhiệt Cao' : 'Mát Mẻ' }}
-            </span>
-          </div>
-        </div>
-
-        <!-- Sensor 2: NVMe SSD USB 3.0 (WDC SN530 via JMS583) -->
-        <div class="p-3 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div
-              class="w-11 h-11 rounded-lg flex items-center justify-center text-xl shrink-0"
-              :class="diskTempItem?.disk_state === 'standby' ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300' : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'"
-            >
-              💾
-            </div>
-            <div>
-              <div class="font-bold text-[14px] text-gray-100 flex items-center gap-2">
-                <span>Ổ Cứng NVMe SSD USB 3.0</span>
-                <span
-                  class="badge text-[10.5px] font-bold"
-                  :class="diskTempItem?.disk_state === 'standby' ? 'badge-purple' : 'badge-green'"
-                >
-                  {{ diskTempItem?.disk_state === 'standby' ? 'ĐANG NGHỈ (SLEEP)' : 'ACTIVE' }}
-                </span>
-              </div>
-              <div class="text-[12px] text-gray-400 mt-0.5 mono">WDC PC SN530 256GB · JMicron JMS583</div>
-            </div>
-          </div>
-          <div class="text-right">
-            <div
-              class="text-[20px] font-extrabold mono"
-              :class="diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'text-rose-400' : (diskTempItem?.disk_state === 'standby' ? 'text-purple-300' : 'text-emerald-400')"
-            >
-              {{ diskTempItem?.temp_celsius ? `${diskTempItem.temp_celsius.toFixed(0)}°C` : '53°C' }}
-            </div>
-            <span
-              class="badge text-[11px] font-bold"
-              :class="diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'badge-red' : (diskTempItem?.disk_state === 'standby' ? 'badge-purple' : 'badge-green')"
-            >
-              {{ diskTempItem?.status || 'Bình Thường' }}
-            </span>
           </div>
         </div>
       </div>
