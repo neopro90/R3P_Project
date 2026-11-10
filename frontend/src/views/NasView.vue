@@ -504,6 +504,53 @@ async function removeShare(name: string) {
   }
 }
 
+const updatingShare = ref<string | null>(null)
+
+async function quickChangeShareUser(share: ShareItem, selectedVal: string) {
+  updatingShare.value = share.name
+  try {
+    const isGuest = selectedVal === 'guest'
+    const updated: ShareItem = {
+      ...share,
+      guest_ok: isGuest,
+      users: isGuest ? '' : selectedVal,
+    }
+    await apiRequest('/nas/shares', {
+      method: 'POST',
+      body: JSON.stringify(updated),
+    })
+    share.guest_ok = updated.guest_ok
+    share.users = updated.users
+    showNotice(`Đã đổi quyền cho '${share.name}' thành: ${isGuest ? 'Guest (Công khai)' : 'User ' + selectedVal}!`)
+  } catch (err: any) {
+    showError('Cập nhật phân quyền thất bại: ' + (err?.message || err))
+    await loadNAS()
+  } finally {
+    updatingShare.value = null
+  }
+}
+
+async function quickToggleReadOnly(share: ShareItem) {
+  updatingShare.value = share.name
+  try {
+    const updated: ShareItem = {
+      ...share,
+      read_only: !share.read_only,
+    }
+    await apiRequest('/nas/shares', {
+      method: 'POST',
+      body: JSON.stringify(updated),
+    })
+    share.read_only = updated.read_only
+    showNotice(`Đã đổi chế độ '${share.name}' sang: ${share.read_only ? 'Chỉ Đọc' : 'Đọc & Ghi'}!`)
+  } catch (err: any) {
+    showError('Cập nhật chế độ truy cập thất bại: ' + (err?.message || err))
+    await loadNAS()
+  } finally {
+    updatingShare.value = null
+  }
+}
+
 
 onMounted(() => {
   void loadNAS()
@@ -1110,14 +1157,40 @@ onMounted(() => {
                   </td>
                   <td class="mono text-emerald-400">{{ s.path }}</td>
                   <td>
-                    <span class="badge" :class="s.read_only ? 'badge-orange' : 'badge-green'">
-                      {{ s.read_only ? 'CHỈ ĐỌC' : 'ĐỌC & GHI' }}
-                    </span>
+                    <button
+                      type="button"
+                      class="badge cursor-pointer transition select-none hover:brightness-110 active:scale-95 shadow-sm"
+                      :class="s.read_only ? 'badge-orange' : 'badge-green'"
+                      :disabled="updatingShare === s.name"
+                      :title="'Bấm để chuyển sang ' + (s.read_only ? 'Đọc & Ghi' : 'Chỉ Đọc')"
+                      @click="quickToggleReadOnly(s)"
+                    >
+                      {{ s.read_only ? 'CHỈ ĐỌC 🔒' : 'ĐỌC & GHI ✍️' }}
+                    </button>
                   </td>
                   <td>
-                    <span class="badge" :class="s.guest_ok ? 'badge-blue' : 'badge-orange'">
-                      {{ s.guest_ok ? 'GUEST (CÔNG KHAI)' : (s.users ? `USER: ${s.users}` : 'CẦN MẬT KHẨU') }}
-                    </span>
+                    <div class="flex items-center gap-1.5 min-w-[170px]">
+                      <select
+                        :value="s.guest_ok ? 'guest' : (s.users || 'root')"
+                        class="pro-input text-[11.5px] py-1 px-2 font-medium cursor-pointer transition-colors w-full rounded"
+                        :class="s.guest_ok ? 'text-sky-300 border-sky-500/40 bg-sky-950/20' : 'text-amber-300 border-amber-500/50 bg-amber-950/30 font-bold'"
+                        :disabled="updatingShare === s.name"
+                        title="Chọn tài khoản để phân quyền truy cập cho thư mục này"
+                        @change="quickChangeShareUser(s, ($event.target as HTMLSelectElement).value)"
+                      >
+                        <option value="guest" class="bg-[#0f1724] text-sky-300">🌐 Guest (Công khai)</option>
+                        <option value="root" class="bg-[#0f1724] text-amber-300">👤 root (Quản trị viên)</option>
+                        <option
+                          v-for="u in nasUsers.filter(u => u.username !== 'root')"
+                          :key="u.username"
+                          :value="u.username"
+                          class="bg-[#0f1724] text-amber-300"
+                        >
+                          👤 {{ u.username }} (Samba User)
+                        </option>
+                      </select>
+                      <span v-if="updatingShare === s.name" class="text-xs text-sky-400 shrink-0 animate-pulse" title="Đang lưu...">⏳</span>
+                    </div>
                   </td>
                   <td class="text-gray-400 text-xs truncate max-w-xs">{{ s.comment || '—' }}</td>
                   <td>

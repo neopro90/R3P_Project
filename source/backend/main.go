@@ -1699,7 +1699,7 @@ func main() {
 	mux.HandleFunc("/api/v1/nas/upload", cors(handleNASUpload, "POST"))
 	mux.HandleFunc("/api/v1/nas/file", cors(handleNASDeleteFile, "DELETE"))
 	mux.HandleFunc("/api/v1/nas/download", cors(handleNASDownloadFile, "GET"))
-	mux.HandleFunc("/api/v1/nas/shares", cors(handleNASShares, "POST", "DELETE"))
+	mux.HandleFunc("/api/v1/nas/shares", cors(handleNASShares, "POST", "PUT", "DELETE"))
 	mux.HandleFunc("/api/v1/nas/services", cors(handleNASServices, "GET", "PUT"))
 	mux.HandleFunc("/api/v1/nas/services/samba", cors(handleNASServices, "PUT"))
 	mux.HandleFunc("/api/v1/nas/services/ftp", cors(handleNASServices, "PUT"))

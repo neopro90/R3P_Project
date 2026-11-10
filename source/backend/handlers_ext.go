@@ -1378,11 +1378,11 @@ func handleNASDownloadFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, clean)
 }
 
-// POST / DELETE /api/v1/nas/shares
+// POST / PUT / DELETE /api/v1/nas/shares
 func handleNASShares(w http.ResponseWriter, r *http.Request) {
 	shares := loadNASShares()
 	switch r.Method {
-	case http.MethodPost:
+	case http.MethodPost, http.MethodPut:
 		var body ShareItem
 		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
@@ -1391,13 +1391,36 @@ func handleNASShares(w http.ResponseWriter, r *http.Request) {
 		body.Name = sanitizeFilename(body.Name)
 		validPath, err := validateNASPath(body.Path)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, false, err.Error())
-			return
+			// If updating existing share and path is unchanged/valid, keep original path
+			foundPath := ""
+			for _, s := range shares {
+				if s.Name == body.Name {
+					foundPath = s.Path
+					break
+				}
+			}
+			if foundPath != "" {
+				body.Path = foundPath
+			} else {
+				writeJSON(w, http.StatusBadRequest, false, err.Error())
+				return
+			}
+		} else {
+			body.Path = validPath
 		}
-		body.Path = validPath
-		shares = append(shares, body)
+		found := false
+		for i, s := range shares {
+			if s.Name == body.Name {
+				shares[i] = body
+				found = true
+				break
+			}
+		}
+		if !found {
+			shares = append(shares, body)
+		}
 		saveNASShares(shares)
-		writeJSON(w, http.StatusCreated, true, shares)
+		writeJSON(w, http.StatusOK, true, shares)
 
 	case http.MethodDelete:
 		name := r.URL.Query().Get("name")
