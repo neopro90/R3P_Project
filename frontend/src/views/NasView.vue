@@ -753,15 +753,18 @@ async function refreshAccessTokenNow() {
   }
   refreshingToken.value = true
   try {
-    await saveGDriveConfig()
     const res = await apiRequest<{ message: string; access_token: string }>('/nas/gdrive-sync/refresh', {
       method: 'POST',
+      body: JSON.stringify({
+        refresh_token: gdriveConfig.value.refresh_token,
+        client_id: gdriveConfig.value.client_id,
+        client_secret: gdriveConfig.value.client_secret,
+      }),
     })
-    showNotice(res?.message || 'Đã làm mới Access Token thành công!')
     if (res?.access_token) {
       gdriveConfig.value.access_token = res.access_token
+      showNotice(res.message || 'Đã cấp mới Access Token thành công!')
     }
-    await fetchGDriveConfig()
   } catch (err: any) {
     showError('Lỗi làm mới Access Token: ' + (err?.message || err))
   } finally {
@@ -1635,43 +1638,6 @@ onUnmounted(() => {
               <span v-if="gdriveConfig.is_syncing || syncingGDrive">⏳ Đang Đồng Bộ…</span>
               <span v-else>⚡ Đồng Bộ Ngay</span>
             </button>
-          </div>
-        </div>
-
-        <!-- Summary Status Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
-            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Thư Mục Cục Bộ</div>
-            <div class="mono text-xs font-bold text-sky-300 truncate" :title="gdriveConfig.local_dir">
-              {{ gdriveConfig.local_dir || '/mnt/sda1/GDrive' }}
-            </div>
-            <div class="text-[10px] text-gray-500">Đường dẫn trên USB / Router</div>
-          </div>
-
-          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
-            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Google Drive Folder ID</div>
-            <div class="mono text-xs font-bold text-amber-300 truncate" :title="gdriveConfig.drive_folder_id">
-              {{ gdriveConfig.drive_folder_id || 'Chưa thiết lập' }}
-            </div>
-            <div class="text-[10px] text-gray-500">Mã thư mục đám mây</div>
-          </div>
-
-          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
-            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Chu Kỳ Đồng Bộ</div>
-            <div class="text-xs font-bold text-emerald-300">
-              {{ gdriveConfig.interval_minutes > 0 ? `Mỗi ${gdriveConfig.interval_minutes} phút` : 'Chỉ thủ công' }}
-            </div>
-            <div class="text-[10px] text-gray-500">Chế độ: {{ gdriveConfig.direction === 'two_way' ? '2 Chiều (Hai chiều)' : gdriveConfig.direction }}</div>
-          </div>
-
-          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
-            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Đồng Bộ Gần Nhất</div>
-            <div class="mono text-xs font-bold text-purple-300">
-              {{ gdriveConfig.last_sync_time || 'Chưa chạy' }}
-            </div>
-            <div class="text-[10px] text-gray-500">
-              Đã xử lý: <span class="text-white font-bold">{{ gdriveConfig.files_synced }}</span> tệp
-            </div>
           </div>
         </div>
 

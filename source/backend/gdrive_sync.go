@@ -306,29 +306,87 @@ func refreshGDriveToken() (string, error) {
 		return "", fmt.Errorf("chưa cấu hình Refresh Token")
 	}
 
-	// Fallback to rclone standard public credentials if user left blank
-	if clientID == "" {
-		clientID = "202264815644.apps.googleusercontent.com"
-	}
-	if clientSecret == "" {
-		clientSecret = "X4ZGShmd2VunHl2Ihri14gm7"
+	authClient := &http.Client{
+		Timeout: 15 * time.Second,
 	}
 
+	// Method 1: If user configured custom GCP Client ID & Secret, use standard OAuth2 endpoint
+	if clientID != "" && clientSecret != "" {
+		form := url.Values{}
+		form.Set("grant_type", "refresh_token")
+		form.Set("refresh_token", refreshToken)
+		form.Set("client_id", clientID)
+		form.Set("client_secret", clientSecret)
+
+		req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if resp, err := authClient.Do(req); err == nil {
+				defer resp.Body.Close()
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode == http.StatusOK {
+					var res struct {
+						AccessToken string `json:"access_token"`
+					}
+					if err := json.Unmarshal(bodyBytes, &res); err == nil && res.AccessToken != "" {
+						gdriveConfigLock.Lock()
+						currentGDriveCfg.AccessToken = res.AccessToken
+						_ = saveGDriveConfigToFile()
+						gdriveConfigLock.Unlock()
+						appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công qua Custom Google OAuth2.")
+						return res.AccessToken, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Method 2: Google OAuth 2.0 Playground refresh endpoint (primary method for Playground tokens)
+	playgroundPayload, _ := json.Marshal(map[string]string{
+		"token_uri":     "https://oauth2.googleapis.com/token",
+		"refresh_token": refreshToken,
+	})
+	pgReq, err := http.NewRequest("POST", "https://developers.google.com/oauthplayground/refreshAccessToken", bytes.NewReader(playgroundPayload))
+	if err == nil {
+		pgReq.Header.Set("Content-Type", "application/json")
+		pgReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+		if resp, err := authClient.Do(pgReq); err == nil {
+			defer resp.Body.Close()
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode == http.StatusOK {
+				var pgRes struct {
+					Success     bool   `json:"success"`
+					AccessToken string `json:"access_token"`
+				}
+				if err := json.Unmarshal(bodyBytes, &pgRes); err == nil && pgRes.AccessToken != "" {
+					gdriveConfigLock.Lock()
+					currentGDriveCfg.AccessToken = pgRes.AccessToken
+					_ = saveGDriveConfigToFile()
+					gdriveConfigLock.Unlock()
+					appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công qua Google Playground.")
+					return pgRes.AccessToken, nil
+				}
+			}
+		}
+	}
+
+	// Method 3: Fallback with standard public rclone credentials
+	fallbackClientID := "202264815644.apps.googleusercontent.com"
+	fallbackClientSecret := "X4ZGShmd2VunHl2Ihri14gm7"
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", clientID)
-	form.Set("client_secret", clientSecret)
+	form.Set("client_id", fallbackClientID)
+	form.Set("client_secret", fallbackClientSecret)
 
 	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := gdriveHTTPClient.Do(req)
+	resp, err := authClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("lỗi kết nối Google OAuth2: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -352,11 +410,9 @@ func refreshGDriveToken() (string, error) {
 
 	gdriveConfigLock.Lock()
 	currentGDriveCfg.AccessToken = res.AccessToken
-	gdriveConfigLock.Unlock()
-
 	_ = saveGDriveConfigToFile()
-	appendGDriveLog("🔄 [TOKEN REFRESH] Đã tự động cấp mới Access Token thành công bằng Refresh Token!")
-
+	gdriveConfigLock.Unlock()
+	appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công.")
 	return res.AccessToken, nil
 }
 
@@ -1173,6 +1229,28 @@ func handleGDriveSyncRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "Method not allowed")
 		return
+	}
+
+	var payload struct {
+		RefreshToken string `json:"refresh_token"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&payload)
+	}
+
+	if payload.RefreshToken != "" {
+		gdriveConfigLock.Lock()
+		currentGDriveCfg.RefreshToken = strings.TrimSpace(payload.RefreshToken)
+		if payload.ClientID != "" {
+			currentGDriveCfg.ClientID = strings.TrimSpace(payload.ClientID)
+		}
+		if payload.ClientSecret != "" {
+			currentGDriveCfg.ClientSecret = strings.TrimSpace(payload.ClientSecret)
+		}
+		_ = saveGDriveConfigToFile()
+		gdriveConfigLock.Unlock()
 	}
 
 	newToken, err := refreshGDriveToken()
