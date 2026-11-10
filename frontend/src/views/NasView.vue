@@ -152,11 +152,21 @@ function showError(msg: string, ms = 4500) {
 
 const activeShareTab = ref<'smb' | 'ftp' | 'gdrive'>('smb')
 
+interface GDriveFolderMapping {
+  id: string
+  local_dir: string
+  drive_url: string
+  drive_folder_id: string
+  enabled: boolean
+  name?: string
+}
+
 interface GDriveSyncConfig {
   enabled: boolean
   local_dir: string
   drive_url: string
   drive_folder_id: string
+  folders?: GDriveFolderMapping[]
   access_token: string
   refresh_token: string
   client_id: string
@@ -176,6 +186,15 @@ const gdriveConfig = ref<GDriveSyncConfig>({
   local_dir: '/mnt/sda1/GDrive',
   drive_url: '',
   drive_folder_id: '',
+  folders: [
+    {
+      id: 'folder-1',
+      local_dir: '/mnt/sda1/Nude AI',
+      drive_url: '',
+      drive_folder_id: '',
+      enabled: true,
+    },
+  ],
   access_token: '',
   refresh_token: '',
   client_id: '',
@@ -194,6 +213,9 @@ const loadingGDrive = ref(false)
 const savingGDrive = ref(false)
 const syncingGDrive = ref(false)
 const refreshingToken = ref(false)
+const clearingLog = ref(false)
+const showRefreshToken = ref(false)
+const showAccessToken = ref(false)
 const showAdvancedOAuth = ref(false)
 let gdrivePollTimer: any = null
 const showAddShare = ref(false)
@@ -612,8 +634,18 @@ async function fetchGDriveConfig() {
   try {
     const res = await apiRequest<GDriveSyncConfig>('/nas/gdrive-sync')
     if (res) {
+      const folders = res.folders && res.folders.length > 0 ? res.folders : [
+        {
+          id: 'folder-1',
+          local_dir: res.local_dir || '/mnt/sda1/Nude AI',
+          drive_url: res.drive_url || '',
+          drive_folder_id: res.drive_folder_id || '',
+          enabled: true,
+        },
+      ]
       gdriveConfig.value = {
         ...res,
+        folders,
         last_log: res.last_log || [],
       }
       if (res.is_syncing && !gdrivePollTimer) {
@@ -627,28 +659,53 @@ async function fetchGDriveConfig() {
   }
 }
 
-function extractAndSetFolderID() {
-  const url = gdriveConfig.value.drive_url.trim()
+function extractFolderIDFor(folder: GDriveFolderMapping) {
+  const url = (folder.drive_url || '').trim()
   if (!url) return
   const match = url.match(/(?:folders\/|id=|\/d\/)([a-zA-Z0-9_-]{15,})/)
   if (match && match[1]) {
-    gdriveConfig.value.drive_folder_id = match[1]
+    folder.drive_folder_id = match[1]
   } else if (url.length >= 15 && !url.includes('/') && !url.includes('?')) {
-    gdriveConfig.value.drive_folder_id = url
+    folder.drive_folder_id = url
+  }
+}
+
+function addSyncFolder() {
+  if (!gdriveConfig.value.folders) {
+    gdriveConfig.value.folders = []
+  }
+  const nextNum = gdriveConfig.value.folders.length + 1
+  gdriveConfig.value.folders.push({
+    id: 'folder-' + Date.now() + '-' + nextNum,
+    local_dir: '/mnt/sda1/Folder_' + nextNum,
+    drive_url: '',
+    drive_folder_id: '',
+    enabled: true,
+  })
+}
+
+function removeSyncFolder(index: number) {
+  if (gdriveConfig.value.folders && gdriveConfig.value.folders.length > 1) {
+    gdriveConfig.value.folders.splice(index, 1)
   }
 }
 
 async function saveGDriveConfig() {
   savingGDrive.value = true
   try {
-    extractAndSetFolderID()
+    // Process all folders
+    for (const f of gdriveConfig.value.folders || []) {
+      extractFolderIDFor(f)
+    }
+    const primaryFolder = gdriveConfig.value.folders?.[0]
     const res = await apiRequest<{ message: string; config: GDriveSyncConfig }>('/nas/gdrive-sync', {
       method: 'POST',
       body: JSON.stringify({
         enabled: gdriveConfig.value.enabled,
-        local_dir: gdriveConfig.value.local_dir,
-        drive_url: gdriveConfig.value.drive_url,
-        drive_folder_id: gdriveConfig.value.drive_folder_id,
+        local_dir: primaryFolder?.local_dir || gdriveConfig.value.local_dir,
+        drive_url: primaryFolder?.drive_url || gdriveConfig.value.drive_url,
+        drive_folder_id: primaryFolder?.drive_folder_id || gdriveConfig.value.drive_folder_id,
+        folders: gdriveConfig.value.folders,
         access_token: gdriveConfig.value.access_token,
         refresh_token: gdriveConfig.value.refresh_token,
         client_id: gdriveConfig.value.client_id,
@@ -660,8 +717,12 @@ async function saveGDriveConfig() {
     })
     showNotice(res?.message || 'Đã lưu cấu hình Đồng bộ Google Drive thành công!')
     if (res?.config) {
+      const folders = res.config.folders && res.config.folders.length > 0
+        ? res.config.folders
+        : gdriveConfig.value.folders
       gdriveConfig.value = {
         ...res.config,
+        folders,
         last_log: res.config.last_log || [],
       }
     }
@@ -669,6 +730,19 @@ async function saveGDriveConfig() {
     showError('Lỗi lưu cài đặt Google Drive: ' + (err?.message || err))
   } finally {
     savingGDrive.value = false
+  }
+}
+
+async function clearGDriveLog() {
+  clearingLog.value = true
+  try {
+    await apiRequest('/nas/gdrive-sync/clear-log', { method: 'POST' })
+    gdriveConfig.value.last_log = []
+    showNotice('Đã xóa toàn bộ nhật ký đồng bộ thành công!')
+  } catch (err: any) {
+    showError('Lỗi xóa nhật ký: ' + (err?.message || err))
+  } finally {
+    clearingLog.value = false
   }
 }
 
@@ -1614,76 +1688,163 @@ onUnmounted(() => {
             </label>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            <!-- Local Path Selection -->
-            <div>
-              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                1. Thư Mục Cục Bộ Trên Router / Ổ Cứng USB
-              </label>
-              <div class="flex gap-2">
-                <input
-                  v-model="gdriveConfig.local_dir"
-                  type="text"
-                  required
-                  class="pro-input mono text-xs w-full"
-                  placeholder="/mnt/sda1/GDrive"
-                />
-                <select
-                  class="pro-input mono text-xs w-48 shrink-0 bg-gray-900"
-                  @change="(e: any) => { if (e.target.value) gdriveConfig.local_dir = e.target.value }"
-                >
-                  <option value="">-- Chọn Nhanh --</option>
-                  <option value="/mnt/sda1/GDrive">/mnt/sda1/GDrive (USB Root)</option>
-                  <option value="/mnt/sda1/downloads">/mnt/sda1/downloads</option>
-                  <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads</option>
-                  <option v-for="s in shares" :key="s.name" :value="s.path">{{ s.name }} ({{ s.path }})</option>
-                  <option value="/overlay/share">/overlay/share (NAND)</option>
-                </select>
-              </div>
-              <p class="text-[10px] text-gray-500 mt-1">
-                Tệp tải từ Google Drive về sẽ lưu vào thư mục này, và tệp mới trong thư mục này sẽ tải lên Google Drive.
-              </p>
-            </div>
-
-            <!-- Google Drive URL / Folder ID -->
-            <div>
-              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                2. URL Thư Mục Google Drive (Hoặc Folder ID)
-              </label>
-              <input
-                v-model="gdriveConfig.drive_url"
-                type="text"
-                required
-                class="pro-input mono text-xs w-full"
-                placeholder="https://drive.google.com/drive/folders/1ABCxyz... hoặc Folder ID"
-                @input="extractAndSetFolderID"
-              />
-              <div class="flex items-center justify-between text-[10px] text-gray-400 mt-1">
-                <span>Dán URL chia sẻ thư mục Google Drive tại đây.</span>
-                <span v-if="gdriveConfig.drive_folder_id" class="text-amber-300 mono font-semibold">
-                  Folder ID: {{ gdriveConfig.drive_folder_id }}
+          <!-- Multi-Folder Synchronization List (Folder Pairs) -->
+          <div class="space-y-3 pb-3 border-b border-white/10">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-white uppercase tracking-wider">
+                  1. Danh Sách Thư Mục Tự Đồng Bộ
+                </span>
+                <span class="badge badge-sky mono text-[10px]">
+                  {{ (gdriveConfig.folders || []).length }} cặp thư mục
                 </span>
               </div>
+              <button
+                type="button"
+                class="btn-primary text-xs py-1.5 px-3 bg-sky-600 hover:bg-sky-500 flex items-center gap-1.5 font-bold shadow-sm cursor-pointer"
+                @click="addSyncFolder"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
+                </svg>
+                <span>Thêm Thư Mục Tự Đồng Bộ</span>
+              </button>
             </div>
 
+            <!-- List of folder pairs -->
+            <div class="space-y-3">
+              <div
+                v-for="(folder, fIdx) in gdriveConfig.folders"
+                :key="folder.id || fIdx"
+                class="p-3 rounded-xl bg-white/[0.03] border border-white/10 space-y-2 relative group transition hover:border-sky-500/30"
+              >
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 font-bold text-[11px] flex items-center justify-center border border-sky-500/30">
+                      {{ fIdx + 1 }}
+                    </span>
+                    <span class="text-xs font-bold text-gray-200">
+                      Cặp Thư Mục #{{ fIdx + 1 }}
+                    </span>
+                    <label class="flex items-center gap-1.5 cursor-pointer ml-3 text-[11px] text-gray-300">
+                      <input
+                        v-model="folder.enabled"
+                        type="checkbox"
+                        class="rounded border-white/20 bg-black/40 text-sky-500 focus:ring-0"
+                      />
+                      <span :class="folder.enabled ? 'text-emerald-400 font-medium' : 'text-gray-500'">
+                        {{ folder.enabled ? 'Đang bật đồng bộ' : 'Tạm dừng cặp này' }}
+                      </span>
+                    </label>
+                  </div>
+
+                  <button
+                    v-if="(gdriveConfig.folders || []).length > 1"
+                    type="button"
+                    class="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 px-2 py-0.5 rounded transition flex items-center gap-1 cursor-pointer"
+                    title="Xóa cặp thư mục này"
+                    @click="removeSyncFolder(fIdx)"
+                  >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    <span>Xóa</span>
+                  </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                  <!-- Local Directory -->
+                  <div>
+                    <label class="block text-[11px] text-gray-300 font-medium mb-1">
+                      Thư Mục Cục Bộ Trên Router / Ổ Cứng USB:
+                    </label>
+                    <div class="flex gap-2">
+                      <input
+                        v-model="folder.local_dir"
+                        type="text"
+                        required
+                        class="pro-input mono text-xs w-full"
+                        placeholder="/mnt/sda1/..."
+                      />
+                      <select
+                        class="pro-input mono text-xs w-44 shrink-0 bg-gray-900"
+                        @change="(e: any) => { if (e.target.value) { folder.local_dir = e.target.value; e.target.value = ''; } }"
+                      >
+                        <option value="">-- Chọn Nhanh --</option>
+                        <option value="/mnt/sda1/Nude AI">/mnt/sda1/Nude AI</option>
+                        <option value="/mnt/sda1/GDrive">/mnt/sda1/GDrive</option>
+                        <option value="/mnt/sda1/downloads">/mnt/sda1/downloads</option>
+                        <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads</option>
+                        <option v-for="s in shares" :key="s.name" :value="s.path">{{ s.name }} ({{ s.path }})</option>
+                        <option value="/overlay/downloads">/overlay/downloads</option>
+                        <option value="/overlay/share">/overlay/share (NAND)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <!-- Google Drive URL / Folder ID -->
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <label class="text-[11px] text-gray-300 font-medium">
+                        URL Thư Mục Google Drive (Hoặc Folder ID):
+                      </label>
+                      <span v-if="folder.drive_folder_id" class="text-amber-300 mono text-[10px] font-semibold">
+                        Folder ID: {{ folder.drive_folder_id }}
+                      </span>
+                    </div>
+                    <input
+                      v-model="folder.drive_url"
+                      type="text"
+                      required
+                      class="pro-input mono text-xs w-full"
+                      placeholder="https://drive.google.com/drive/folders/1ABCxyz... hoặc Folder ID"
+                      @input="extractFolderIDFor(folder)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
             <!-- Access Token & Refresh Token Section -->
             <div class="space-y-3">
               <!-- Permanent Refresh Token Input -->
               <div>
                 <label class="block text-[11px] text-emerald-300 font-bold mb-1 flex items-center justify-between">
-                  <span>3. Refresh Token (Mã Gia Hạn Vĩnh Viễn — Không Hết Hạn) ⭐</span>
+                  <div class="flex items-center gap-2">
+                    <span>2. Refresh Token (Mã Gia Hạn Vĩnh Viễn — Không Hết Hạn) ⭐</span>
+                    <span v-if="gdriveConfig.refresh_token" class="mono text-[10.5px] text-emerald-400 font-bold bg-emerald-950/70 border border-emerald-500/40 px-2 py-0.5 rounded shadow-sm">
+                      Đuôi: ...{{ gdriveConfig.refresh_token.slice(-4) }}
+                    </span>
+                  </div>
                   <span class="badge badge-green text-[9.5px]">KHUYÊN DÙNG</span>
                 </label>
                 <div class="flex gap-2">
-                  <input
-                    v-model="gdriveConfig.refresh_token"
-                    type="password"
-                    class="pro-input mono text-xs w-full border-emerald-500/40 focus:border-emerald-400"
-                    placeholder="1//0... (Dán Refresh Token từ Google Playground tại đây)"
-                  />
+                  <div class="relative flex-1">
+                    <input
+                      v-model="gdriveConfig.refresh_token"
+                      :type="showRefreshToken ? 'text' : 'password'"
+                      class="pro-input mono text-xs w-full border-emerald-500/40 focus:border-emerald-400 pr-20"
+                      placeholder="1//0... (Dán Refresh Token từ Google Playground tại đây)"
+                    />
+                    <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                      <span v-if="gdriveConfig.refresh_token && !showRefreshToken" class="text-[10px] mono text-emerald-400 font-bold bg-black/70 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                        ...{{ gdriveConfig.refresh_token.slice(-4) }}
+                      </span>
+                      <button
+                        type="button"
+                        class="text-xs text-gray-400 hover:text-white px-1 py-0.5 cursor-pointer"
+                        :title="showRefreshToken ? 'Ẩn token' : 'Hiện đầy đủ token'"
+                        @click="showRefreshToken = !showRefreshToken"
+                      >
+                        {{ showRefreshToken ? '👁️' : '🔒' }}
+                      </button>
+                    </div>
+                  </div>
                   <button
                     type="button"
-                    class="btn-primary text-xs py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 font-bold shrink-0 whitespace-nowrap"
+                    class="btn-primary text-xs py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 font-bold shrink-0 whitespace-nowrap cursor-pointer"
                     :disabled="refreshingToken || !gdriveConfig.refresh_token"
                     @click="refreshAccessTokenNow"
                   >
@@ -1698,15 +1859,35 @@ onUnmounted(() => {
               <!-- Temporary Access Token Input -->
               <div>
                 <label class="block text-[11px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
-                  <span>4. Access Token Hiện Tại (Bearer Token ngắn hạn 1 tiếng)</span>
+                  <div class="flex items-center gap-2">
+                    <span>3. Access Token Hiện Tại (Bearer Token ngắn hạn 1 tiếng)</span>
+                    <span v-if="gdriveConfig.access_token" class="mono text-[10.5px] text-sky-400 font-bold bg-sky-950/70 border border-sky-500/40 px-2 py-0.5 rounded shadow-sm">
+                      Đuôi: ...{{ gdriveConfig.access_token.slice(-4) }}
+                    </span>
+                  </div>
                   <span v-if="gdriveConfig.access_token" class="text-emerald-400 mono text-[10px]">Đang sẵn sàng</span>
                 </label>
-                <input
-                  v-model="gdriveConfig.access_token"
-                  type="password"
-                  class="pro-input mono text-xs w-full"
-                  placeholder="ya29.a0AcM612x..."
-                />
+                <div class="relative">
+                  <input
+                    v-model="gdriveConfig.access_token"
+                    :type="showAccessToken ? 'text' : 'password'"
+                    class="pro-input mono text-xs w-full pr-20"
+                    placeholder="ya29.a0AcM612x..."
+                  />
+                  <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                    <span v-if="gdriveConfig.access_token && !showAccessToken" class="text-[10px] mono text-sky-400 font-bold bg-black/70 px-1.5 py-0.5 rounded border border-sky-500/30">
+                      ...{{ gdriveConfig.access_token.slice(-4) }}
+                    </span>
+                    <button
+                      type="button"
+                      class="text-xs text-gray-400 hover:text-white px-1 py-0.5 cursor-pointer"
+                      :title="showAccessToken ? 'Ẩn token' : 'Hiện đầy đủ token'"
+                      @click="showAccessToken = !showAccessToken"
+                    >
+                      {{ showAccessToken ? '👁️' : '🔒' }}
+                    </button>
+                  </div>
+                </div>
                 <p class="text-[10px] text-gray-500 mt-1">
                   Mã này được cấp tự động từ Refresh Token ở trên, hoặc bạn có thể dán thủ công trực tiếp nếu chỉ muốn dùng tạm 1 tiếng.
                 </p>
@@ -1750,7 +1931,7 @@ onUnmounted(() => {
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                  5. Lên Lịch Tự Động
+                  4. Lên Lịch Tự Động
                 </label>
                 <select v-model.number="gdriveConfig.interval_minutes" class="pro-input mono text-xs w-full">
                   <option :value="15">Mỗi 15 phút</option>
@@ -1765,7 +1946,7 @@ onUnmounted(() => {
 
               <div>
                 <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                  6. Hướng Đồng Bộ
+                  5. Hướng Đồng Bộ
                 </label>
                 <select v-model="gdriveConfig.direction" class="pro-input mono text-xs w-full">
                   <option value="two_way">🔁 Hai Chiều (2-Way Sync)</option>
@@ -1816,7 +1997,15 @@ onUnmounted(() => {
             <div class="flex items-center gap-2">
               <button
                 type="button"
-                class="btn-secondary text-[11px] py-1 px-2.5"
+                class="btn-secondary text-[11px] py-1 px-2.5 text-rose-400 hover:text-rose-300 hover:border-rose-500/40 cursor-pointer"
+                :disabled="clearingLog || !(gdriveConfig.last_log && gdriveConfig.last_log.length > 0)"
+                @click="clearGDriveLog"
+              >
+                {{ clearingLog ? '⏳ Đang xóa…' : '🗑️ Xóa Nhật Ký' }}
+              </button>
+              <button
+                type="button"
+                class="btn-secondary text-[11px] py-1 px-2.5 cursor-pointer"
                 @click="copyGenericText((gdriveConfig.last_log || []).join('\n'), 'Nhật ký đồng bộ')"
               >
                 📋 Sao Chép Log

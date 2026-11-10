@@ -1708,6 +1708,7 @@ func main() {
 	mux.HandleFunc("/api/v1/nas/gdrive-sync", cors(handleGDriveSync, "GET", "POST", "PUT"))
 	mux.HandleFunc("/api/v1/nas/gdrive-sync/run", cors(handleGDriveSyncRun, "POST"))
 	mux.HandleFunc("/api/v1/nas/gdrive-sync/refresh", cors(handleGDriveSyncRefresh, "POST"))
+	mux.HandleFunc("/api/v1/nas/gdrive-sync/clear-log", cors(handleGDriveSyncClearLog, "POST"))
 	mux.HandleFunc("/api/v1/usb/standby", cors(handleUSBStandby, "GET", "POST"))
 	mux.HandleFunc("/api/v1/download/files", cors(handleDownloadFiles, "GET"))
 	mux.HandleFunc("/api/v1/download/file", cors(handleDownloadFileServe, "GET"))
