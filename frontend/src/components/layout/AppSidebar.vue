@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import { useUiPreferences } from '@/composables/useUiPreferences'
 
@@ -17,7 +17,6 @@ const emit = defineEmits<{
 }>()
 
 const route = useRoute()
-const router = useRouter()
 const system = useSystemStore()
 const prefs = useUiPreferences()
 
@@ -75,11 +74,11 @@ const navGroups = computed<NavGroup[]>(() => [
 ])
 
 function isActive(to: string) {
-  return route.path === to
+  if (to === '/') return route.path === '/'
+  return route.path.startsWith(to)
 }
 
-function navigate(to: string) {
-  void router.push(to)
+function handleNavClick() {
   if (props.isMobile) {
     emit('close')
   }
@@ -96,24 +95,30 @@ function navigate(to: string) {
   >
     <!-- Brand / Home Assistant Style Header -->
     <div class="h-14 px-3.5 flex items-center justify-between border-b border-[var(--border-subtle)]">
-      <div v-if="!collapsed || isMobile" class="flex items-center gap-2.5">
-        <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
-          </svg>
-        </div>
-        <div>
-          <div class="text-[17px] font-bold text-white tracking-tight flex items-center gap-2">
-            R3P MINI SERVER
-            <span class="text-[11px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 font-bold border border-sky-500/30">OS</span>
+      <router-link
+        to="/"
+        class="flex items-center gap-2.5 no-underline cursor-pointer"
+        @click="handleNavClick"
+      >
+        <div v-if="!collapsed || isMobile" class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
+            </svg>
+          </div>
+          <div>
+            <div class="text-[17px] font-bold text-white tracking-tight flex items-center gap-2">
+              R3P MINI SERVER
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 font-bold border border-sky-500/30">OS</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div v-else class="w-full flex justify-center">
-        <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm">
-          R
+        <div v-else class="w-full flex justify-center">
+          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm">
+            R
+          </div>
         </div>
-      </div>
+      </router-link>
 
       <!-- Close button on Mobile vs Collapse button on Desktop -->
       <button
@@ -140,20 +145,23 @@ function navigate(to: string) {
     <!-- Navigation Scroll Area -->
     <nav class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4">
       <div v-for="group in navGroups" :key="group.titleKey">
-        <div v-if="!collapsed || isMobile" class="px-2.5 mb-1.5 text-[13.5px] font-bold text-gray-400 uppercase tracking-wider">
-          {{ prefs.t(group.titleKey) }}
+        <div
+          v-if="!collapsed || isMobile"
+          class="px-2.5 mb-1.5 text-[13.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center justify-between"
+        >
+          <span>{{ prefs.t(group.titleKey) }}</span>
         </div>
         <div class="space-y-1.5">
-          <button
+          <router-link
             v-for="item in group.items"
             :key="item.to"
-            type="button"
-            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[17px] font-medium transition group relative text-left cursor-pointer"
+            :to="item.to"
+            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[17px] font-medium transition group relative text-left cursor-pointer no-underline select-none"
             :class="isActive(item.to)
               ? 'bg-sky-500/15 text-sky-400 border border-sky-500/35 shadow-sm font-bold'
               : 'text-gray-300 hover:text-white hover:bg-white/[0.06] border border-transparent'"
             :title="collapsed && !isMobile ? prefs.t(item.labelKey) : undefined"
-            @click="navigate(item.to)"
+            @click="handleNavClick"
           >
             <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" :d="item.icon" />
@@ -166,7 +174,7 @@ function navigate(to: string) {
             >
               {{ item.badge }}
             </span>
-          </button>
+          </router-link>
         </div>
       </div>
     </nav>

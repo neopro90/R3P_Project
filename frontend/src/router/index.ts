@@ -86,4 +86,24 @@ const router = createRouter({
   ],
 })
 
+// Automatically handle stale chunks after firmware/UI updates in active sessions
+router.onError((error) => {
+  const msg = error?.message || String(error)
+  if (
+    msg.includes('Failed to fetch dynamically imported module') ||
+    msg.includes('Importing a module script failed') ||
+    error?.name === 'ChunkLoadError'
+  ) {
+    console.warn('[R3P Router] Stale UI build chunk detected after deployment, reloading latest version…', error)
+    window.location.reload()
+  }
+})
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (event) => {
+    console.warn('[R3P Router] Vite preload error, reloading latest application assets…', event)
+    window.location.reload()
+  })
+}
+
 export default router
