@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
 import { copyToClipboard as copyText } from '@/composables/useClipboard'
 
@@ -150,7 +150,44 @@ function showError(msg: string, ms = 4500) {
   }, ms)
 }
 
-const activeShareTab = ref<'smb' | 'ftp'>('smb')
+const activeShareTab = ref<'smb' | 'ftp' | 'gdrive'>('smb')
+
+interface GDriveSyncConfig {
+  enabled: boolean
+  local_dir: string
+  drive_url: string
+  drive_folder_id: string
+  access_token: string
+  api_key: string
+  interval_minutes: number
+  direction: 'two_way' | 'upload_only' | 'download_only'
+  last_sync_time: string
+  last_status: string
+  last_log: string[]
+  files_synced: number
+  is_syncing: boolean
+}
+
+const gdriveConfig = ref<GDriveSyncConfig>({
+  enabled: false,
+  local_dir: '/mnt/sda1/GDrive',
+  drive_url: '',
+  drive_folder_id: '',
+  access_token: '',
+  api_key: '',
+  interval_minutes: 30,
+  direction: 'two_way',
+  last_sync_time: '',
+  last_status: 'idle',
+  last_log: [],
+  files_synced: 0,
+  is_syncing: false,
+})
+
+const loadingGDrive = ref(false)
+const savingGDrive = ref(false)
+const syncingGDrive = ref(false)
+let gdrivePollTimer: any = null
 const showAddShare = ref(false)
 const newShare = ref<ShareItem>({
   name: '',
@@ -562,8 +599,121 @@ async function quickToggleReadOnly(share: ShareItem) {
 }
 
 
+async function fetchGDriveConfig() {
+  loadingGDrive.value = true
+  try {
+    const res = await apiRequest<GDriveSyncConfig>('/nas/gdrive-sync')
+    if (res) {
+      gdriveConfig.value = {
+        ...res,
+        last_log: res.last_log || [],
+      }
+      if (res.is_syncing && !gdrivePollTimer) {
+        startGDrivePolling()
+      }
+    }
+  } catch {
+    // ignore
+  } finally {
+    loadingGDrive.value = false
+  }
+}
+
+function extractAndSetFolderID() {
+  const url = gdriveConfig.value.drive_url.trim()
+  if (!url) return
+  const match = url.match(/(?:folders\/|id=|\/d\/)([a-zA-Z0-9_-]{15,})/)
+  if (match && match[1]) {
+    gdriveConfig.value.drive_folder_id = match[1]
+  } else if (url.length >= 15 && !url.includes('/') && !url.includes('?')) {
+    gdriveConfig.value.drive_folder_id = url
+  }
+}
+
+async function saveGDriveConfig() {
+  savingGDrive.value = true
+  try {
+    extractAndSetFolderID()
+    const res = await apiRequest<{ message: string; config: GDriveSyncConfig }>('/nas/gdrive-sync', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: gdriveConfig.value.enabled,
+        local_dir: gdriveConfig.value.local_dir,
+        drive_url: gdriveConfig.value.drive_url,
+        drive_folder_id: gdriveConfig.value.drive_folder_id,
+        access_token: gdriveConfig.value.access_token,
+        api_key: gdriveConfig.value.api_key,
+        interval_minutes: Number(gdriveConfig.value.interval_minutes),
+        direction: gdriveConfig.value.direction,
+      }),
+    })
+    showNotice(res?.message || 'Đã lưu cấu hình Đồng bộ Google Drive thành công!')
+    if (res?.config) {
+      gdriveConfig.value = {
+        ...res.config,
+        last_log: res.config.last_log || [],
+      }
+    }
+  } catch (err: any) {
+    showError('Lỗi lưu cài đặt Google Drive: ' + (err?.message || err))
+  } finally {
+    savingGDrive.value = false
+  }
+}
+
+function startGDrivePolling() {
+  if (gdrivePollTimer) clearInterval(gdrivePollTimer)
+  gdrivePollTimer = setInterval(async () => {
+    try {
+      const res = await apiRequest<GDriveSyncConfig>('/nas/gdrive-sync')
+      if (res) {
+        gdriveConfig.value = {
+          ...res,
+          last_log: res.last_log || [],
+        }
+        if (!res.is_syncing) {
+          clearInterval(gdrivePollTimer)
+          gdrivePollTimer = null
+          syncingGDrive.value = false
+          if (res.last_status === 'success') {
+            showNotice(`Đã hoàn tất đồng bộ 2 chiều! (${res.files_synced} tệp đã xử lý)`)
+          } else if (res.last_status === 'error') {
+            showError('Đồng bộ kết thúc với lỗi. Xem chi tiết trong Nhật Ký!')
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, 2500)
+}
+
+async function triggerGDriveSyncNow() {
+  if (syncingGDrive.value || gdriveConfig.value.is_syncing) return
+  syncingGDrive.value = true
+  try {
+    const res = await apiRequest<{ status: string; message: string }>('/nas/gdrive-sync/run', {
+      method: 'POST',
+    })
+    showNotice(res?.message || 'Đang tiến hành đồng bộ 2 chiều...')
+    gdriveConfig.value.is_syncing = true
+    startGDrivePolling()
+  } catch (err: any) {
+    showError('Không thể kích hoạt đồng bộ: ' + (err?.message || err))
+    syncingGDrive.value = false
+  }
+}
+
 onMounted(() => {
   void loadNAS()
+  void fetchGDriveConfig()
+})
+
+onUnmounted(() => {
+  if (gdrivePollTimer) {
+    clearInterval(gdrivePollTimer)
+    gdrivePollTimer = null
+  }
 })
 </script>
 
@@ -844,6 +994,18 @@ onMounted(() => {
             <span
               class="w-2 h-2 rounded-full"
               :class="ftpService.running ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500'"
+            ></span>
+          </button>
+          <button
+            type="button"
+            class="px-3.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+            :class="activeShareTab === 'gdrive' ? 'bg-amber-600 text-white shadow' : 'text-gray-400 hover:text-white'"
+            @click="activeShareTab = 'gdrive'"
+          >
+            <span>☁️ Đồng Bộ Cloud (Google Drive 2 Chiều)</span>
+            <span
+              class="w-2 h-2 rounded-full"
+              :class="gdriveConfig.is_syncing ? 'bg-amber-300 animate-ping' : (gdriveConfig.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500')"
             ></span>
           </button>
         </div>
@@ -1316,6 +1478,271 @@ onMounted(() => {
             >
               {{ savingFTP ? '⏳ Đang lưu…' : '💾 Lưu Cấu Hình FTP' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: CLOUD SYNC / GOOGLE DRIVE 2-WAY SYNC -->
+      <div v-if="activeShareTab === 'gdrive'" class="mt-3.5 space-y-3.5">
+        <!-- Master Status Banner -->
+        <div class="p-3.5 rounded-xl bg-[#13111c] border border-amber-500/40 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+          <div class="flex items-center gap-3">
+            <div
+              class="w-11 h-11 rounded-lg flex items-center justify-center font-bold text-xl shadow shrink-0"
+              :class="gdriveConfig.is_syncing ? 'bg-amber-500/20 border border-amber-500/50 text-amber-300 animate-pulse' : (gdriveConfig.enabled ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300' : 'bg-gray-800 text-gray-400 border border-white/10')"
+            >
+              ☁️
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-white text-sm">Đồng Bộ 2 Chiều Google Drive (Cloud Bi-Directional Sync)</span>
+                <span
+                  class="badge"
+                  :class="gdriveConfig.is_syncing ? 'badge-amber animate-pulse font-bold' : (gdriveConfig.enabled ? 'badge-green' : 'badge-red')"
+                >
+                  {{ gdriveConfig.is_syncing ? 'ĐANG ĐỒNG BỘ 2 CHIỀU...' : (gdriveConfig.enabled ? 'TỰ ĐỘNG CHẠY THEO LỊCH' : 'ĐÃ DỪNG') }}
+                </span>
+              </div>
+              <p class="text-[11.5px] text-gray-400 mt-0.5">
+                Tự động đồng bộ hai chiều giữa thư mục ổ cứng USB/Router và Google Drive: tải tệp mới và cập nhật tệp sửa đổi.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              class="btn-secondary text-xs py-1.5 px-3 font-semibold"
+              :disabled="loadingGDrive"
+              @click="fetchGDriveConfig"
+            >
+              ↻ Làm Mới
+            </button>
+            <button
+              type="button"
+              class="btn-primary text-xs py-1.5 px-4 font-bold shadow-md bg-amber-600 hover:bg-amber-500 text-white"
+              :disabled="gdriveConfig.is_syncing || syncingGDrive"
+              @click="triggerGDriveSyncNow"
+            >
+              <span v-if="gdriveConfig.is_syncing || syncingGDrive">⏳ Đang Đồng Bộ…</span>
+              <span v-else>⚡ Đồng Bộ Ngay</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Summary Status Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
+            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Thư Mục Cục Bộ</div>
+            <div class="mono text-xs font-bold text-sky-300 truncate" :title="gdriveConfig.local_dir">
+              {{ gdriveConfig.local_dir || '/mnt/sda1/GDrive' }}
+            </div>
+            <div class="text-[10px] text-gray-500">Đường dẫn trên USB / Router</div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
+            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Google Drive Folder ID</div>
+            <div class="mono text-xs font-bold text-amber-300 truncate" :title="gdriveConfig.drive_folder_id">
+              {{ gdriveConfig.drive_folder_id || 'Chưa thiết lập' }}
+            </div>
+            <div class="text-[10px] text-gray-500">Mã thư mục đám mây</div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
+            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Chu Kỳ Đồng Bộ</div>
+            <div class="text-xs font-bold text-emerald-300">
+              {{ gdriveConfig.interval_minutes > 0 ? `Mỗi ${gdriveConfig.interval_minutes} phút` : 'Chỉ thủ công' }}
+            </div>
+            <div class="text-[10px] text-gray-500">Chế độ: {{ gdriveConfig.direction === 'two_way' ? '2 Chiều (Hai chiều)' : gdriveConfig.direction }}</div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1">
+            <div class="text-[10.5px] text-gray-400 uppercase font-semibold">Đồng Bộ Gần Nhất</div>
+            <div class="mono text-xs font-bold text-purple-300">
+              {{ gdriveConfig.last_sync_time || 'Chưa chạy' }}
+            </div>
+            <div class="text-[10px] text-gray-500">
+              Đã xử lý: <span class="text-white font-bold">{{ gdriveConfig.files_synced }}</span> tệp
+            </div>
+          </div>
+        </div>
+
+        <!-- Configuration Settings Panel -->
+        <div class="p-4 rounded-xl bg-[#0b0e17] border border-white/10 space-y-4">
+          <div class="flex items-center justify-between border-b border-white/10 pb-2">
+            <div class="flex items-center gap-2">
+              <span class="font-bold text-white text-xs uppercase tracking-wider">Cấu Hình Đồng Bộ Hai Chiều</span>
+              <span class="badge badge-blue">GOOGLE DRIVE API V3</span>
+            </div>
+            <label class="flex items-center gap-2 text-xs font-bold text-amber-300 cursor-pointer">
+              <input v-model="gdriveConfig.enabled" type="checkbox" class="rounded accent-amber-500 w-4 h-4 cursor-pointer" />
+              <span>Bật Dịch Vụ Đồng Bộ Tự Động Theo Lịch Định Sẵn</span>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            <!-- Local Path Selection -->
+            <div>
+              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
+                1. Thư Mục Cục Bộ Trên Router / Ổ Cứng USB
+              </label>
+              <div class="flex gap-2">
+                <input
+                  v-model="gdriveConfig.local_dir"
+                  type="text"
+                  required
+                  class="pro-input mono text-xs w-full"
+                  placeholder="/mnt/sda1/GDrive"
+                />
+                <select
+                  class="pro-input mono text-xs w-48 shrink-0 bg-gray-900"
+                  @change="(e: any) => { if (e.target.value) gdriveConfig.local_dir = e.target.value }"
+                >
+                  <option value="">-- Chọn Nhanh --</option>
+                  <option value="/mnt/sda1/GDrive">/mnt/sda1/GDrive (USB Root)</option>
+                  <option value="/mnt/sda1/downloads">/mnt/sda1/downloads</option>
+                  <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads</option>
+                  <option v-for="s in shares" :key="s.name" :value="s.path">{{ s.name }} ({{ s.path }})</option>
+                  <option value="/overlay/share">/overlay/share (NAND)</option>
+                </select>
+              </div>
+              <p class="text-[10px] text-gray-500 mt-1">
+                Tệp tải từ Google Drive về sẽ lưu vào thư mục này, và tệp mới trong thư mục này sẽ tải lên Google Drive.
+              </p>
+            </div>
+
+            <!-- Google Drive URL / Folder ID -->
+            <div>
+              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
+                2. URL Thư Mục Google Drive (Hoặc Folder ID)
+              </label>
+              <input
+                v-model="gdriveConfig.drive_url"
+                type="text"
+                required
+                class="pro-input mono text-xs w-full"
+                placeholder="https://drive.google.com/drive/folders/1ABCxyz... hoặc Folder ID"
+                @input="extractAndSetFolderID"
+              />
+              <div class="flex items-center justify-between text-[10px] text-gray-400 mt-1">
+                <span>Dán URL chia sẻ thư mục Google Drive tại đây.</span>
+                <span v-if="gdriveConfig.drive_folder_id" class="text-amber-300 mono font-semibold">
+                  Folder ID: {{ gdriveConfig.drive_folder_id }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Access Token / OAuth Permission -->
+            <div>
+              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
+                3. Quyền Truy Cập (Google Drive API Access Token / Bearer Token)
+              </label>
+              <input
+                v-model="gdriveConfig.access_token"
+                type="password"
+                required
+                class="pro-input mono text-xs w-full"
+                placeholder="ya29.a0AcM612x..."
+              />
+              <p class="text-[10px] text-gray-400 mt-1">
+                Mã xác thực OAuth 2.0 có quyền đọc/ghi Drive (<code class="text-sky-300">https://www.googleapis.com/auth/drive</code>).
+              </p>
+            </div>
+
+            <!-- Sync Schedule Interval & Direction -->
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[11px] text-gray-300 font-semibold mb-1">
+                  4. Lên Lịch Tự Động
+                </label>
+                <select v-model.number="gdriveConfig.interval_minutes" class="pro-input mono text-xs w-full">
+                  <option :value="15">Mỗi 15 phút</option>
+                  <option :value="30">Mỗi 30 phút (Khuyên dùng)</option>
+                  <option :value="60">Mỗi 1 giờ</option>
+                  <option :value="360">Mỗi 6 giờ</option>
+                  <option :value="720">Mỗi 12 giờ</option>
+                  <option :value="1440">Mỗi 24 giờ (Hàng ngày)</option>
+                  <option :value="0">Thủ công (Chỉ khi bấm nút)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-[11px] text-gray-300 font-semibold mb-1">
+                  5. Hướng Đồng Bộ
+                </label>
+                <select v-model="gdriveConfig.direction" class="pro-input mono text-xs w-full">
+                  <option value="two_way">🔁 Hai Chiều (2-Way Sync)</option>
+                  <option value="upload_only">⬆️ Cục Bộ ➜ Google Drive</option>
+                  <option value="download_only">⬇️ Google Drive ➜ Cục Bộ</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Token Helper Guide Card -->
+          <div class="p-2.5 rounded-lg bg-sky-950/30 border border-sky-500/20 text-[11px] text-gray-300 space-y-1">
+            <div class="font-bold text-sky-300 flex items-center gap-1.5">
+              <span>💡 Hướng dẫn cấp quyền truy cập Google Drive nhanh:</span>
+            </div>
+            <p>
+              1. Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>.<br>
+              2. Tại mục <b>Step 1</b>, tìm chọn: <code class="text-amber-300">Drive API v3</code> &gt; tick chọn <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; Bấm <b>Authorize APIs</b> và đăng nhập tài khoản Google của bạn.<br>
+              3. Tại <b>Step 2</b>, bấm <b>Exchange authorization code for tokens</b> &gt; Sao chép chuỗi <code class="text-emerald-300">Access token</code> dán vào ô số 3 ở trên.
+            </p>
+          </div>
+
+          <div class="flex items-center justify-between pt-2 border-t border-white/10">
+            <span class="text-xs text-gray-400">
+              * Sau khi bấm Lưu, router sẽ tự động chạy đồng bộ định kỳ theo khoảng thời gian bạn đã chọn.
+            </span>
+            <button
+              type="button"
+              class="btn-primary text-xs py-2 px-5 font-bold shadow-lg"
+              :disabled="savingGDrive"
+              @click="saveGDriveConfig"
+            >
+              {{ savingGDrive ? '⏳ Đang lưu…' : '💾 Lưu Cài Đặt Đồng Bộ' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Real-Time Activity Log Terminal -->
+        <div class="p-3.5 rounded-xl bg-black/60 border border-white/10 space-y-2">
+          <div class="flex items-center justify-between border-b border-white/10 pb-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full" :class="gdriveConfig.is_syncing ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'"></span>
+              <span class="font-bold text-white text-xs uppercase tracking-wider">Nhật Ký Tiến Trình Đồng Bộ 2 Chiều</span>
+              <span class="badge badge-purple mono text-[10px]">{{ (gdriveConfig.last_log || []).length }} sự kiện</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="btn-secondary text-[11px] py-1 px-2.5"
+                @click="copyGenericText((gdriveConfig.last_log || []).join('\n'), 'Nhật ký đồng bộ')"
+              >
+                📋 Sao Chép Log
+              </button>
+            </div>
+          </div>
+
+          <div class="pro-terminal max-h-64 overflow-y-auto font-mono text-[11px] p-3 rounded-lg bg-[#07090e] border border-white/5 space-y-1">
+            <div v-if="!gdriveConfig.last_log || gdriveConfig.last_log.length === 0" class="text-gray-500 italic">
+              Chưa có nhật ký đồng bộ. Bấm 'Đồng Bộ Ngay' để bắt đầu.
+            </div>
+            <div
+              v-for="(log, idx) in gdriveConfig.last_log"
+              :key="idx"
+              class="leading-relaxed"
+              :class="{
+                'text-emerald-400 font-semibold': log.includes('✅') || log.includes('🏁'),
+                'text-sky-300': log.includes('⬇️'),
+                'text-amber-300': log.includes('⬆️'),
+                'text-red-400 font-bold': log.includes('❌') || log.includes('LỖI'),
+                'text-gray-400': !log.includes('✅') && !log.includes('⬇️') && !log.includes('⬆️') && !log.includes('❌'),
+              }"
+            >
+              {{ log }}
+            </div>
           </div>
         </div>
       </div>
