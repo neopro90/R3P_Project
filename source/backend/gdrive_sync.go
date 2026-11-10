@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +39,7 @@ type GDriveSyncConfig struct {
 	IsSyncing       bool     `json:"is_syncing"`
 }
 
-type gdriveFileItem struct {
+type gdriveRawItem struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	MimeType     string `json:"mimeType"`
@@ -47,8 +49,27 @@ type gdriveFileItem struct {
 }
 
 type gdriveFileListResponse struct {
-	NextPageToken string           `json:"nextPageToken"`
-	Files         []gdriveFileItem `json:"files"`
+	NextPageToken string          `json:"nextPageToken"`
+	Files         []gdriveRawItem `json:"files"`
+}
+
+type gdriveSyncFile struct {
+	ID           string
+	Name         string
+	RelPath      string // relative path with forward slashes e.g. "Folder/Sub/file.jpg"
+	ParentID     string
+	Size         int64
+	MD5Checksum  string
+	ModifiedTime time.Time
+}
+
+type localSyncFile struct {
+	Name         string
+	RelPath      string // forward slashes e.g. "Folder/Sub/file.jpg"
+	FullPath     string
+	ParentRelDir string // "Folder/Sub" or ""
+	Size         int64
+	ModTime      time.Time
 }
 
 var (
@@ -221,7 +242,7 @@ func startGDriveScheduler() {
 	}
 }
 
-// runGDriveSyncNow performs the two-way sync operation
+// runGDriveSyncNow performs the recursive two-way sync operation
 func runGDriveSyncNow() {
 	if !gdriveSyncLock.TryLock() {
 		appendGDriveLog("⚠️ Quá trình đồng bộ đang chạy, bỏ qua yêu cầu trùng lặp.")
@@ -245,7 +266,7 @@ func runGDriveSyncNow() {
 	}
 	gdriveConfigLock.Unlock()
 
-	appendGDriveLog("🚀 [BẮT ĐẦU] Khởi động đồng bộ Google Drive 2 chiều...")
+	appendGDriveLog("🚀 [BẮT ĐẦU] Khởi động đồng bộ Google Drive 2 chiều (Đệ quy đa thư mục)...")
 	appendGDriveLog(fmt.Sprintf("📂 Thư mục cục bộ: %s | Chế độ: %s", localDir, direction))
 
 	if folderID == "" {
@@ -267,95 +288,65 @@ func runGDriveSyncNow() {
 		return
 	}
 
-	// 1. Fetch Google Drive folder file list
-	appendGDriveLog("🔍 Đang kết nối Google Drive và quét danh sách tệp đám mây...")
-	driveFiles, err := listGDriveFiles(token, folderID)
+	// 1. Recursive scan of Google Drive folder hierarchy via BFS
+	appendGDriveLog("🔍 Đang kết nối Google Drive và quét toàn bộ cây thư mục & tệp...")
+	driveFolders, driveFiles, err := scanGDriveTree(token, folderID)
 	if err != nil {
 		appendGDriveLog(fmt.Sprintf("❌ LỖI truy vấn Google Drive API: %v", err))
 		finishGDriveSync("error", 0)
 		return
 	}
-	appendGDriveLog(fmt.Sprintf("☁️ Tìm thấy %d tệp trên Google Drive.", len(driveFiles)))
+	appendGDriveLog(fmt.Sprintf("☁️ Tìm thấy %d thư mục con và %d tệp trên Google Drive.", len(driveFolders)-1, len(driveFiles)))
 
-	// Map drive files by name
-	driveMap := make(map[string]gdriveFileItem)
-	for _, f := range driveFiles {
-		driveMap[f.Name] = f
-	}
-
-	// 2. Scan local files
-	appendGDriveLog(fmt.Sprintf("📁 Đang quét danh sách tệp tại %s...", localDir))
-	localEntries, err := os.ReadDir(localDir)
+	// 2. Recursive scan of local directory
+	appendGDriveLog(fmt.Sprintf("📁 Đang quét danh sách thư mục & tệp tại %s...", localDir))
+	localDirs, localFiles, err := scanLocalTree(localDir)
 	if err != nil {
 		appendGDriveLog(fmt.Sprintf("❌ LỖI đọc thư mục cục bộ: %v", err))
 		finishGDriveSync("error", 0)
 		return
 	}
-
-	type localFileMeta struct {
-		Name    string
-		Path    string
-		Size    int64
-		ModTime time.Time
-		MD5     string
-	}
-	localMap := make(map[string]localFileMeta)
-
-	for _, entry := range localEntries {
-		if entry.IsDir() {
-			continue // Flat directory sync for NAS shares
-		}
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmp") {
-			continue // Skip hidden or temp files
-		}
-		fullPath := filepath.Join(localDir, name)
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		hash, _ := getFileMD5(fullPath)
-		localMap[name] = localFileMeta{
-			Name:    name,
-			Path:    fullPath,
-			Size:    info.Size(),
-			ModTime: info.ModTime().UTC(),
-			MD5:     hash,
-		}
-	}
-	appendGDriveLog(fmt.Sprintf("💻 Tìm thấy %d tệp tại thư mục cục bộ.", len(localMap)))
+	appendGDriveLog(fmt.Sprintf("💻 Tìm thấy %d thư mục con và %d tệp tại thư mục cục bộ.", len(localDirs), len(localFiles)))
 
 	syncedCount := 0
 
 	// 3. Two-way reconciliation
+
 	// Action A: Files on Google Drive but not local -> Download
 	if direction == "two_way" || direction == "download_only" {
-		for name, dFile := range driveMap {
-			if _, exists := localMap[name]; !exists {
-				// File does not exist locally, download it
-				appendGDriveLog(fmt.Sprintf("⬇️ [DOWNLOAD] Tải tệp mới từ Drive: %s (ID: %s)", name, dFile.ID))
-				targetPath := filepath.Join(localDir, name)
-				modTime := parseRFC3339Time(dFile.ModifiedTime)
-				if err := downloadGDriveFile(token, dFile.ID, targetPath, modTime); err != nil {
-					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi tải tệp '%s': %v", name, err))
+		for relPath, dFile := range driveFiles {
+			if _, exists := localFiles[relPath]; !exists {
+				destPath := filepath.Join(localDir, filepath.FromSlash(relPath))
+				_ = os.MkdirAll(filepath.Dir(destPath), 0755)
+
+				appendGDriveLog(fmt.Sprintf("⬇️ [DOWNLOAD] Tải tệp mới: %s (%d bytes)", relPath, dFile.Size))
+				if err := downloadGDriveFile(token, dFile.ID, destPath, dFile.ModifiedTime); err != nil {
+					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi tải '%s': %v", relPath, err))
 				} else {
 					syncedCount++
-					appendGDriveLog(fmt.Sprintf("  ✅ Đã tải về thành công: %s", name))
+					appendGDriveLog(fmt.Sprintf("  ✅ Đã tải về thành công: %s", relPath))
 				}
 			}
 		}
 	}
 
-	// Action B: Files locally but not on Drive -> Upload
+	// Action B: Files locally but not on Google Drive -> Upload
 	if direction == "two_way" || direction == "upload_only" {
-		for name, lFile := range localMap {
-			if _, exists := driveMap[name]; !exists {
-				appendGDriveLog(fmt.Sprintf("⬆️ [UPLOAD] Tải tệp mới lên Drive: %s (%d bytes)", name, lFile.Size))
-				if err := uploadGDriveMultipart(token, folderID, lFile.Path, name); err != nil {
-					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi tải lên '%s': %v", name, err))
+		for relPath, lFile := range localFiles {
+			if _, exists := driveFiles[relPath]; !exists {
+				// Ensure remote parent folder exists
+				targetFolderID, err := ensureGDriveFolderPath(token, folderID, lFile.ParentRelDir, driveFolders)
+				if err != nil {
+					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi tạo thư mục đám mây cho '%s': %v", relPath, err))
+					continue
+				}
+
+				appendGDriveLog(fmt.Sprintf("⬆️ [UPLOAD] Tải tệp mới lên Drive: %s (%d bytes)", relPath, lFile.Size))
+				if err := uploadGDriveMultipart(token, targetFolderID, lFile.FullPath, lFile.Name); err != nil {
+					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi tải lên '%s': %v", relPath, err))
 				} else {
 					syncedCount++
-					appendGDriveLog(fmt.Sprintf("  ✅ Đã tải lên Google Drive thành công: %s", name))
+					appendGDriveLog(fmt.Sprintf("  ✅ Đã tải lên Google Drive thành công: %s", relPath))
 				}
 			}
 		}
@@ -363,39 +354,45 @@ func runGDriveSyncNow() {
 
 	// Action C: Files existing in BOTH local and Drive -> Compare MD5 / timestamps
 	if direction == "two_way" {
-		for name, lFile := range localMap {
-			dFile, exists := driveMap[name]
+		for relPath, lFile := range localFiles {
+			dFile, exists := driveFiles[relPath]
 			if !exists {
 				continue
 			}
 
-			// If MD5 differs or is missing, check timestamps
-			if dFile.MD5Checksum != "" && lFile.MD5 != "" && strings.EqualFold(dFile.MD5Checksum, lFile.MD5) {
-				// Identical MD5 checksum, perfect match!
+			// If size and timestamps match closely (< 3s), skip expensive MD5 hash
+			diff := lFile.ModTime.Sub(dFile.ModifiedTime)
+			if lFile.Size == dFile.Size && diff >= -3*time.Second && diff <= 3*time.Second {
 				continue
 			}
 
-			dModTime := parseRFC3339Time(dFile.ModifiedTime)
-			diff := lFile.ModTime.Sub(dModTime)
+			// Check MD5 checksum
+			lHash, _ := getFileMD5(lFile.FullPath)
+			if dFile.MD5Checksum != "" && lHash != "" && strings.EqualFold(dFile.MD5Checksum, lHash) {
+				// Exact content match, synchronize modification timestamp
+				_ = os.Chtimes(lFile.FullPath, dFile.ModifiedTime, dFile.ModifiedTime)
+				continue
+			}
 
-			// Threshold of 3 seconds to account for filesystem timestamp quantization
+			// Different content: newer wins
 			if diff > 3*time.Second {
 				// Local file is newer -> Update Google Drive
-				appendGDriveLog(fmt.Sprintf("⬆️ [UPDATE DRIVE] Tệp cục bộ mới hơn, cập nhật lên Drive: %s", name))
-				if err := patchGDriveFile(token, dFile.ID, lFile.Path); err != nil {
-					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi cập nhật lên Drive '%s': %v", name, err))
+				appendGDriveLog(fmt.Sprintf("⬆️ [UPDATE DRIVE] Tệp cục bộ mới hơn, cập nhật lên Drive: %s", relPath))
+				if err := patchGDriveFile(token, dFile.ID, lFile.FullPath); err != nil {
+					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi cập nhật lên Drive '%s': %v", relPath, err))
 				} else {
 					syncedCount++
-					appendGDriveLog(fmt.Sprintf("  ✅ Đã cập nhật lên Drive thành công: %s", name))
+					appendGDriveLog(fmt.Sprintf("  ✅ Đã cập nhật lên Drive: %s", relPath))
 				}
 			} else if diff < -3*time.Second {
 				// Remote Drive file is newer -> Download to local
-				appendGDriveLog(fmt.Sprintf("⬇️ [UPDATE LOCAL] Tệp Drive mới hơn, tải bản mới về máy: %s", name))
-				if err := downloadGDriveFile(token, dFile.ID, lFile.Path, dModTime); err != nil {
-					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi cập nhật về máy '%s': %v", name, err))
+				appendGDriveLog(fmt.Sprintf("⬇️ [UPDATE LOCAL] Tệp Drive mới hơn, tải bản mới về máy: %s", relPath))
+				destPath := lFile.FullPath
+				if err := downloadGDriveFile(token, dFile.ID, destPath, dFile.ModifiedTime); err != nil {
+					appendGDriveLog(fmt.Sprintf("  ❌ Lỗi cập nhật về máy '%s': %v", relPath, err))
 				} else {
 					syncedCount++
-					appendGDriveLog(fmt.Sprintf("  ✅ Đã cập nhật về máy thành công: %s", name))
+					appendGDriveLog(fmt.Sprintf("  ✅ Đã cập nhật về máy: %s", relPath))
 				}
 			}
 		}
@@ -423,10 +420,10 @@ func parseRFC3339Time(str string) time.Time {
 	if err != nil {
 		t, err = time.Parse(time.RFC3339Nano, str)
 		if err != nil {
-			return time.Now()
+			return time.Now().UTC()
 		}
 	}
-	return t
+	return t.UTC()
 }
 
 func getFileMD5(filePath string) (string, error) {
@@ -443,9 +440,63 @@ func getFileMD5(filePath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// listGDriveFiles queries Google Drive API v3 for items inside folderID
-func listGDriveFiles(token string, folderID string) ([]gdriveFileItem, error) {
-	var allFiles []gdriveFileItem
+// scanGDriveTree performs BFS traversal to discover all subfolders and files
+func scanGDriveTree(token string, rootFolderID string) (map[string]string, map[string]gdriveSyncFile, error) {
+	driveFolders := make(map[string]string)
+	driveFolders[""] = rootFolderID
+	driveFiles := make(map[string]gdriveSyncFile)
+
+	type queueItem struct {
+		folderID string
+		relPath  string
+	}
+	queue := []queueItem{{folderID: rootFolderID, relPath: ""}}
+
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+
+		items, err := queryGDriveFolderItems(token, curr.folderID)
+		if err != nil {
+			appendGDriveLog(fmt.Sprintf("⚠️ Lỗi quét thư mục Drive '%s': %v", curr.relPath, err))
+			continue
+		}
+
+		for _, item := range items {
+			var itemRelPath string
+			if curr.relPath == "" {
+				itemRelPath = item.Name
+			} else {
+				itemRelPath = curr.relPath + "/" + item.Name
+			}
+
+			if item.MimeType == "application/vnd.google-apps.folder" {
+				driveFolders[itemRelPath] = item.ID
+				queue = append(queue, queueItem{
+					folderID: item.ID,
+					relPath:  itemRelPath,
+				})
+			} else {
+				sz, _ := strconv.ParseInt(item.Size, 10, 64)
+				driveFiles[itemRelPath] = gdriveSyncFile{
+					ID:           item.ID,
+					Name:         item.Name,
+					RelPath:      itemRelPath,
+					ParentID:     curr.folderID,
+					Size:         sz,
+					MD5Checksum:  item.MD5Checksum,
+					ModifiedTime: parseRFC3339Time(item.ModifiedTime),
+				}
+			}
+		}
+	}
+
+	return driveFolders, driveFiles, nil
+}
+
+// queryGDriveFolderItems queries all direct children of folderID
+func queryGDriveFolderItems(token, folderID string) ([]gdriveRawItem, error) {
+	var results []gdriveRawItem
 	pageToken := ""
 
 	for {
@@ -480,20 +531,136 @@ func listGDriveFiles(token string, folderID string) ([]gdriveFileItem, error) {
 			return nil, err
 		}
 
-		for _, f := range listResp.Files {
-			// Skip subfolders in flat file sync
-			if f.MimeType != "application/vnd.google-apps.folder" {
-				allFiles = append(allFiles, f)
-			}
-		}
-
+		results = append(results, listResp.Files...)
 		if listResp.NextPageToken == "" {
 			break
 		}
 		pageToken = listResp.NextPageToken
 	}
 
-	return allFiles, nil
+	return results, nil
+}
+
+// scanLocalTree traverses local directory and indexes subfolders and files
+func scanLocalTree(localDir string) (map[string]bool, map[string]localSyncFile, error) {
+	localDirs := make(map[string]bool)
+	localFiles := make(map[string]localSyncFile)
+
+	err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path == localDir {
+			return nil
+		}
+		rel, err := filepath.Rel(localDir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		base := filepath.Base(path)
+		if strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".tmp") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if info.IsDir() {
+			localDirs[rel] = true
+			return nil
+		}
+
+		parentRel := filepath.ToSlash(filepath.Dir(rel))
+		if parentRel == "." {
+			parentRel = ""
+		}
+
+		localFiles[rel] = localSyncFile{
+			Name:         info.Name(),
+			RelPath:      rel,
+			FullPath:     path,
+			ParentRelDir: parentRel,
+			Size:         info.Size(),
+			ModTime:      info.ModTime().UTC(),
+		}
+		return nil
+	})
+
+	return localDirs, localFiles, err
+}
+
+// ensureGDriveFolderPath creates missing directories on Google Drive along relPath
+func ensureGDriveFolderPath(token, rootFolderID, relPath string, driveFolders map[string]string) (string, error) {
+	relPath = strings.Trim(filepath.ToSlash(relPath), "/")
+	if relPath == "" || relPath == "." {
+		return rootFolderID, nil
+	}
+
+	if id, ok := driveFolders[relPath]; ok && id != "" {
+		return id, nil
+	}
+
+	segments := strings.Split(relPath, "/")
+	currParentID := rootFolderID
+	currPath := ""
+
+	for _, seg := range segments {
+		if currPath == "" {
+			currPath = seg
+		} else {
+			currPath = currPath + "/" + seg
+		}
+
+		if id, ok := driveFolders[currPath]; ok && id != "" {
+			currParentID = id
+		} else {
+			newID, err := createGDriveFolder(token, currParentID, seg)
+			if err != nil {
+				return "", fmt.Errorf("không thể tạo thư mục '%s': %w", currPath, err)
+			}
+			driveFolders[currPath] = newID
+			currParentID = newID
+			appendGDriveLog(fmt.Sprintf("📁 [TẠO THƯ MỤC DRIVE] Đã tạo thư mục đám mây: %s", currPath))
+		}
+	}
+
+	return currParentID, nil
+}
+
+// createGDriveFolder creates a single folder on Google Drive
+func createGDriveFolder(token, parentID, folderName string) (string, error) {
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"name":     folderName,
+		"mimeType": "application/vnd.google-apps.folder",
+		"parents":  []string{parentID},
+	})
+	req, err := http.NewRequest("POST", "https://www.googleapis.com/drive/v3/files", bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	resp, err := gdriveHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result.ID, nil
 }
 
 // downloadGDriveFile downloads a file from Google Drive and preserves timestamp
@@ -548,7 +715,6 @@ func uploadGDriveMultipart(token, folderID, localPath, fileName string) error {
 		return err
 	}
 
-	// Use pipe to avoid buffering large files in RAM on router
 	pr, pw := io.Pipe()
 	mpw := multipart.NewWriter(pw)
 
@@ -627,7 +793,7 @@ func uploadGDriveMultipart(token, folderID, localPath, fileName string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	_ = fileInfo // prevent unused warning
+	_ = fileInfo
 	return nil
 }
 
