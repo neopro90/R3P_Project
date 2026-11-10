@@ -1,9 +1,9 @@
 {
-    "version":  "v1.1.20",
-    "revision":  21,
-    "released_at":  "2026-11-10 16:22:00",
+    "version":  "v1.1.21",
+    "revision":  22,
+    "released_at":  "2026-11-10 17:14:00",
     "repo_url":  "https://github.com/neopro90/R3P_Project.git",
     "branch":  "main",
-    "commit_sha":  "v1.1.20",
-    "changelog":  "v1.1.20 (Rev 21): add user selector dropdown in SMB shares auth column and quick read-write toggle"
+    "commit_sha":  "v1.1.21",
+    "changelog":  "v1.1.21 (Rev 22): fix copy button in HTTP non-secure context with cross-browser fallback and button visual feedback"
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { copyToClipboard as copyText } from '@/composables/useClipboard'
 
 interface DiskVolume {
   device: string
@@ -256,15 +257,24 @@ const ftpService = ref<FTPServiceState>({
 const savingSamba = ref(false)
 const savingFTP = ref(false)
 
-function copyToClipboard(text: string, label = 'Đường dẫn') {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      showNotice(`Đã sao chép ${label}: ${text}`)
-    }).catch(() => {
-      showNotice(`Đã sao chép: ${text}`)
-    })
-  } else {
-    showNotice(`Đã sao chép: ${text}`)
+const copiedShare = ref<string | null>(null)
+
+async function copySharePath(name: string) {
+  const unc = `\\\\${serverIp.value}\\${name}`
+  const ok = await copyText(unc)
+  if (ok) {
+    copiedShare.value = name
+    showNotice(`Đã sao chép đường dẫn: ${unc}`)
+    setTimeout(() => {
+      if (copiedShare.value === name) copiedShare.value = null
+    }, 2000)
+  }
+}
+
+async function copyGenericText(text: string, label = 'Đường dẫn') {
+  const ok = await copyText(text)
+  if (ok) {
+    showNotice(`Đã sao chép ${label}: ${text}`)
   }
 }
 
@@ -869,7 +879,7 @@ onMounted(() => {
             <button
               type="button"
               class="btn-secondary text-xs py-1.5 px-3"
-              @click="copyToClipboard('\\\\' + serverIp + '\\', 'Đường dẫn SMB')"
+              @click="copyGenericText('\\\\' + serverIp + '\\', 'Đường dẫn SMB')"
             >
               📋 Copy \\{{ serverIp }}\
             </button>
@@ -1147,11 +1157,13 @@ onMounted(() => {
                       <span class="truncate">\\{{ serverIp }}\{{ s.name }}</span>
                       <button
                         type="button"
-                        class="btn-secondary text-[10px] py-0.5 px-1.5"
-                        title="Sao chép đường dẫn UNC"
-                        @click="copyToClipboard('\\\\' + serverIp + '\\' + s.name, 'Đường dẫn UNC')"
+                        class="btn-secondary text-[10px] py-0.5 px-2 transition-all cursor-pointer flex items-center gap-1 font-semibold"
+                        :class="copiedShare === s.name ? 'border-emerald-500/60 text-emerald-300 bg-emerald-950/40 shadow-sm' : ''"
+                        title="Sao chép đường dẫn UNC vào clipboard"
+                        @click="copySharePath(s.name)"
                       >
-                        📋 Copy
+                        <span>{{ copiedShare === s.name ? '✅' : '📋' }}</span>
+                        <span>{{ copiedShare === s.name ? 'Đã Copy!' : 'Copy' }}</span>
                       </button>
                     </div>
                   </td>
@@ -1235,7 +1247,7 @@ onMounted(() => {
             <button
               type="button"
               class="btn-secondary text-xs py-1.5 px-3"
-              @click="copyToClipboard('ftp://' + serverIp + ':' + ftpService.port + '/', 'Liên kết FTP')"
+              @click="copyGenericText('ftp://' + serverIp + ':' + ftpService.port + '/', 'Liên kết FTP')"
             >
               📋 Copy Link FTP
             </button>

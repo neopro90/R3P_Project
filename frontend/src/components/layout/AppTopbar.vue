@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import { useAuthStore } from '@/stores/auth'
 import { useUiPreferences, type HassThemeStyle } from '@/composables/useUiPreferences'
+import { copyToClipboard } from '@/composables/useClipboard'
 
 const route = useRoute()
 const system = useSystemStore()
@@ -79,14 +80,12 @@ async function recheckInternet() {
 async function copyExternalIp() {
   const ip = system.internet?.external_ip
   if (!ip || ip === '—') return
-  try {
-    await navigator.clipboard.writeText(ip)
+  const ok = await copyToClipboard(ip)
+  if (ok) {
     copiedIp.value = true
     setTimeout(() => {
       copiedIp.value = false
     }, 1500)
-  } catch {
-    // ignore
   }
 }
 

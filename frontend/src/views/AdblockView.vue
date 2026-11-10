@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { copyToClipboard as copyText } from '@/composables/useClipboard'
 
 interface AdblockSource {
   id: string
@@ -130,12 +131,10 @@ const gatewaySetup = ref<GatewaySetupInfo>({
 const copiedText = ref('')
 
 async function copyToClipboard(txt: string, label: string) {
-  try {
-    await navigator.clipboard.writeText(txt)
+  const ok = await copyText(txt)
+  if (ok) {
     copiedText.value = label
     setTimeout(() => { copiedText.value = '' }, 2000)
-  } catch {
-    // ignore
   }
 }
 
