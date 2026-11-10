@@ -158,6 +158,9 @@ interface GDriveSyncConfig {
   drive_url: string
   drive_folder_id: string
   access_token: string
+  refresh_token: string
+  client_id: string
+  client_secret: string
   api_key: string
   interval_minutes: number
   direction: 'two_way' | 'upload_only' | 'download_only'
@@ -174,6 +177,9 @@ const gdriveConfig = ref<GDriveSyncConfig>({
   drive_url: '',
   drive_folder_id: '',
   access_token: '',
+  refresh_token: '',
+  client_id: '',
+  client_secret: '',
   api_key: '',
   interval_minutes: 30,
   direction: 'two_way',
@@ -187,6 +193,8 @@ const gdriveConfig = ref<GDriveSyncConfig>({
 const loadingGDrive = ref(false)
 const savingGDrive = ref(false)
 const syncingGDrive = ref(false)
+const refreshingToken = ref(false)
+const showAdvancedOAuth = ref(false)
 let gdrivePollTimer: any = null
 const showAddShare = ref(false)
 const newShare = ref<ShareItem>({
@@ -642,6 +650,9 @@ async function saveGDriveConfig() {
         drive_url: gdriveConfig.value.drive_url,
         drive_folder_id: gdriveConfig.value.drive_folder_id,
         access_token: gdriveConfig.value.access_token,
+        refresh_token: gdriveConfig.value.refresh_token,
+        client_id: gdriveConfig.value.client_id,
+        client_secret: gdriveConfig.value.client_secret,
         api_key: gdriveConfig.value.api_key,
         interval_minutes: Number(gdriveConfig.value.interval_minutes),
         direction: gdriveConfig.value.direction,
@@ -658,6 +669,29 @@ async function saveGDriveConfig() {
     showError('Lỗi lưu cài đặt Google Drive: ' + (err?.message || err))
   } finally {
     savingGDrive.value = false
+  }
+}
+
+async function refreshAccessTokenNow() {
+  if (!gdriveConfig.value.refresh_token) {
+    showError('Vui lòng nhập Refresh Token trước khi làm mới!')
+    return
+  }
+  refreshingToken.value = true
+  try {
+    await saveGDriveConfig()
+    const res = await apiRequest<{ message: string; access_token: string }>('/nas/gdrive-sync/refresh', {
+      method: 'POST',
+    })
+    showNotice(res?.message || 'Đã làm mới Access Token thành công!')
+    if (res?.access_token) {
+      gdriveConfig.value.access_token = res.access_token
+    }
+    await fetchGDriveConfig()
+  } catch (err: any) {
+    showError('Lỗi làm mới Access Token: ' + (err?.message || err))
+  } finally {
+    refreshingToken.value = false
   }
 }
 
@@ -1632,28 +1666,91 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Access Token / OAuth Permission -->
-            <div>
-              <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                3. Quyền Truy Cập (Google Drive API Access Token / Bearer Token)
-              </label>
-              <input
-                v-model="gdriveConfig.access_token"
-                type="password"
-                required
-                class="pro-input mono text-xs w-full"
-                placeholder="ya29.a0AcM612x..."
-              />
-              <p class="text-[10px] text-gray-400 mt-1">
-                Mã xác thực OAuth 2.0 có quyền đọc/ghi Drive (<code class="text-sky-300">https://www.googleapis.com/auth/drive</code>).
-              </p>
+            <!-- Access Token & Refresh Token Section -->
+            <div class="space-y-3">
+              <!-- Permanent Refresh Token Input -->
+              <div>
+                <label class="block text-[11px] text-emerald-300 font-bold mb-1 flex items-center justify-between">
+                  <span>3. Refresh Token (Mã Gia Hạn Vĩnh Viễn — Không Hết Hạn) ⭐</span>
+                  <span class="badge badge-green text-[9.5px]">KHUYÊN DÙNG</span>
+                </label>
+                <div class="flex gap-2">
+                  <input
+                    v-model="gdriveConfig.refresh_token"
+                    type="password"
+                    class="pro-input mono text-xs w-full border-emerald-500/40 focus:border-emerald-400"
+                    placeholder="1//0... (Dán Refresh Token từ Google Playground tại đây)"
+                  />
+                  <button
+                    type="button"
+                    class="btn-primary text-xs py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 font-bold shrink-0 whitespace-nowrap"
+                    :disabled="refreshingToken || !gdriveConfig.refresh_token"
+                    @click="refreshAccessTokenNow"
+                  >
+                    {{ refreshingToken ? '⏳ Đang cấp mới…' : '⚡ Cấp Mới Access Token' }}
+                  </button>
+                </div>
+                <p class="text-[10px] text-gray-400 mt-1">
+                  Router sẽ dùng mã này để <b>tự động tạo Access Token mới vĩnh viễn</b> mỗi khi hết hạn mà bạn không cần phải làm gì.
+                </p>
+              </div>
+
+              <!-- Temporary Access Token Input -->
+              <div>
+                <label class="block text-[11px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
+                  <span>4. Access Token Hiện Tại (Bearer Token ngắn hạn 1 tiếng)</span>
+                  <span v-if="gdriveConfig.access_token" class="text-emerald-400 mono text-[10px]">Đang sẵn sàng</span>
+                </label>
+                <input
+                  v-model="gdriveConfig.access_token"
+                  type="password"
+                  class="pro-input mono text-xs w-full"
+                  placeholder="ya29.a0AcM612x..."
+                />
+                <p class="text-[10px] text-gray-500 mt-1">
+                  Mã này được cấp tự động từ Refresh Token ở trên, hoặc bạn có thể dán thủ công trực tiếp nếu chỉ muốn dùng tạm 1 tiếng.
+                </p>
+              </div>
+
+              <!-- Collapsible Custom GCP OAuth Credentials -->
+              <div class="pt-1">
+                <button
+                  type="button"
+                  class="text-[11px] text-sky-400 hover:text-sky-300 underline font-semibold cursor-pointer flex items-center gap-1"
+                  @click="showAdvancedOAuth = !showAdvancedOAuth"
+                >
+                  <span>{{ showAdvancedOAuth ? '▼ Ẩn cài đặt' : '▶ ⚙️ Cài đặt OAuth Client riêng (Client ID & Client Secret)' }}</span>
+                  <span class="text-[10px] text-gray-500 font-normal">(Mặc định đã tích hợp sẵn, chỉ cần điền nếu dùng GCP Project riêng)</span>
+                </button>
+
+                <div v-if="showAdvancedOAuth" class="mt-2 p-2.5 rounded-lg bg-black/50 border border-white/10 space-y-2">
+                  <div>
+                    <label class="block text-[10px] text-gray-400 uppercase mb-0.5">Google OAuth Client ID</label>
+                    <input
+                      v-model="gdriveConfig.client_id"
+                      type="text"
+                      class="pro-input mono text-xs w-full"
+                      placeholder="Để trống để dùng cấu hình mặc định (hoặc nhập xxxx.apps.googleusercontent.com)"
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-[10px] text-gray-400 uppercase mb-0.5">Google OAuth Client Secret</label>
+                    <input
+                      v-model="gdriveConfig.client_secret"
+                      type="password"
+                      class="pro-input mono text-xs w-full"
+                      placeholder="Để trống để dùng cấu hình mặc định (hoặc nhập Client Secret)"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Sync Schedule Interval & Direction -->
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                  4. Lên Lịch Tự Động
+                  5. Lên Lịch Tự Động
                 </label>
                 <select v-model.number="gdriveConfig.interval_minutes" class="pro-input mono text-xs w-full">
                   <option :value="15">Mỗi 15 phút</option>
@@ -1668,7 +1765,7 @@ onUnmounted(() => {
 
               <div>
                 <label class="block text-[11px] text-gray-300 font-semibold mb-1">
-                  5. Hướng Đồng Bộ
+                  6. Hướng Đồng Bộ
                 </label>
                 <select v-model="gdriveConfig.direction" class="pro-input mono text-xs w-full">
                   <option value="two_way">🔁 Hai Chiều (2-Way Sync)</option>
@@ -1680,14 +1777,16 @@ onUnmounted(() => {
           </div>
 
           <!-- Quick Token Helper Guide Card -->
-          <div class="p-2.5 rounded-lg bg-sky-950/30 border border-sky-500/20 text-[11px] text-gray-300 space-y-1">
-            <div class="font-bold text-sky-300 flex items-center gap-1.5">
-              <span>💡 Hướng dẫn cấp quyền truy cập Google Drive nhanh:</span>
+          <div class="p-3 rounded-lg bg-sky-950/30 border border-sky-500/20 text-[11px] text-gray-300 space-y-1.5">
+            <div class="font-bold text-sky-300 flex items-center gap-1.5 text-xs">
+              <span>💡 Hướng dẫn lấy Refresh Token vĩnh viễn (Chỉ cần làm 1 lần duy nhất):</span>
             </div>
-            <p>
+            <p class="leading-relaxed">
               1. Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>.<br>
-              2. Tại mục <b>Step 1</b>, tìm chọn: <code class="text-amber-300">Drive API v3</code> &gt; tick chọn <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; Bấm <b>Authorize APIs</b> và đăng nhập tài khoản Google của bạn.<br>
-              3. Tại <b>Step 2</b>, bấm <b>Exchange authorization code for tokens</b> &gt; Sao chép chuỗi <code class="text-emerald-300">Access token</code> dán vào ô số 3 ở trên.
+              2. Tại mục <b>Step 1</b>: Tìm chọn <code class="text-amber-300">Drive API v3</code> &gt; tick chọn <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; Bấm <b>Authorize APIs</b> và đăng nhập tài khoản Google của bạn.<br>
+              3. Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b>.<br>
+              4. Bạn sẽ thấy 2 ô xuất hiện: Sao chép chuỗi trong ô <code class="text-emerald-300 font-bold">Refresh token</code> (thường bắt đầu bằng <code class="text-emerald-300">1//...</code>) và dán vào ô <b>số 3</b> ở trên.<br>
+              5. Bấm nút <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>. Từ nay router sẽ tự duy trì hoạt động vĩnh viễn!
             </p>
           </div>
 
