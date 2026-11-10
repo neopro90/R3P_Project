@@ -814,6 +814,22 @@ func getServerLanIP() string {
 }
 
 func syncSambaConfigFile(shares []ShareItem) error {
+	// 1. Ensure 'invalid users = root' is commented out in /etc/samba/smb.conf.template so root can access Samba
+	if tmpl, err := os.ReadFile("/etc/samba/smb.conf.template"); err == nil {
+		sTmpl := string(tmpl)
+		if strings.Contains(sTmpl, "invalid users = root") && !strings.Contains(sTmpl, "#invalid users = root") {
+			sTmpl = strings.ReplaceAll(sTmpl, "invalid users = root", "#invalid users = root")
+			_ = os.WriteFile("/etc/samba/smb.conf.template", []byte(sTmpl), 0644)
+		}
+	}
+
+	// 2. Ensure root has a valid samba password entry
+	if out, err := runCmd(3, "pdbedit", "-L"); err == nil && !strings.Contains(out, "root:") {
+		cmd := exec.Command("smbpasswd", "-a", "-s", "root")
+		cmd.Stdin = strings.NewReader("root\nroot\n")
+		_ = cmd.Run()
+	}
+
 	sambaUCI := parseUCIConfigMap("samba4")
 	workgroup := sambaUCI["samba4.@samba[0].workgroup"]
 	if workgroup == "" {
@@ -861,13 +877,7 @@ func syncSambaConfigFile(shares []ShareItem) error {
 			if s.Password != "" {
 				pwd := s.Password
 				go func(u, p string) {
-					pContent, _ := os.ReadFile("/etc/passwd")
-					if !strings.Contains(string(pContent), u+":") {
-						_, _ = runCmd(3, "adduser", "-D", "-H", "-s", "/bin/false", u)
-					}
-					cmd := exec.Command("smbpasswd", "-a", "-s", u)
-					cmd.Stdin = strings.NewReader(p + "\n" + p + "\n")
-					_ = cmd.Run()
+					_ = ensureUnixAndSambaUser(u, p)
 				}(usr, pwd)
 			}
 		}
@@ -1500,6 +1510,78 @@ func handleUSBStandby(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func ensureUnixAndSambaUser(u, p string) error {
+	// 1. Ensure user is present in /etc/passwd and /etc/group (OpenWrt Busybox lacks adduser/useradd)
+	pContent, _ := os.ReadFile("/etc/passwd")
+	lines := strings.Split(string(pContent), "\n")
+	found := false
+	maxUID := 1000
+	for _, l := range lines {
+		parts := strings.Split(l, ":")
+		if len(parts) >= 3 {
+			if parts[0] == u {
+				found = true
+			}
+			if uid, err := strconv.Atoi(parts[2]); err == nil && uid >= maxUID {
+				maxUID = uid + 1
+			}
+		}
+	}
+	if !found {
+		entry := fmt.Sprintf("%s:x:%d:%d:%s:/var:/bin/false\n", u, maxUID, maxUID, u)
+		if f, err := os.OpenFile("/etc/passwd", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			_, _ = f.WriteString(entry)
+			_ = f.Close()
+		}
+		gEntry := fmt.Sprintf("%s:x:%d:\n", u, maxUID)
+		if fg, err := os.OpenFile("/etc/group", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			_, _ = fg.WriteString(gEntry)
+			_ = fg.Close()
+		}
+	}
+
+	// 2. Add / Update password in Samba passdb
+	cmdAdd := exec.Command("smbpasswd", "-a", "-s", u)
+	cmdAdd.Stdin = strings.NewReader(p + "\n" + p + "\n")
+	if out, err := cmdAdd.CombinedOutput(); err != nil {
+		// If already added, try updating password without -a
+		cmdSet := exec.Command("smbpasswd", "-s", u)
+		cmdSet.Stdin = strings.NewReader(p + "\n" + p + "\n")
+		if outSet, errSet := cmdSet.CombinedOutput(); errSet != nil {
+			return fmt.Errorf("smbpasswd failed: %s / %s", string(out), string(outSet))
+		}
+	}
+	return nil
+}
+
+func removeUnixUser(u string) {
+	if u == "" || u == "root" {
+		return
+	}
+	if pContent, err := os.ReadFile("/etc/passwd"); err == nil {
+		lines := strings.Split(string(pContent), "\n")
+		var newLines []string
+		for _, l := range lines {
+			if strings.HasPrefix(l, u+":") {
+				continue
+			}
+			newLines = append(newLines, l)
+		}
+		_ = os.WriteFile("/etc/passwd", []byte(strings.Join(newLines, "\n")), 0644)
+	}
+	if gContent, err := os.ReadFile("/etc/group"); err == nil {
+		lines := strings.Split(string(gContent), "\n")
+		var newLines []string
+		for _, l := range lines {
+			if strings.HasPrefix(l, u+":") {
+				continue
+			}
+			newLines = append(newLines, l)
+		}
+		_ = os.WriteFile("/etc/group", []byte(strings.Join(newLines, "\n")), 0644)
+	}
+}
+
 // GET / POST / DELETE /api/v1/nas/users - Manage Samba/System users and passwords
 func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
@@ -1543,17 +1625,14 @@ func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 		u := strings.TrimSpace(body.Username)
 		p := strings.TrimSpace(body.Password)
 		if !safeTokenKeyPattern.MatchString(u) {
-			writeJSON(w, http.StatusBadRequest, false, "Tên tài khoản không hợp lệ")
+			writeJSON(w, http.StatusBadRequest, false, "Tên tài khoản không hợp lệ (chỉ chữ cái, số, gạch dưới)")
 			return
 		}
 
-		pContent, _ := os.ReadFile("/etc/passwd")
-		if !strings.Contains(string(pContent), u+":") {
-			_, _ = runCmd(3, "adduser", "-D", "-H", "-s", "/bin/false", u)
+		if err := ensureUnixAndSambaUser(u, p); err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "Lỗi tạo tài khoản Samba: "+err.Error())
+			return
 		}
-		cmd := exec.Command("smbpasswd", "-a", "-s", u)
-		cmd.Stdin = strings.NewReader(p + "\n" + p + "\n")
-		_ = cmd.Run()
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"created":  true,
@@ -1568,7 +1647,7 @@ func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = runCmd(3, "smbpasswd", "-x", u)
-		_, _ = runCmd(3, "deluser", u)
+		removeUnixUser(u)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"deleted": true})
 
 	default:
