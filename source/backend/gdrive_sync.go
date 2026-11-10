@@ -258,18 +258,21 @@ func loadGDriveConfigFromFile() {
 	}
 }
 
-func saveGDriveConfigToFile() error {
+func saveGDriveConfigToFileLocked() error {
 	path := getGDriveConfigPath()
 	_ = os.MkdirAll(filepath.Dir(path), 0755)
 
-	gdriveConfigLock.RLock()
 	data, err := json.MarshalIndent(currentGDriveCfg, "", "  ")
-	gdriveConfigLock.RUnlock()
-
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+func saveGDriveConfigToFile() error {
+	gdriveConfigLock.RLock()
+	defer gdriveConfigLock.RUnlock()
+	return saveGDriveConfigToFileLocked()
 }
 
 // extractGDriveFolderID parses folder ID from Google Drive URL formats
@@ -331,7 +334,7 @@ func refreshGDriveToken() (string, error) {
 					if err := json.Unmarshal(bodyBytes, &res); err == nil && res.AccessToken != "" {
 						gdriveConfigLock.Lock()
 						currentGDriveCfg.AccessToken = res.AccessToken
-						_ = saveGDriveConfigToFile()
+						_ = saveGDriveConfigToFileLocked()
 						gdriveConfigLock.Unlock()
 						appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công qua Custom Google OAuth2.")
 						return res.AccessToken, nil
@@ -361,7 +364,7 @@ func refreshGDriveToken() (string, error) {
 				if err := json.Unmarshal(bodyBytes, &pgRes); err == nil && pgRes.AccessToken != "" {
 					gdriveConfigLock.Lock()
 					currentGDriveCfg.AccessToken = pgRes.AccessToken
-					_ = saveGDriveConfigToFile()
+					_ = saveGDriveConfigToFileLocked()
 					gdriveConfigLock.Unlock()
 					appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công qua Google Playground.")
 					return pgRes.AccessToken, nil
@@ -410,7 +413,7 @@ func refreshGDriveToken() (string, error) {
 
 	gdriveConfigLock.Lock()
 	currentGDriveCfg.AccessToken = res.AccessToken
-	_ = saveGDriveConfigToFile()
+	_ = saveGDriveConfigToFileLocked()
 	gdriveConfigLock.Unlock()
 	appendGDriveLog("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công.")
 	return res.AccessToken, nil
@@ -1249,7 +1252,7 @@ func handleGDriveSyncRefresh(w http.ResponseWriter, r *http.Request) {
 		if payload.ClientSecret != "" {
 			currentGDriveCfg.ClientSecret = strings.TrimSpace(payload.ClientSecret)
 		}
-		_ = saveGDriveConfigToFile()
+		_ = saveGDriveConfigToFileLocked()
 		gdriveConfigLock.Unlock()
 	}
 
@@ -1274,7 +1277,7 @@ func handleGDriveSyncClearLog(w http.ResponseWriter, r *http.Request) {
 	gdriveConfigLock.Lock()
 	gdriveLogHistory = []string{}
 	currentGDriveCfg.LastLog = []string{}
-	_ = saveGDriveConfigToFile()
+	_ = saveGDriveConfigToFileLocked()
 	gdriveConfigLock.Unlock()
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
