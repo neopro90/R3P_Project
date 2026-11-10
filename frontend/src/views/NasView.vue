@@ -189,7 +189,7 @@ const gdriveConfig = ref<GDriveSyncConfig>({
   folders: [
     {
       id: 'folder-1',
-      local_dir: '/mnt/sda1/Nude AI',
+      local_dir: '/mnt/sda1/GDrive',
       drive_url: '',
       drive_folder_id: '',
       enabled: true,
@@ -637,7 +637,7 @@ async function fetchGDriveConfig() {
       const folders = res.folders && res.folders.length > 0 ? res.folders : [
         {
           id: 'folder-1',
-          local_dir: res.local_dir || '/mnt/sda1/Nude AI',
+          local_dir: res.local_dir || '/mnt/sda1/GDrive',
           drive_url: res.drive_url || '',
           drive_folder_id: res.drive_folder_id || '',
           enabled: true,
@@ -1737,7 +1737,6 @@ onUnmounted(() => {
                         @change="(e: any) => { if (e.target.value) { folder.local_dir = e.target.value; e.target.value = ''; } }"
                       >
                         <option value="">-- Chọn Nhanh --</option>
-                        <option value="/mnt/sda1/Nude AI">/mnt/sda1/Nude AI</option>
                         <option value="/mnt/sda1/GDrive">/mnt/sda1/GDrive</option>
                         <option value="/mnt/sda1/downloads">/mnt/sda1/downloads</option>
                         <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads</option>
