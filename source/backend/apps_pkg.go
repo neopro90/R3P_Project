@@ -66,7 +66,7 @@ var curatedOpenWrtCatalog = []OpenWrtPkgApp{
 	{Name: "dosfstools", Version: "4.2", Category: "NAS & Storage", Description: "Utilities for making and checking MS-DOS FAT16/FAT32 filesystems (mkfs.vfat)", Source: "OpenWrt Official"},
 	{Name: "yt-dlp", Version: "2026.10.21", Category: "Media & Download", Description: "Feature-rich audio/video downloader supporting YouTube, TikTok & 1000+ sites", Source: "OpenWrt Official"},
 	{Name: "aria2", Version: "1.37.0", Category: "Media & Download", Description: "Lightweight multi-protocol & multi-source HTTP/FTP/BitTorrent download engine", Source: "OpenWrt Official"},
-	{Name: "mosquitto-ssl", Version: "2.0.20", Category: "IoT & Smart Home", Description: "Lightweight open-source MQTT v3.1/v5.0 message broker for ESP32 & IoT", Source: "OpenWrt Official"},
+	{Name: "mosquitto-ssl", Version: "2.0.20", Category: "IoT & Smart Home", Description: "Lightweight open-source MQTT v3.1/v5.0 message broker for Smart Home & IoT", Source: "OpenWrt Official"},
 	{Name: "mosquitto-client-ssl", Version: "2.0.20", Category: "IoT & Smart Home", Description: "MQTT command-line publish/subscribe clients (mosquitto_pub, mosquitto_sub)", Source: "OpenWrt Official"},
 	{Name: "miniupnpd", Version: "2.3.7", Category: "Firewall & Routing", Description: "Lightweight UPnP IGD & NAT-PMP / PCP daemon for automatic port forwarding", Source: "OpenWrt Official"},
 	{Name: "SQM-scripts", Version: "1.6.0", Category: "Firewall & Routing", Description: "Smart Queue Management (CAKE / FQ_CoDel) for anti-bufferbloat & low latency", Source: "OpenWrt Official"},

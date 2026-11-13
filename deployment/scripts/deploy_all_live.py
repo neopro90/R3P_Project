@@ -12,7 +12,6 @@ ROUTER_IP = "192.168.2.1"
 ROUTER_USER = "root"
 ROUTER_PASS = "root"
 CACHE_DIR = r"D:\R3P_Project\Supplementary Files\repo_cache"
-ESP_SRC_DIR = r"D:\Source_Tools\Esp32-Download"
 FRONTEND_DIST = r"D:\R3P_Project\frontend\dist"
 BACKEND_BIN = r"D:\R3P_Project\build\artifacts\r3p-api"
 
@@ -151,7 +150,7 @@ if [ -b /dev/sda1 ] && ! grep -q '/mnt/sda1' /proc/mounts; then
     mount -t ext4 -o noatime,nodiratime,commit=30,barrier=0 /dev/sda1 /mnt/sda1 || mount /dev/sda1 /mnt/sda1
 fi
 ln -sfn /mnt/sda1 /mnt/usb
-mkdir -p /mnt/sda1/downloads /mnt/sda1/share /mnt/sda1/esp32-downloads /mnt/sda1/esp32-download-host
+mkdir -p /mnt/sda1/downloads /mnt/sda1/share
 if [ -d /sys/block/sda/queue ]; then
     echo 4096 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null || true
     echo 1024 > /sys/block/sda/queue/max_sectors_kb 2>/dev/null || true
@@ -178,31 +177,8 @@ which yt-dlp iwinfo
 yt-dlp --version 2>/dev/null || true
 """, timeout=300)
 
-    # 3. Upload ESP32-Download static web assets, config, APK, and firmware to /mnt/sda1/esp32-download-host
+    # 3. Upload new Frontend (/www) and Backend (/usr/bin/r3p-api)
     sftp = client.open_sftp()
-    print("Uploading ESP32-Download public web UI & data to /mnt/sda1/esp32-download-host...")
-    upload_dir(sftp, os.path.join(ESP_SRC_DIR, "local-host", "public"), "/mnt/sda1/esp32-download-host/public")
-    sftp_mkdir_p(sftp, "/mnt/sda1/esp32-download-host/data")
-    for fname in ["runtime-queue.json", "scheduled-downloads.json"]:
-        src_f = os.path.join(ESP_SRC_DIR, "local-host", "data", fname)
-        if os.path.exists(src_f):
-            sftp.put(src_f, f"/mnt/sda1/esp32-download-host/data/{fname}")
-
-    apk_file = os.path.join(ESP_SRC_DIR, "esp-download.apk")
-    if os.path.exists(apk_file):
-        print("Uploading esp-download.apk...")
-        sftp.put(apk_file, "/mnt/sda1/esp32-download-host/esp-download.apk")
-
-    fw_root = os.path.join(ESP_SRC_DIR, "firmware-cyd", "releases")
-    if os.path.exists(fw_root):
-        for model in os.listdir(fw_root):
-            fbin = os.path.join(fw_root, model, f"{model}-firmware.bin")
-            if os.path.exists(fbin):
-                rdir = f"/mnt/sda1/esp32-download-host/firmware/{model}"
-                sftp_mkdir_p(sftp, rdir)
-                sftp.put(fbin, f"{rdir}/{model}-firmware.bin")
-
-    # 4. Upload new Frontend (/www) and Backend (/usr/bin/r3p-api)
     print("Uploading new Frontend (/www)...")
     run_ssh(client, "rm -rf /www/assets/*")
     upload_dir(sftp, FRONTEND_DIST, "/www")

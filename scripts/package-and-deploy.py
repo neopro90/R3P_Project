@@ -108,7 +108,6 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
         "tar -xzf /tmp/r3p-update-bundle.tar.gz -C /",
         "rm -f /tmp/r3p-update-bundle.tar.gz",
         "rm -rf /var/cache/apk/* /lib/apk/cache/* 2>/dev/null || true",
-        "rm -rf /overlay/esp32-download-host 2>/dev/null || true",
         "uci -q delete firewall.allow_wan_8787 && uci commit firewall && /etc/init.d/firewall reload 2>/dev/null || true",
         "[ -d /mnt/sda1/downloads ] && [ ! -L /overlay/downloads ] && ln -sf /mnt/sda1/downloads /overlay/downloads || true",
         "chmod 755 /usr/bin/r3p-api",

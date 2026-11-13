@@ -176,7 +176,7 @@ onMounted(() => {
       <form v-if="showAddDevice" class="mb-3 p-2.5 rounded bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-5 gap-2 items-end" @submit.prevent="addDevice">
         <div>
           <label class="block text-[10px] text-gray-400 uppercase mb-1">Device Name</label>
-          <input v-model="newDev.name" type="text" required class="w-full pro-input" placeholder="ESP32-Sensor" />
+          <input v-model="newDev.name" type="text" required class="w-full pro-input" placeholder="R3P-Sensor-01" />
         </div>
         <div>
           <label class="block text-[10px] text-gray-400 uppercase mb-1">IPv4 Address</label>

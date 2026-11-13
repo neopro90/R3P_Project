@@ -30,9 +30,8 @@ var (
 	downloaderQueueFile     = "/etc/r3p/downloader-queue.json"
 	downloaderSchedulesFile = "/etc/r3p/downloader-schedules.json"
 
-	legacyEspConfigFile    = "/etc/r3p/esp32-local-config.json"
-	legacyHostSdaDataDir   = "/mnt/sda1/esp32-download-host/data"
-	legacyHostFlashDataDir = "/overlay/esp32-download-host/data"
+	legacyLocalConfigFile   = "/etc/r3p/local-downloader.json"
+	legacySdaDataDir        = "/mnt/sda1/download-host/data"
 )
 
 func isSda1Mounted() bool {
@@ -263,10 +262,10 @@ func loadOrMigrateDownloaderConfig(cfgPath string, legacyPaths []string) Downloa
 	if strings.Contains(cfg.OutputDirectory, ":") || strings.Contains(cfg.OutputDirectory, "\\") || strings.TrimSpace(cfg.OutputDirectory) == "" {
 		cfg.OutputDirectory = getDefaultDownloadOutputDir()
 	}
-	if strings.Contains(cfg.WorkerName, "DESKTOP-") || strings.Contains(strings.ToLower(cfg.WorkerName), "esp") || cfg.WorkerName == "" {
+	if strings.Contains(cfg.WorkerName, "DESKTOP-") || strings.TrimSpace(cfg.WorkerName) == "" {
 		cfg.WorkerName = "R3P-Local-Downloader"
 	}
-	if cfg.SystemID == "" || strings.Contains(strings.ToLower(cfg.SystemID), "esp") {
+	if strings.TrimSpace(cfg.SystemID) == "" || cfg.SystemID == "local-host-r3p-linux" {
 		cfg.SystemID = "r3p-local-downloader"
 	}
 	return cfg
@@ -290,9 +289,8 @@ func initR3pDownloadRuntime() {
 	_ = os.MkdirAll("/etc/r3p", 0755)
 
 	dlConfig = loadOrMigrateDownloaderConfig(downloaderConfigFile, []string{
-		legacyEspConfigFile,
-		filepath.Join(legacyHostSdaDataDir, "local-config.json"),
-		filepath.Join(legacyHostFlashDataDir, "local-config.json"),
+		legacyLocalConfigFile,
+		filepath.Join(legacySdaDataDir, "local-config.json"),
 	})
 	syncR3pDownloaderSettings()
 
@@ -302,8 +300,7 @@ func initR3pDownloadRuntime() {
 		migratedQueue = true
 	}
 	loadJSONWithMigration(downloaderQueueFile, []string{
-		filepath.Join(legacyHostSdaDataDir, "runtime-queue.json"),
-		filepath.Join(legacyHostFlashDataDir, "runtime-queue.json"),
+		filepath.Join(legacySdaDataDir, "runtime-queue.json"),
 	}, &loadedQueue)
 	if loadedQueue == nil {
 		loadedQueue = []*DownloadJob{}
@@ -326,8 +323,7 @@ func initR3pDownloadRuntime() {
 		migratedSched = true
 	}
 	loadJSONWithMigration(downloaderSchedulesFile, []string{
-		filepath.Join(legacyHostSdaDataDir, "scheduled-downloads.json"),
-		filepath.Join(legacyHostFlashDataDir, "scheduled-downloads.json"),
+		filepath.Join(legacySdaDataDir, "scheduled-downloads.json"),
 	}, &loadedSchedules)
 	if loadedSchedules == nil {
 		loadedSchedules = []*ScheduledDownload{}

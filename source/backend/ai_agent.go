@@ -117,7 +117,7 @@ const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOM
 - **Daemon Trung Tâm**: /usr/bin/r3p-api (Quản lý bởi /etc/init.d/r3p-api)
   - Cổng HTTP: 80 (Web UI & REST API v1)
   - Cổng HTTPS: 8443 (TLS Web UI & REST API v1)
-  - API & Web UI Download cục bộ tích hợp trực tiếp tại /downloads và /api/v1/download/* (không còn module ESP32 / cổng 8787 ngoài luồng)
+  - API & Web UI Download cục bộ tích hợp trực tiếp tại /downloads và /api/v1/download/* (chạy hoàn toàn cục bộ trên R3P)
 - **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 R3P MINI SERVER OS Dashboard)
 - **Thư Mục Cấu Hình Bền Vững (/etc/r3p/)**:
   - /etc/r3p/SYSTEM_BLUEPRINT.md : Tài liệu cấu trúc hệ thống này
@@ -201,7 +201,7 @@ const defaultQuickCommandsJSON = `{
 
 func ensureSystemBlueprintFile() string {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") && strings.Contains(string(b), "downloader.json") && !strings.Contains(string(b), "8787") && !strings.Contains(string(b), "ESP32-Download") {
+	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") && strings.Contains(string(b), "downloader.json") && strings.Contains(string(b), "chạy hoàn toàn cục bộ trên R3P") && !strings.Contains(string(b), "8787") {
 		return string(b)
 	}
 	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)

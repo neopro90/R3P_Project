@@ -52,18 +52,16 @@ func setupDownloaderTestEnv(t *testing.T) string {
 func TestLoadOrMigrateDownloaderConfigPreservesUserSettings(t *testing.T) {
 	dir := setupDownloaderTestEnv(t)
 
-	legacyPath := filepath.Join(dir, "esp32-local-config.json")
+	legacyPath := filepath.Join(dir, "local-downloader.json")
 	targetPath := filepath.Join(dir, "downloader.json")
 	legacyJSON := `{
   "schemaVersion": 2,
-  "systemId": "esp-host-r3p-linux",
-  "deviceBaseUrl": "http://192.168.4.1",
-  "deviceToken": "legacy-esp-secret",
+  "systemId": "local-host-r3p-linux",
   "telegramBotToken": "123456789:TEST_SYNTHETIC_BOT_TOKEN_VALUE",
   "telegramEnabled": true,
   "telegramAllowedChatId": "99887766",
-  "outputDirectory": "/mnt/sda1/esp32-downloads",
-  "workerName": "R3P-Linux-Runtime",
+  "outputDirectory": "/mnt/sda1/media-archive",
+  "workerName": "DESKTOP-TESTPC",
   "downloadSettings": {
     "videoQuality": "1080p",
     "maxConcurrentJobs": 2
@@ -80,8 +78,8 @@ func TestLoadOrMigrateDownloaderConfigPreservesUserSettings(t *testing.T) {
 	if cfg.WorkerName != "R3P-Local-Downloader" {
 		t.Fatalf("WorkerName = %q, want R3P-Local-Downloader", cfg.WorkerName)
 	}
-	if cfg.OutputDirectory != "/mnt/sda1/esp32-downloads" {
-		t.Fatalf("OutputDirectory = %q, want preserved /mnt/sda1/esp32-downloads", cfg.OutputDirectory)
+	if cfg.OutputDirectory != "/mnt/sda1/media-archive" {
+		t.Fatalf("OutputDirectory = %q, want preserved /mnt/sda1/media-archive", cfg.OutputDirectory)
 	}
 	if cfg.TelegramBotToken != "123456789:TEST_SYNTHETIC_BOT_TOKEN_VALUE" || !cfg.TelegramEnabled || cfg.TelegramAllowedChatId != "99887766" {
 		t.Fatalf("Telegram settings lost during migration: %+v", cfg)
@@ -109,9 +107,9 @@ func TestResolveJobVideoQualityAndMountSubdir(t *testing.T) {
 	if m != "/mnt/sda1" || p != "videos" {
 		t.Fatalf("resolveMountAndSubdir(/mnt/sda1/videos) = (%q, %q)", m, p)
 	}
-	m2, p2 := resolveMountAndSubdir("/mnt/sda1/esp32-downloads")
-	if m2 != "/mnt/sda1" || p2 != "esp32-downloads" {
-		t.Fatalf("resolveMountAndSubdir(/mnt/sda1/esp32-downloads) = (%q, %q)", m2, p2)
+	m2, p2 := resolveMountAndSubdir("/mnt/sda1/downloads")
+	if m2 != "/mnt/sda1" || p2 != "downloads" {
+		t.Fatalf("resolveMountAndSubdir(/mnt/sda1/downloads) = (%q, %q)", m2, p2)
 	}
 }
 
@@ -188,7 +186,7 @@ func TestDownloadJobsAndAnalyzeHandlers(t *testing.T) {
 		t.Fatalf("expected downloader route, got: %s", anaRec.Body.String())
 	}
 
-	// 5. Debug endpoint reports local R3P runtime without port 8787 / ESP32 fields
+	// 5. Debug endpoint reports local R3P runtime without legacy remote-device fields
 	dbgReq := httptest.NewRequest(http.MethodGet, "/api/v1/download/debug", nil)
 	dbgRec := httptest.NewRecorder()
 	handleDownloadDebug(dbgRec, dbgReq)

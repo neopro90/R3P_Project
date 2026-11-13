@@ -1676,7 +1676,7 @@ func main() {
 	mux.HandleFunc("/api/v1/explorer/write", cors(handleExplorerWrite, "POST"))
 	mux.HandleFunc("/api/v1/explorer/create", cors(handleExplorerCreate, "POST"))
 	mux.HandleFunc("/api/v1/explorer/delete", cors(handleExplorerDelete, "DELETE"))
-	// Legacy ESP32/8787 host routes removed — all downloader features run locally via authenticated /api/v1/download/* routes.
+	// All downloader routes run locally on R3P via authenticated /api/v1/download/* handlers.
 	mux.HandleFunc("/api/v1/firewall", cors(handleFirewallGet, "GET"))
 	mux.HandleFunc("/api/v1/firewall/redirect", cors(handleFirewallRedirect, "POST", "PATCH", "DELETE"))
 	mux.HandleFunc("/api/v1/firewall/rule", cors(handleFirewallRule, "POST", "PATCH", "DELETE"))
