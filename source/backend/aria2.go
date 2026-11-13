@@ -60,14 +60,26 @@ func parseDownloadURLs(text string) []string {
 }
 
 func validateTelegramConfig(token, chatID string) error {
-	if !telegramTokenPattern.MatchString(token) {
+	if !telegramTokenPattern.MatchString(strings.TrimSpace(token)) {
 		return errors.New("bot token format is invalid")
 	}
-	if !telegramChatIDPattern.MatchString(chatID) {
+	trimmedChat := strings.TrimSpace(chatID)
+	if trimmedChat == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(trimmedChat, func(r rune) bool {
+		return r == ',' || r == ' ' || r == ';' || r == '|'
+	})
+	if len(parts) == 0 {
 		return errors.New("chat ID must be a numeric Telegram chat ID")
 	}
-	if _, err := strconv.ParseInt(chatID, 10, 64); err != nil {
-		return errors.New("chat ID is outside the supported numeric range")
+	for _, p := range parts {
+		if !telegramChatIDPattern.MatchString(p) {
+			return errors.New("chat ID must be a numeric Telegram chat ID")
+		}
+		if _, err := strconv.ParseInt(p, 10, 64); err != nil {
+			return errors.New("chat ID is outside the supported numeric range")
+		}
 	}
 	return nil
 }

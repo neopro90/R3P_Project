@@ -17,6 +17,7 @@ interface AdblockSource {
 interface AdblockConfig {
   enabled: boolean
   force_dns: boolean
+  expose_upstream_dns?: boolean
   safe_search: boolean
   block_mode: string
   auto_update: boolean
@@ -33,6 +34,7 @@ interface AdblockConfig {
 const config = ref<AdblockConfig>({
   enabled: true,
   force_dns: true,
+  expose_upstream_dns: false,
   safe_search: false,
   block_mode: 'zero_ip',
   auto_update: true,
@@ -121,12 +123,12 @@ async function clearStreamHistory() {
 }
 
 const gatewaySetup = ref<GatewaySetupInfo>({
-  is_client_mode: true,
-  r3p_client_ip: '192.168.1.6',
-  r3p_client_iface: 'phy0-sta0',
-  upstream_gateway_ip: '192.168.1.1',
-  r3p_lan_ip: '192.168.2.1',
-  wan_dns_listening: true,
+  is_client_mode: false,
+  r3p_client_ip: '',
+  r3p_client_iface: '',
+  upstream_gateway_ip: '',
+  r3p_lan_ip: '',
+  wan_dns_listening: false,
 })
 const copiedText = ref('')
 
@@ -250,6 +252,7 @@ async function saveGlobalConfig() {
       body: JSON.stringify({
         enabled: config.value.enabled,
         force_dns: config.value.force_dns,
+        expose_upstream_dns: Boolean(config.value.expose_upstream_dns),
         safe_search: config.value.safe_search,
         block_mode: config.value.block_mode,
         auto_update: config.value.auto_update,
@@ -758,6 +761,14 @@ onMounted(() => {
             <div>
               <div class="font-semibold text-emerald-300">Ghi nhật ký truy vấn DNS (DNS Query Log)</div>
               <div class="text-[11px] text-gray-400">Hiển thị chi tiết các tên miền thiết bị trong mạng đang truy cập và bị chặn ở bảng Log bên dưới.</div>
+            </div>
+          </label>
+
+          <label class="flex items-start gap-2.5 p-2.5 rounded bg-black/30 border border-white/5 cursor-pointer hover:border-amber-500/30 md:col-span-2">
+            <input v-model="config.expose_upstream_dns" type="checkbox" class="mt-0.5 rounded" />
+            <div>
+              <div class="font-semibold text-amber-300">Chia sẻ AdBlock DNS cho mạng LAN upstream (Chỉ RFC1918)</div>
+              <div class="text-[11px] text-gray-400">Cho phép router chính / subnet nội bộ (192.168.x.x, 10.x.x.x, 172.16.x.x) gửi DNS qua cổng 53 mà không mở ra Internet công cộng.</div>
             </div>
           </label>
         </div>

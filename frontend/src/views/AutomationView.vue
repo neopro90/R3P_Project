@@ -72,22 +72,22 @@ async function addCron() {
   }
 }
 
-async function toggleCron(c: CronEntry, idx: number) {
+async function toggleCron(c: CronEntry) {
   try {
     const res = await apiRequest<{ jobs: CronEntry[] }>('/automation/cron', {
       method: 'PATCH',
-      body: JSON.stringify({ index: idx, enabled: !c.enabled }),
+      body: JSON.stringify({ index: c.index, enabled: !c.enabled }),
     })
     if (res?.jobs) jobs.value = res.jobs
-    showNotice(`Scheduled job #${idx + 1} ${!c.enabled ? 'enabled' : 'disabled'}!`)
+    showNotice(`Scheduled job ${!c.enabled ? 'enabled' : 'disabled'}!`)
   } catch (err: any) {
     showNotice('Toggle error: ' + (err?.message || err), 5000)
   }
 }
 
-async function deleteCron(idx: number) {
+async function deleteCron(index: number) {
   try {
-    const res = await apiRequest<{ jobs: CronEntry[] }>(`/automation/cron?index=${idx}`, {
+    const res = await apiRequest<{ jobs: CronEntry[] }>(`/automation/cron?index=${index}`, {
       method: 'DELETE',
     })
     if (res?.jobs) jobs.value = res.jobs
@@ -97,13 +97,13 @@ async function deleteCron(idx: number) {
   }
 }
 
-async function runNow(command: string) {
-  runningCmd.value = command
-  runOutput.value = `Running: ${command} …`
+async function runPreset(preset: string, label: string, cronIndex?: number) {
+  runningCmd.value = cronIndex !== undefined ? `cron:${cronIndex}` : preset
+  runOutput.value = `Running: ${label} …`
   try {
     const res = await apiRequest<{ command: string; output: string; error: string }>('/automation/run', {
       method: 'POST',
-      body: JSON.stringify({ command }),
+      body: JSON.stringify(cronIndex !== undefined ? { preset, cron_index: cronIndex } : { preset }),
     })
     runOutput.value = `$ ${res.command}\n${res.output || '(Command completed with exit status 0)'}${res.error ? '\nError: ' + res.error : ''}`
   } catch (err: any) {
@@ -224,15 +224,15 @@ onMounted(() => {
                   <button
                     type="button"
                     class="btn-primary text-[10px] py-0.5 px-2 min-w-[82px] justify-center"
-                    :disabled="runningCmd === c.command"
-                    @click="runNow(c.command)"
+                    :disabled="runningCmd === `cron:${c.index}`"
+                    @click="runPreset('', c.command, c.index)"
                   >
-                    {{ runningCmd === c.command ? 'Running…' : '▶ Run Now' }}
+                    {{ runningCmd === `cron:${c.index}` ? 'Running…' : '▶ Run Now' }}
                   </button>
-                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2 min-w-[64px] justify-center" @click="toggleCron(c, idx)">
+                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2 min-w-[64px] justify-center" @click="toggleCron(c)">
                     {{ c.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2 min-w-[58px] justify-center" @click="deleteCron(idx)">
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2 min-w-[58px] justify-center" @click="deleteCron(c.index)">
                     Delete
                   </button>
                 </div>
@@ -313,10 +313,10 @@ onMounted(() => {
             <button
               type="button"
               class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
-              :disabled="runningCmd === 'sync; echo 3 > /proc/sys/vm/drop_caches; free -m'"
-              @click="runNow('sync; echo 3 > /proc/sys/vm/drop_caches; free -m')"
+              :disabled="runningCmd === 'flush_ram_cache'"
+              @click="runPreset('flush_ram_cache', 'Flush Linux Memory Cache')"
             >
-              {{ runningCmd === 'sync; echo 3 > /proc/sys/vm/drop_caches; free -m' ? 'Running…' : '▶ Execute' }}
+              {{ runningCmd === 'flush_ram_cache' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
 
@@ -328,10 +328,10 @@ onMounted(() => {
             <button
               type="button"
               class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
-              :disabled="runningCmd === 'netstat -tulnp 2>/dev/null || ss -tuln'"
-              @click="runNow('netstat -tulnp 2>/dev/null || ss -tuln')"
+              :disabled="runningCmd === 'listening_sockets'"
+              @click="runPreset('listening_sockets', 'Inspect Active Listening Sockets')"
             >
-              {{ runningCmd === 'netstat -tulnp 2>/dev/null || ss -tuln' ? 'Running…' : '▶ Execute' }}
+              {{ runningCmd === 'listening_sockets' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
 
@@ -343,10 +343,10 @@ onMounted(() => {
             <button
               type="button"
               class="btn-secondary text-[11px] min-w-[88px] justify-center shrink-0"
-              :disabled="runningCmd === '/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly'"
-              @click="runNow('/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly')"
+              :disabled="runningCmd === 'reload_dnsmasq'"
+              @click="runPreset('reload_dnsmasq', 'Reload DNS & DHCP Server')"
             >
-              {{ runningCmd === '/etc/init.d/dnsmasq reload && echo dnsmasq reloaded cleanly' ? 'Running…' : '▶ Execute' }}
+              {{ runningCmd === 'reload_dnsmasq' ? 'Running…' : '▶ Execute' }}
             </button>
           </div>
         </div>

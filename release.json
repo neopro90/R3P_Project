@@ -1,9 +1,9 @@
 {
-    "version":  "v1.1.22",
-    "revision":  23,
-    "released_at":  "2026-11-10 17:40:00",
-    "repo_url":  "https://github.com/neopro90/R3P_Project.git",
-    "branch":  "main",
-    "commit_sha":  "v1.1.22",
-    "changelog":  "v1.1.22 (Rev 23): add two-way Google Drive cloud synchronization with custom schedule, folder selector, URL parser and live sync terminal"
+    "version": "v1.1.23",
+    "revision": 24,
+    "released_at": "2026-11-14 05:10:00",
+    "repo_url": "https://github.com/neopro90/R3P_Project.git",
+    "branch": "main",
+    "commit_sha": "v1.1.23",
+    "changelog": "v1.1.23 (Rev 24): full security hardening, P0/P1 bug fixes across all backend modules & Vue views, and removal of orphaned files/bundles"
 }

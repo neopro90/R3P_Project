@@ -691,7 +691,7 @@ func newTelegramHTTPClient(timeout time.Duration) *http.Client {
 		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 			TLSHandshakeTimeout:   8 * time.Second,
 			ResponseHeaderTimeout: 20 * time.Second,
 			IdleConnTimeout:       20 * time.Second,
@@ -999,18 +999,25 @@ func startDownloadJob(job *DownloadJob) {
 		case "extractor_date":
 			subFolder = "%(extractor_key)s/%(upload_date>%Y-%m-%d)s"
 		}
-		tmpl := settings.FilenameTemplate
+		tmpl := strings.TrimSpace(settings.FilenameTemplate)
+		tmpl = strings.ReplaceAll(tmpl, "..", "")
+		tmpl = strings.TrimLeft(tmpl, "/\\")
 		if tmpl == "" {
 			tmpl = "%(title).180B [%(id)s].%(ext)s"
 		}
-		fullTemplate := filepath.Join(outDir, subFolder, tmpl)
+		targetDir := filepath.Join(outDir, subFolder)
+		tempDir := filepath.Join(outDir, ".tmp-"+job.ID)
+		_ = os.MkdirAll(targetDir, 0755)
+		_ = os.MkdirAll(tempDir, 0755)
+		defer os.RemoveAll(tempDir)
 
 		args := []string{
 			"--newline", "--no-warnings", "--progress",
-			"--no-check-certificates",
 			"--extractor-args", "youtube:player_client=android",
 			"--http-chunk-size", "10M",
-			"-o", fullTemplate,
+			"--paths", "temp:" + tempDir,
+			"--paths", "home:" + targetDir,
+			"-o", tmpl,
 			"--print", "after_move:__OUTPUT__%(filepath)s",
 		}
 		hasFfmpeg := false
@@ -1069,7 +1076,7 @@ func startDownloadJob(job *DownloadJob) {
 		if hasFfmpeg && cfg.FfmpegPath != "" {
 			args = append(args, "--ffmpeg-location", cfg.FfmpegPath)
 		}
-		args = append(args, job.URL)
+		args = append(args, "--", job.URL)
 
 		bin := cfg.YtDlpPath
 		if bin == "" {
@@ -1131,23 +1138,6 @@ func startDownloadJob(job *DownloadJob) {
 		wg.Wait()
 
 		err := cmd.Wait()
-
-		// Clean up partial fragments or .part temporary files left behind.
-		targetDir := filepath.Join(outDir, subFolder)
-		if entries, readErr := os.ReadDir(targetDir); readErr == nil {
-			for _, entry := range entries {
-				name := entry.Name()
-				if strings.HasSuffix(name, ".part") {
-					_ = os.Remove(filepath.Join(targetDir, name))
-					continue
-				}
-				if strings.Contains(name, ".f") && (strings.HasSuffix(name, ".webm") || strings.HasSuffix(name, ".mp4")) {
-					if m, _ := filepath.Match("*.f[0-9]*.*", name); m {
-						_ = os.Remove(filepath.Join(targetDir, name))
-					}
-				}
-			}
-		}
 
 		if ctx.Err() != nil {
 			finishDownloadJob(job, false, true, "", nil, "Cancelled by user")
@@ -1251,10 +1241,85 @@ func fmtBytesHuman(b int64) string {
 	return fmt.Sprintf("%d B", b)
 }
 
+func validateDownloaderOutputDir(raw string) (string, error) {
+	dir := strings.TrimSpace(raw)
+	if dir == "" || strings.Contains(dir, ":") || strings.Contains(dir, "\\") || !strings.HasPrefix(dir, "/") {
+		return "", fmt.Errorf("Thư mục lưu phải là đường dẫn Linux hợp lệ bắt đầu bằng /mnt/ hoặc /overlay/")
+	}
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	if strings.Contains(clean, "..") {
+		return "", fmt.Errorf("Đường dẫn không hợp lệ")
+	}
+	for _, prefix := range []string{"/mnt", "/overlay/downloads", "/tmp"} {
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			return clean, nil
+		}
+	}
+	return "", fmt.Errorf("Thư mục lưu chỉ cho phép nằm trong /mnt/... hoặc /overlay/downloads/...")
+}
+
+func computeNextScheduleRunMs(s *ScheduledDownload, from time.Time) int64 {
+	hh, mm := 3, 0
+	if parts := strings.SplitN(strings.TrimSpace(s.Time), ":", 2); len(parts) == 2 {
+		if h, err := strconv.Atoi(parts[0]); err == nil && h >= 0 && h <= 23 {
+			hh = h
+		}
+		if m, err := strconv.Atoi(parts[1]); err == nil && m >= 0 && m <= 59 {
+			mm = m
+		}
+	}
+	candidate := time.Date(from.Year(), from.Month(), from.Day(), hh, mm, 0, 0, from.Location())
+	switch strings.ToLower(strings.TrimSpace(s.Recurrence)) {
+	case "once":
+		if !candidate.After(from) {
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+		return candidate.UnixMilli()
+	case "weekly":
+		wd := time.Weekday(s.Weekday % 7)
+		if wd < 0 {
+			wd = 0
+		}
+		daysAhead := (int(wd) - int(candidate.Weekday()) + 7) % 7
+		candidate = candidate.AddDate(0, 0, daysAhead)
+		if !candidate.After(from) {
+			candidate = candidate.AddDate(0, 0, 7)
+		}
+		return candidate.UnixMilli()
+	case "monthly":
+		dom := s.DayOfMonth
+		if dom < 1 || dom > 31 {
+			dom = 1
+		}
+		year, month := from.Year(), from.Month()
+		clampDay := func(y int, m time.Month, d int) int {
+			last := time.Date(y, m+1, 0, 0, 0, 0, 0, from.Location()).Day()
+			if d > last {
+				return last
+			}
+			return d
+		}
+		candidate = time.Date(year, month, clampDay(year, month, dom), hh, mm, 0, 0, from.Location())
+		if !candidate.After(from) {
+			nextMonth := time.Date(year, month, 1, 0, 0, 0, 0, from.Location()).AddDate(0, 1, 0)
+			candidate = time.Date(nextMonth.Year(), nextMonth.Month(), clampDay(nextMonth.Year(), nextMonth.Month(), dom), hh, mm, 0, 0, from.Location())
+		}
+		return candidate.UnixMilli()
+	default: // "daily"
+		if !candidate.After(from) {
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+		return candidate.UnixMilli()
+	}
+}
+
 func enqueueR3pJob(rawURL, source, chatID, quality string, force bool) (*DownloadJob, bool, error) {
 	u := strings.TrimRight(strings.TrimSpace(rawURL), ".,;:!?)>\"'")
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return nil, false, fmt.Errorf("URL phải bắt đầu bằng http:// hoặc https://")
+	}
+	if err := validateDownloadURL(u); err != nil {
+		return nil, false, fmt.Errorf("URL không được phép (%s)", err.Error())
 	}
 	dlMu.Lock()
 	defer dlMu.Unlock()
@@ -1323,11 +1388,17 @@ func downloadWorkerLoop() {
 				}
 			}
 		}
-		nowMs := time.Now().UnixMilli()
+		now := time.Now()
+		nowMs := now.UnixMilli()
 		for _, s := range dlSchedules {
 			if s.Enabled && s.NextRunAt > 0 && nowMs >= s.NextRunAt {
-				s.NextRunAt = nowMs + 86400*1000
-				s.LastRunAt = time.Now().UTC().Format(time.RFC3339)
+				if strings.EqualFold(strings.TrimSpace(s.Recurrence), "once") {
+					s.Enabled = false
+					s.NextRunAt = 0
+				} else {
+					s.NextRunAt = computeNextScheduleRunMs(s, now)
+				}
+				s.LastRunAt = now.UTC().Format(time.RFC3339)
 				s.LastRunStatus = "QUEUED"
 				saveDownloaderSchedules()
 				go func(schedURL string) {
@@ -1553,17 +1624,23 @@ func r3pTelegramPollerLoop() {
 				continue
 			}
 
-			if allowedChat != "" && !isAllowedTelegramChat(allowedChat, chatStr) {
+			if allowedChat == "" || !isAllowedTelegramChat(allowedChat, chatStr) {
+				reason := "Chat ID chưa được cấp quyền: " + chatStr
+				msg := "⛔ Chat ID " + chatStr + " chưa được cấp quyền trong cài đặt."
+				if allowedChat == "" {
+					reason = "Chưa cấu hình Allowed Chat ID — từ chối mọi yêu cầu ngoài /id"
+					msg = "🔒 Bot chưa cấu hình Allowed Chat ID. Hãy gửi /id để lấy Chat ID và lưu vào trang Tải Xuống / Tự Động Hóa trên Router."
+				}
 				appendTelegramRouteLog(TelegramRouteLogEntry{
 					ID:        fmt.Sprintf("rej_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
 					UpdateID:  upd.UpdateID,
 					ChatID:    chatStr,
 					URL:       truncateLogText(analysis.CleanText, 120),
 					Decision:  "REJECTED",
-					Reason:    "Chat ID chưa được cấp quyền: " + chatStr,
+					Reason:    reason,
 					JobStatus: "BLOCKED",
 				})
-				_ = sendR3pTelegramMsg(chatStr, "⛔ Chat ID "+chatStr+" chưa được cấp quyền trong cài đặt.")
+				_ = sendR3pTelegramMsg(chatStr, msg)
 				continue
 			}
 
@@ -1700,7 +1777,7 @@ func handleDownloadJobs(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		dlMu.Lock()
-		var kept []*DownloadJob
+		kept := make([]*DownloadJob, 0, len(dlQueue))
 		removed := 0
 		for _, j := range dlQueue {
 			if !isTerminalDownloadJob(j.RuntimeStatus) {
@@ -1732,8 +1809,14 @@ func handleDownloadJobItem(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(rest, "/retry")
 		dlMu.Lock()
 		found := false
+		alreadyRunning := false
 		for _, j := range dlQueue {
 			if j.ID == id {
+				if j.RuntimeStatus == "RUNNING" || dlActiveCmds[j.ID] != nil {
+					alreadyRunning = true
+					found = true
+					break
+				}
 				j.RuntimeStatus = "QUEUED"
 				j.Error = ""
 				j.Progress = 0
@@ -1749,6 +1832,10 @@ func handleDownloadJobItem(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, false, "Job không tồn tại")
 			return
 		}
+		if alreadyRunning {
+			writeJSON(w, http.StatusConflict, false, "Job đang chạy, không thể thử lại lúc này")
+			return
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"retried": true, "id": id})
 		return
 	}
@@ -1757,7 +1844,7 @@ func handleDownloadJobItem(w http.ResponseWriter, r *http.Request) {
 		id := rest
 		targetURL := r.URL.Query().Get("url")
 		dlMu.Lock()
-		var kept []*DownloadJob
+		kept := make([]*DownloadJob, 0, len(dlQueue))
 		removed := 0
 		for _, j := range dlQueue {
 			if j.ID == id || (targetURL != "" && j.URL == targetURL) {
@@ -1906,15 +1993,21 @@ func handleDownloadConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		dlMu.Lock()
 		if body.OutputDirectory != nil {
-			dir := strings.TrimSpace(*body.OutputDirectory)
-			if dir != "" && !strings.Contains(dir, ":") && !strings.Contains(dir, "\\") {
-				cleanDir := filepath.Clean(dir)
-				_ = os.MkdirAll(cleanDir, 0755)
-				dlConfig.OutputDirectory = cleanDir
+			cleanDir, dirErr := validateDownloaderOutputDir(*body.OutputDirectory)
+			if dirErr != nil {
+				dlMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, dirErr.Error())
+				return
 			}
+			_ = os.MkdirAll(cleanDir, 0755)
+			dlConfig.OutputDirectory = cleanDir
 		}
 		if body.DownloadSettings != nil {
-			dlConfig.DownloadSettings = *body.DownloadSettings
+			s := *body.DownloadSettings
+			if strings.Contains(s.FilenameTemplate, "..") {
+				s.FilenameTemplate = strings.ReplaceAll(s.FilenameTemplate, "..", "")
+			}
+			dlConfig.DownloadSettings = s
 		}
 		if body.UrlRetentionDays != nil && *body.UrlRetentionDays > 0 {
 			dlConfig.UrlRetentionDays = *body.UrlRetentionDays
@@ -2040,8 +2133,9 @@ func handleDownloadSchedules(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, err.Error())
 			return
 		}
-		if strings.TrimSpace(body.URL) == "" {
-			writeJSON(w, http.StatusBadRequest, false, "URL lịch tải không được để trống")
+		body.URL = strings.TrimSpace(body.URL)
+		if err := validateDownloadURL(body.URL); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "URL lịch tải không hợp lệ: "+err.Error())
 			return
 		}
 		dlMu.Lock()
@@ -2051,9 +2145,17 @@ func handleDownloadSchedules(w http.ResponseWriter, r *http.Request) {
 		body.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 		if body.OutputDirectory == "" {
 			body.OutputDirectory = dlConfig.OutputDirectory
+		} else {
+			cleanDir, dirErr := validateDownloaderOutputDir(body.OutputDirectory)
+			if dirErr != nil {
+				dlMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, dirErr.Error())
+				return
+			}
+			body.OutputDirectory = cleanDir
 		}
 		if body.NextRunAt == 0 {
-			body.NextRunAt = time.Now().Add(24 * time.Hour).UnixMilli()
+			body.NextRunAt = computeNextScheduleRunMs(&body, time.Now())
 		}
 		dlSchedules = append([]*ScheduledDownload{&body}, dlSchedules...)
 		saveDownloaderSchedules()

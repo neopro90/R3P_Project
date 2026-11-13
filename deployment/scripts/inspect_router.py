@@ -1,15 +1,18 @@
+import getpass
+import os
 import paramiko
 import sys
 import json
 
-ROUTER_IP = "192.168.2.1"
-ROUTER_USER = "root"
-ROUTER_PASS = "root"
+ROUTER_IP = os.environ.get("R3P_HOST", "192.168.1.7")
+ROUTER_USER = os.environ.get("R3P_SSH_USER", "root")
+ROUTER_PASS = os.environ.get("R3P_SSH_PASS") or getpass.getpass(f"SSH password for {ROUTER_USER}@{ROUTER_IP}: ")
 
 def main():
     print(f"Connecting to {ROUTER_IP} as {ROUTER_USER}...")
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(ROUTER_IP, port=22, username=ROUTER_USER, password=ROUTER_PASS, timeout=10)
     except Exception as e:

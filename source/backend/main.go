@@ -31,7 +31,7 @@ import (
 	"time"
 )
 
-var Version = "v1.1.16"
+var Version = "v1.1.21"
 
 // BuildDate is injected at compile time via -ldflags="-X main.BuildDate=..."
 var BuildDate = "2026-11-06"
@@ -230,11 +230,16 @@ func parseProcStatAll() map[string]cpuStat {
 	return result
 }
 
-func cpuPercentAll(sampleMs int) map[string]float64 {
-	snap1 := parseProcStatAll()
-	time.Sleep(time.Duration(sampleMs) * time.Millisecond)
-	snap2 := parseProcStatAll()
+type metricsCacheState struct {
+	mu        sync.RWMutex
+	cpu       map[string]float64
+	ifaces    []map[string]interface{}
+	updatedAt time.Time
+}
 
+var metricsCache metricsCacheState
+
+func computeCPUUsage(snap1, snap2 map[string]cpuStat) map[string]float64 {
 	result := map[string]float64{}
 	for name, s2 := range snap2 {
 		s1, ok := snap1[name]
@@ -251,6 +256,88 @@ func cpuPercentAll(sampleMs int) map[string]float64 {
 		}
 	}
 	return result
+}
+
+func computeNetRates(snap1, snap2 map[string]ifaceSnapshot, elapsedSec float64) []map[string]interface{} {
+	if elapsedSec <= 0 {
+		elapsedSec = 1.0
+	}
+	var ifaces []map[string]interface{}
+	for name, s2 := range snap2 {
+		s1, ok := snap1[name]
+		if !ok {
+			continue
+		}
+		rxRate := float64(counterDelta(s2.rxBytes, s1.rxBytes)) / elapsedSec
+		txRate := float64(counterDelta(s2.txBytes, s1.txBytes)) / elapsedSec
+		item := map[string]interface{}{
+			"iface":               name,
+			"rx_bytes":            s2.rxBytes,
+			"tx_bytes":            s2.txBytes,
+			"rx_pkts":             s2.rxPkts,
+			"tx_pkts":             s2.txPkts,
+			"rx_bytes_per_second": rxRate,
+			"tx_bytes_per_second": txRate,
+		}
+		for key, value := range interfaceMetadata(name) {
+			item[key] = value
+		}
+		ifaces = append(ifaces, item)
+	}
+	if ifaces == nil {
+		ifaces = []map[string]interface{}{}
+	}
+	return ifaces
+}
+
+func startMetricsSampler() {
+	if _, err := os.Stat("/proc/stat"); err != nil {
+		return
+	}
+	go func() {
+		prevCPU := parseProcStatAll()
+		prevNet := parseNetDev()
+		prevTime := time.Now()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			curCPU := parseProcStatAll()
+			curNet := parseNetDev()
+			elapsed := now.Sub(prevTime).Seconds()
+			cpuMap := computeCPUUsage(prevCPU, curCPU)
+			ifaceRates := computeNetRates(prevNet, curNet, elapsed)
+			metricsCache.mu.Lock()
+			metricsCache.cpu = cpuMap
+			metricsCache.ifaces = ifaceRates
+			metricsCache.updatedAt = now
+			metricsCache.mu.Unlock()
+			prevCPU = curCPU
+			prevNet = curNet
+			prevTime = now
+		}
+	}()
+}
+
+func cpuPercentAll(sampleMs int) map[string]float64 {
+	snap1 := parseProcStatAll()
+	time.Sleep(time.Duration(sampleMs) * time.Millisecond)
+	snap2 := parseProcStatAll()
+	return computeCPUUsage(snap1, snap2)
+}
+
+func cpuPercentSnapshot() map[string]float64 {
+	metricsCache.mu.RLock()
+	if len(metricsCache.cpu) > 0 && time.Since(metricsCache.updatedAt) < 8*time.Second {
+		cp := make(map[string]float64, len(metricsCache.cpu))
+		for k, v := range metricsCache.cpu {
+			cp[k] = v
+		}
+		metricsCache.mu.RUnlock()
+		return cp
+	}
+	metricsCache.mu.RUnlock()
+	return cpuPercentAll(150)
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────
@@ -373,34 +460,19 @@ func netRates(sampleMs int) []map[string]interface{} {
 	snap1 := parseNetDev()
 	time.Sleep(time.Duration(sampleMs) * time.Millisecond)
 	snap2 := parseNetDev()
+	return computeNetRates(snap1, snap2, float64(sampleMs)/1000.0)
+}
 
-	elapsed := float64(sampleMs) / 1000.0
-	var ifaces []map[string]interface{}
-	for name, s2 := range snap2 {
-		s1, ok := snap1[name]
-		if !ok {
-			continue
-		}
-		rxRate := float64(counterDelta(s2.rxBytes, s1.rxBytes)) / elapsed
-		txRate := float64(counterDelta(s2.txBytes, s1.txBytes)) / elapsed
-		item := map[string]interface{}{
-			"iface":               name,
-			"rx_bytes":            s2.rxBytes,
-			"tx_bytes":            s2.txBytes,
-			"rx_pkts":             s2.rxPkts,
-			"tx_pkts":             s2.txPkts,
-			"rx_bytes_per_second": rxRate,
-			"tx_bytes_per_second": txRate,
-		}
-		for key, value := range interfaceMetadata(name) {
-			item[key] = value
-		}
-		ifaces = append(ifaces, item)
+func netRatesSnapshot() []map[string]interface{} {
+	metricsCache.mu.RLock()
+	if metricsCache.ifaces != nil && time.Since(metricsCache.updatedAt) < 8*time.Second {
+		cp := make([]map[string]interface{}, len(metricsCache.ifaces))
+		copy(cp, metricsCache.ifaces)
+		metricsCache.mu.RUnlock()
+		return cp
 	}
-	if ifaces == nil {
-		ifaces = []map[string]interface{}{}
-	}
-	return ifaces
+	metricsCache.mu.RUnlock()
+	return netRates(200)
 }
 
 // ─── Subprocess helper ────────────────────────────────────────────────────
@@ -798,15 +870,25 @@ func requireOpenWrt(w http.ResponseWriter) bool {
 // ─── CORS + method check middleware ──────────────────────────────────────
 
 func cors(next http.HandlerFunc, methods ...string) http.HandlerFunc {
-	allowed := "GET, OPTIONS"
-	if len(methods) > 0 {
-		allowed = strings.Join(methods, ", ") + ", OPTIONS"
+	if len(methods) == 0 {
+		methods = []string{http.MethodGet}
 	}
+	allowedSet := make(map[string]struct{}, len(methods)+1)
+	allowedSet[http.MethodOptions] = struct{}{}
+	for _, m := range methods {
+		allowedSet[strings.ToUpper(strings.TrimSpace(m))] = struct{}{}
+	}
+	allowed := strings.Join(methods, ", ") + ", OPTIONS"
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Methods", allowed)
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if _, ok := allowedSet[r.Method]; !ok {
+			w.Header().Set("Allow", allowed)
+			writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 			return
 		}
 		next(w, r)
@@ -815,6 +897,8 @@ func cors(next http.HandlerFunc, methods ...string) http.HandlerFunc {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "same-origin")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if origin := r.Header.Get("Origin"); origin != "" {
 				if !sameHostOrigin(origin, r.Host) {
@@ -825,9 +909,36 @@ func corsMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Add("Vary", "Origin")
 			}
+		} else {
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func detectHardwareModel() string {
+	if model := strings.TrimSpace(readFile("/tmp/sysinfo/model")); model != "" {
+		return model
+	}
+	return "Xiaomi Mi Router 3 Pro (MT7621)"
+}
+
+func detectLANIP() string {
+	if iface, err := net.InterfaceByName("br-lan"); err == nil {
+		if addrs, err := iface.Addrs(); err == nil {
+			for _, a := range addrs {
+				if ipnet, ok := a.(*net.IPNet); ok {
+					if v4 := ipnet.IP.To4(); v4 != nil && !v4.IsLoopback() {
+						return v4.String()
+					}
+				}
+			}
+		}
+	}
+	if out, err := runCmd(2, "uci", "-q", "get", "network.lan.ipaddr"); err == nil && strings.TrimSpace(out) != "" {
+		return strings.TrimSpace(out)
+	}
+	return ""
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────
@@ -859,7 +970,7 @@ func handleSystem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cpuAll := cpuPercentAll(300)
+	cpuAll := cpuPercentSnapshot()
 	up, idleTime := procUptime()
 	la := parseLoadAvg()
 	hostname, _ := os.Hostname()
@@ -891,6 +1002,9 @@ func handleSystem(w http.ResponseWriter, r *http.Request) {
 		"hostname":          hostname,
 		"kernel":            kernel,
 		"arch":              runtime.GOARCH,
+		"version":           Version,
+		"hardware":          detectHardwareModel(),
+		"lan_ip":            detectLANIP(),
 		"firmware_version":  openwrt["DISTRIB_RELEASE"],
 		"openwrt":           openwrt,
 		"cpu_aggregate_pct": agg,
@@ -948,48 +1062,10 @@ func handleNetwork(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) || !requireSystemFile(w, "/proc/net/dev") {
 		return
 	}
-	ifaces := netRates(1000)
+	ifaces := netRatesSnapshot()
 	writeJSON(w, 200, true, map[string]interface{}{
 		"interfaces": ifaces,
-		"sample_ms":  1000,
-	})
-}
-
-// GET /api/v1/wireless
-func handleWireless(w http.ResponseWriter, r *http.Request) {
-	if !requireOpenWrt(w) {
-		return
-	}
-	procWifi := parseProcNetWireless()
-
-	uciOut, err := runCmd(5, "uci", "show", "wireless")
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, false, "could not read wireless configuration")
-		return
-	}
-	uciLines := strings.Split(uciOut, "\n")
-	uciConf := map[string]string{}
-	for _, line := range uciLines {
-		if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
-			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), "'")
-			uciConf[k] = v
-		}
-	}
-
-	// Station count via iw
-	stationOut, _ := runCmd(5, "iw", "dev", "wlan0", "station", "dump")
-	stationCount := 0
-	for _, line := range strings.Split(stationOut, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Station ") {
-			stationCount++
-		}
-	}
-
-	writeJSON(w, 200, true, map[string]interface{}{
-		"interfaces":    procWifi,
-		"uci_config":    uciConf,
-		"station_count": stationCount,
+		"sample_ms":  2000,
 	})
 }
 
@@ -1432,6 +1508,69 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/v1/monitor/stream — SSE real-time dashboard
+func buildMonitorPayload() map[string]interface{} {
+	cpuAll := cpuPercentSnapshot()
+	m := memInfo()
+	ifaces := netRatesSnapshot()
+	inet := getInternetStatusSnapshot()
+
+	var netRxRate, netTxRate, wanRxRate, wanTxRate float64
+	for _, it := range ifaces {
+		name, _ := it["iface"].(string)
+		if name == "lo" {
+			continue
+		}
+		rx, _ := it["rx_bytes_per_second"].(float64)
+		tx, _ := it["tx_bytes_per_second"].(float64)
+		netRxRate += rx
+		netTxRate += tx
+		if inet.WanIface != "" && name == inet.WanIface {
+			wanRxRate += rx
+			wanTxRate += tx
+		}
+	}
+
+	total := m["MemTotal"]
+	avail := availableMemory(m)
+	memPct := 0.0
+	if total > 0 {
+		memPct = float64(counterDelta(total, avail)) / float64(total) * 100
+	}
+
+	up, _ := procUptime()
+	load := parseLoadAvg()
+	hostname, _ := os.Hostname()
+	openwrt := parseOpenwrtRelease()
+	kernel := readFile("/proc/sys/kernel/osrelease")
+	temp := interface{}(nil)
+	temps := readTemperatures()
+	if len(temps) > 0 {
+		temp = temps[0]["temp_celsius"]
+	}
+	return map[string]interface{}{
+		"ts":                      time.Now().Unix(),
+		"cpu_percent":             cpuAll["cpu"],
+		"mem_used_percent":        memPct,
+		"net_rx_bytes_per_second": netRxRate,
+		"net_tx_bytes_per_second": netTxRate,
+		"wan_rx_bytes_per_second": wanRxRate,
+		"wan_tx_bytes_per_second": wanTxRate,
+		"mem_total_mb":            float64(total) / 1024,
+		"mem_used_mb":             float64(counterDelta(total, avail)) / 1024,
+		"uptime_seconds":          up,
+		"load_avg":                []float64{load.Load1, load.Load5, load.Load15},
+		"hostname":                hostname,
+		"kernel":                  kernel,
+		"arch":                    runtime.GOARCH,
+		"version":                 Version,
+		"hardware":                detectHardwareModel(),
+		"lan_ip":                  detectLANIP(),
+		"firmware_version":        openwrt["DISTRIB_RELEASE"],
+		"temp_celsius":            temp,
+		"internet":                inet,
+	}
+}
+
 func handleMonitorStream(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
@@ -1452,6 +1591,18 @@ func handleMonitorStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeSample := func() {
+		data, err := json.Marshal(buildMonitorPayload())
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Flush initial sample immediately so dashboards do not wait 2 seconds on connect
+	writeSample()
+
 	ctx := r.Context()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -1461,66 +1612,7 @@ func handleMonitorStream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Gather metrics — quick samples
-			cpuAll := cpuPercentAll(200)
-			m := memInfo()
-			snap1 := parseNetDev()
-			time.Sleep(200 * time.Millisecond)
-			snap2 := parseNetDev()
-
-			var netRxRate, netTxRate float64
-			for name, s2 := range snap2 {
-				if name == "lo" {
-					continue
-				}
-				s1, ok := snap1[name]
-				if !ok {
-					continue
-				}
-				netRxRate += float64(counterDelta(s2.rxBytes, s1.rxBytes)) / 0.2
-				netTxRate += float64(counterDelta(s2.txBytes, s1.txBytes)) / 0.2
-			}
-
-			total := m["MemTotal"]
-			avail := availableMemory(m)
-			memPct := 0.0
-			if total > 0 {
-				memPct = float64(counterDelta(total, avail)) / float64(total) * 100
-			}
-
-			up, _ := procUptime()
-			load := parseLoadAvg()
-			hostname, _ := os.Hostname()
-			openwrt := parseOpenwrtRelease()
-			kernel := readFile("/proc/sys/kernel/osrelease")
-			temp := interface{}(nil)
-			temps := readTemperatures()
-			if len(temps) > 0 {
-				temp = temps[0]["temp_celsius"]
-			}
-			payload := map[string]interface{}{
-				"ts":                      time.Now().Unix(),
-				"cpu_percent":             cpuAll["cpu"],
-				"mem_used_percent":        memPct,
-				"net_rx_bytes_per_second": netRxRate,
-				"net_tx_bytes_per_second": netTxRate,
-				"mem_total_mb":            float64(total) / 1024,
-				"mem_used_mb":             float64(counterDelta(total, avail)) / 1024,
-				"uptime_seconds":          up,
-				"load_avg":                []float64{load.Load1, load.Load5, load.Load15},
-				"hostname":                hostname,
-				"kernel":                  kernel,
-				"arch":                    runtime.GOARCH,
-				"firmware_version":        openwrt["DISTRIB_RELEASE"],
-				"temp_celsius":            temp,
-				"internet":                getInternetStatusSnapshot(),
-			}
-			data, err := json.Marshal(payload)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			writeSample()
 		}
 	}
 }
@@ -1591,6 +1683,7 @@ func main() {
 	}
 	auth := newAuthenticator(apiToken)
 	ensureUSBHotplugAndTuning()
+	startMetricsSampler()
 	startInternetMonitor()
 	initAdblockOnStartup()
 	_ = ensureSystemBlueprintFile()

@@ -8,6 +8,7 @@ export interface InternetStatus {
   isp?: string
   country?: string
   wan_mode: string
+  wan_mode_key?: string
   wan_iface: string
   wan_local_ip: string
   gateway: string
@@ -28,6 +29,9 @@ interface SystemResponse {
   hostname: string
   kernel: string
   arch: string
+  version?: string
+  hardware?: string
+  lan_ip?: string
   firmware_version: string
   openwrt: Record<string, string>
   cpu_aggregate_pct: number
@@ -55,6 +59,9 @@ export interface SystemState {
   hostname: string
   kernel: string
   arch: string
+  appVersion: string
+  hardware: string
+  lanIp: string
   firmwareVersion: string
   connected: boolean
   lastUpdate: number
@@ -74,6 +81,9 @@ export const useSystemStore = defineStore('system', () => {
   const hostname = ref('—')
   const kernel = ref('—')
   const arch = ref('—')
+  const appVersion = ref('—')
+  const hardware = ref('MT7621')
+  const lanIp = ref(typeof window !== 'undefined' ? window.location.hostname : '')
   const firmwareVersion = ref('—')
   const connected = ref(false)
   const lastUpdate = ref(0)
@@ -134,6 +144,9 @@ export const useSystemStore = defineStore('system', () => {
     if (data.hostname !== undefined) hostname.value = data.hostname
     if (data.kernel !== undefined) kernel.value = data.kernel
     if (data.arch !== undefined) arch.value = data.arch
+    if (data.appVersion !== undefined && data.appVersion) appVersion.value = data.appVersion
+    if (data.hardware !== undefined && data.hardware) hardware.value = data.hardware
+    if (data.lanIp !== undefined && data.lanIp) lanIp.value = data.lanIp
     if (data.firmwareVersion !== undefined) firmwareVersion.value = data.firmwareVersion
     if (data.internet !== undefined) internet.value = data.internet
     connected.value = true
@@ -173,6 +186,9 @@ export const useSystemStore = defineStore('system', () => {
       hostname.value = system.hostname || '—'
       kernel.value = system.kernel || '—'
       arch.value = system.arch || '—'
+      if (system.version) appVersion.value = system.version
+      if (system.hardware) hardware.value = system.hardware
+      if (system.lan_ip) lanIp.value = system.lan_ip
       firmwareVersion.value = system.firmware_version || system.openwrt.DISTRIB_RELEASE || '—'
       if (system.internet) {
         internet.value = system.internet
@@ -185,7 +201,7 @@ export const useSystemStore = defineStore('system', () => {
 
   return {
     cpu, cpuHistory, ram, ramTotal, ramUsed, temp, temperatures, uptime,
-    loadAvg, hostname, kernel, arch, firmwareVersion, connected, lastUpdate, error,
+    loadAvg, hostname, kernel, arch, appVersion, hardware, lanIp, firmwareVersion, connected, lastUpdate, error,
     internet,
     uptimeFormatted, cpuColor, tempColor, ramPercent, dataAvailable,
     updateFromSSE, setConnected, refresh, refreshInternet,

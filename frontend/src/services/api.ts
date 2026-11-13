@@ -22,7 +22,13 @@ export const apiURL = (path: string) => `${apiOrigin}/api/v1${path}`
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
-  if (init.body !== undefined) headers.set('Content-Type', 'application/json')
+  const isBinaryBody =
+    init.body instanceof FormData ||
+    init.body instanceof Blob ||
+    init.body instanceof ArrayBuffer
+  if (init.body !== undefined && !isBinaryBody && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
 
   let response: Response
   try {

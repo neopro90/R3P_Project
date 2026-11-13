@@ -136,9 +136,9 @@ const loading = ref(false)
 const actionNotice = ref<string | null>(null)
 
 // Realtime Graph Histories (20 sample points)
-const cpuHistory = ref<number[]>([12, 15, 10, 8, 20, 18, 14, 22, 16, 12, 15, 19, 14, 11, 16, 25, 18, 15, 12, 16])
-const rxHistory = ref<number[]>([15, 22, 18, 30, 45, 60, 40, 35, 50, 75, 90, 65, 45, 30, 40, 55, 70, 45, 35, 50])
-const txHistory = ref<number[]>([8, 12, 10, 15, 20, 25, 18, 16, 22, 35, 40, 30, 20, 15, 18, 25, 30, 22, 18, 24])
+const cpuHistory = ref<number[]>([])
+const rxHistory = ref<number[]>([])
+const txHistory = ref<number[]>([])
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -150,30 +150,31 @@ const overlayVol = computed(() => {
 const usbHddVol = computed(() => volumes.value.find((v) => v.mount_point === '/mnt/sda1' || v.mount_point.startsWith('/mnt/sd')))
 
 const overlayPercent = computed(() => {
-  if (!overlayVol.value) return 89
+  if (!overlayVol.value) return 0
   const p = Number(overlayVol.value.percent)
-  if (isNaN(p) || p <= 0) return 89
-  return Math.min(100, Math.max(1, Math.round(p)))
+  if (isNaN(p) || p <= 0) return 0
+  return Math.min(100, Math.max(0, Math.round(p)))
 })
 
 const usbHddPercent = computed(() => {
-  if (!usbHddVol.value) return 1
+  if (!usbHddVol.value) return 0
   const p = Number(usbHddVol.value.percent)
-  if (isNaN(p) || p <= 0) return 1
-  return Math.min(100, Math.max(1, Math.round(p)))
+  if (isNaN(p) || p <= 0) return 0
+  return Math.min(100, Math.max(0, Math.round(p)))
 })
 
-const totalRxRate = computed(() => {
-  return network.interfaces
-    .filter((i) => i.name !== 'lo')
-    .reduce((acc, i) => acc + (i.rxRate || 0), 0)
+const activeWanStats = computed(() => {
+  const ifaceName = system.internet?.wan_iface
+  if (ifaceName) {
+    const found = network.interfaces.find((i) => i.name === ifaceName)
+    if (found) return found
+  }
+  return network.wanIface || network.interfaces.find((i) => i.name === 'br-lan')
 })
 
-const totalTxRate = computed(() => {
-  return network.interfaces
-    .filter((i) => i.name !== 'lo')
-    .reduce((acc, i) => acc + (i.txRate || 0), 0)
-})
+const totalRxRate = computed(() => activeWanStats.value?.rxRate || 0)
+
+const totalTxRate = computed(() => activeWanStats.value?.txRate || 0)
 
 function formatRate(bytesPerSec: number): string {
   if (!bytesPerSec || bytesPerSec < 1024) return `${Math.round(bytesPerSec || 0)} B/s`
@@ -190,6 +191,11 @@ function formatMB(kb: number | undefined): string {
 // Generate SVG Polyline points
 function generatePoints(data: number[], maxVal = 100, width = 300, height = 70): string {
   if (!data.length) return ''
+  if (data.length === 1) {
+    const clamped = Math.max(0, Math.min(maxVal, data[0] ?? 0))
+    const y = (height - (clamped / maxVal) * (height - 6) - 3).toFixed(1)
+    return `0,${y} ${width},${y}`
+  }
   const step = width / (data.length - 1)
   return data
     .map((val, idx) => {
@@ -232,7 +238,7 @@ async function refreshDashboard(silent = false) {
     ])
 
     // Push new telemetry points to sparklines
-    const currentCpu = Math.round(system.cpu || 15)
+    const currentCpu = Math.round(system.cpu || 0)
     cpuHistory.value.push(currentCpu)
     if (cpuHistory.value.length > 24) cpuHistory.value.shift()
 
@@ -311,7 +317,7 @@ onUnmounted(() => {
         <span class="text-gray-500 shrink-0">·</span>
         <span class="mono text-sky-400 font-semibold truncate">MediaTek MT7621AT @ 880MHz</span>
         <span class="text-gray-500 hidden sm:inline shrink-0">·</span>
-        <span class="text-purple-300 mono font-semibold hidden sm:inline shrink-0">Linux {{ system.kernel || '6.12.94' }}</span>
+        <span class="text-purple-300 mono font-semibold hidden sm:inline shrink-0">Linux {{ system.kernel || '—' }}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <button type="button" class="btn-secondary text-[12px] py-1 px-3" @click="flushCache">
@@ -359,7 +365,7 @@ onUnmounted(() => {
         </div>
 
         <div class="flex items-center justify-between text-[12px] text-gray-300 mono pt-1 border-t border-white/5 font-medium">
-          <span>Load: {{ system.loadAvg[0]?.toFixed(2) || '0.15' }}</span>
+          <span>Load: {{ system.loadAvg[0] !== undefined ? system.loadAvg[0].toFixed(2) : '0.00' }}</span>
           <span class="text-emerald-400 font-bold">Nhiệt CPU: {{ cpuTempItem.temp_celsius.toFixed(1) }}°C</span>
         </div>
       </div>
@@ -425,7 +431,7 @@ onUnmounted(() => {
               <path
                 class="text-amber-400 transition-all duration-500 ease-out"
                 stroke-width="4"
-                :stroke-dasharray="`${Math.min(100, system.ram || 20)}, 100`"
+                :stroke-dasharray="`${Math.min(100, system.ram || 0)}, 100`"
                 stroke-linecap="round"
                 stroke="currentColor"
                 fill="none"

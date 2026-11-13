@@ -324,7 +324,7 @@ onMounted(() => {
           </button>
         </div>
         <div class="mono text-[16px] font-bold text-sky-400 mt-1">
-          {{ ifaceConfigs.find(i => i.name === 'lan')?.ipaddr || '192.168.2.1' }}
+          {{ ifaceConfigs.find(i => i.name === 'lan')?.ipaddr || systemStore.lanIp || '—' }}
         </div>
         <div class="text-[11.5px] text-gray-400 font-medium">Bridge br-lan (DSA Switch)</div>
       </div>
@@ -453,7 +453,7 @@ onMounted(() => {
             </span>
             <span class="text-gray-500">·</span>
             <span class="text-sky-400 font-extrabold">
-              ↑ {{ speedUp !== null ? speedUp.toFixed(1) : '—' }} Mbps
+              ↑ {{ speedUp !== null ? (speedUp > 0 ? `${speedUp.toFixed(1)} Mbps` : 'N/A') : '— Mbps' }}
             </span>
           </div>
 

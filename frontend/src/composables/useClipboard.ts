@@ -40,8 +40,8 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
   // 3. Fallback to window.prompt if execCommand is blocked
   try {
-    window.prompt('Nhấn Ctrl+C để sao chép:', text)
-    return true
+    const res = window.prompt('Nhấn Ctrl+C để sao chép:', text)
+    return res !== null
   } catch {
     return false
   }

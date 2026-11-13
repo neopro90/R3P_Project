@@ -80,6 +80,7 @@ const (
 
 var (
 	aiMu       sync.Mutex
+	aiCfgMu    sync.Mutex
 	aiSessions []AIChatSession
 	aiMemories []AIMemoryEntry
 )
@@ -201,7 +202,7 @@ const defaultQuickCommandsJSON = `{
 
 func ensureSystemBlueprintFile() string {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") && strings.Contains(string(b), "downloader.json") && strings.Contains(string(b), "chạy hoàn toàn cục bộ trên R3P") && !strings.Contains(string(b), "8787") {
+	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 		return string(b)
 	}
 	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)
@@ -227,6 +228,8 @@ func filterOutBareURLMessages(msgs []AIChatMessage) []AIChatMessage {
 }
 
 func loadAIConfig() AIConfig {
+	aiCfgMu.Lock()
+	defer aiCfgMu.Unlock()
 	def := AIConfig{
 		Provider:          "gemini",
 		APIKey:            "",
@@ -245,7 +248,7 @@ func loadAIConfig() AIConfig {
 	if def.BaseURL == "" {
 		def.BaseURL = defaultBaseURLForProvider(def.Provider)
 	}
-	if def.Model == "" || (strings.ToLower(def.Provider) == "gemini" && (def.Model == "gemini-3-flash-preview" || def.Model == "gemini-3.5-flash" || def.Model == "gemini-2.5-flash")) {
+	if strings.TrimSpace(def.Model) == "" {
 		def.Model = defaultModelForProvider(def.Provider)
 	}
 	if def.SystemNote != "" && def.SystemPromptExtra == "" {
@@ -268,6 +271,8 @@ func loadAIConfig() AIConfig {
 }
 
 func saveAIConfig(cfg AIConfig) {
+	aiCfgMu.Lock()
+	defer aiCfgMu.Unlock()
 	cfg.HasAPIKey = cfg.APIKey != ""
 	cfg.APIKeyConfigured = cfg.APIKey != ""
 	_ = os.MkdirAll("/etc/r3p", 0755)
@@ -873,10 +878,22 @@ func processTelegramAIChat(text, chatID string) string {
 		return ""
 	}
 	cfg := loadAIConfig()
+	if !cfg.TelegramAIEnabled {
+		return "ℹ️ Tính năng AI qua Telegram đang tạm tắt trong tab Trợ Lý AI."
+	}
 	activeSessID, _ := getActiveSessionMessages(cfg.ActiveSessionID)
 
 	// Direct root shell command via Telegram (!cmd, /exec cmd, /sh cmd)
 	if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "/exec ") || strings.HasPrefix(trimmed, "/sh ") {
+		if !cfg.AllowExec {
+			return "⛔ Chế độ thực thi lệnh tự động (AllowExec) đang tắt trong cấu hình Trợ Lý AI."
+		}
+		dlMu.Lock()
+		allowedChat := strings.TrimSpace(dlConfig.TelegramAllowedChatId)
+		dlMu.Unlock()
+		if allowedChat == "" || !isAllowedTelegramChat(allowedChat, chatID) {
+			return "⛔ Lệnh shell từ Telegram chỉ cho phép khi đã khóa Allowed Chat ID hợp lệ."
+		}
 		cmdStr := trimmed
 		switch {
 		case strings.HasPrefix(cmdStr, "!"):
@@ -887,6 +904,9 @@ func processTelegramAIChat(text, chatID string) string {
 			cmdStr = strings.TrimPrefix(cmdStr, "/sh ")
 		}
 		cmdStr = strings.TrimSpace(cmdStr)
+		if cmdStr == "" {
+			return "ℹ️ Nhập lệnh sau `!` hoặc `/exec `, ví dụ: `!uptime`"
+		}
 		appendMessageToSession(activeSessID, AIChatMessage{
 			Role:      "user",
 			Content:   "📱 [Telegram] " + trimmed,
@@ -916,10 +936,6 @@ func processTelegramAIChat(text, chatID string) string {
 		}
 		appendMessageToSession(activeSessID, replyMsg)
 		return fmt.Sprintf("⚡ [R3P Root Shell]\n$ %s\n\n%s", cmdStr, out)
-	}
-
-	if !cfg.TelegramAIEnabled {
-		return "ℹ️ Tính năng AI qua Telegram đang tạm tắt trong tab Trợ Lý AI."
 	}
 
 	appendMessageToSession(activeSessID, AIChatMessage{
@@ -1540,8 +1556,26 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		Source:    "web",
 	})
 
+	if body.Execute != nil {
+		cfg.AutoExecute = *body.Execute
+	}
+
 	// Direct root shell command mode (!cmd or /exec cmd)
 	if strings.HasPrefix(userMsg, "!") || strings.HasPrefix(userMsg, "/exec ") {
+		if !cfg.AutoExecute {
+			replyMsg := AIChatMessage{
+				Role:      "assistant",
+				Content:   "⛔ Chế độ tự động thực thi lệnh đang tắt. Bật AllowExec trong cấu hình Trợ Lý AI để chạy lệnh trực tiếp.",
+				Timestamp: time.Now().Format("15:04:05"),
+				Source:    "web",
+			}
+			histCopy := appendMessageToSession(activeSessID, replyMsg)
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"reply":   replyMsg,
+				"history": histCopy,
+			})
+			return
+		}
 		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(userMsg, "!"), "/exec "))
 		t0 := time.Now()
 		out, err := runCmd(25, "sh", "-c", cmdStr)
@@ -1576,10 +1610,6 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			"sessions":    sessionsCopy,
 		})
 		return
-	}
-
-	if body.Execute != nil {
-		cfg.AutoExecute = *body.Execute
 	}
 	if cfg.APIKey == "" && !strings.Contains(cfg.BaseURL, "127.0.0.1") && !strings.Contains(cfg.BaseURL, "localhost") && !strings.Contains(cfg.BaseURL, "192.168.") {
 		t0 := time.Now()
@@ -1625,7 +1655,8 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		respText, err := callLLMAPI(cfg, llmMsgs)
 		if err != nil {
 			errStr := err.Error()
-			if turn == 0 && (strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "lookup ") || strings.Contains(errStr, "server misbehaving") || strings.Contains(errStr, "network is unreachable") || strings.Contains(errStr, "i/o timeout")) {
+			isNativeAnthropic := strings.ToLower(cfg.Provider) == "anthropic" && !strings.Contains(cfg.BaseURL, "/openai")
+			if turn == 0 && !isNativeAnthropic && (strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "lookup ") || strings.Contains(errStr, "server misbehaving") || strings.Contains(errStr, "network is unreachable") || strings.Contains(errStr, "i/o timeout")) {
 				baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 				if baseURL == "" {
 					baseURL = defaultBaseURLForProvider(cfg.Provider)

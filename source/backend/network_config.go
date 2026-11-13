@@ -11,7 +11,34 @@ import (
 	"time"
 )
 
-// ─── LAN / WAN / WWAN / USBWAN Interface & Gateway Configuration ───────────
+func isValidIPv4Netmask(s string) bool {
+	ip := net.ParseIP(strings.TrimSpace(s)).To4()
+	if ip == nil {
+		return false
+	}
+	mask := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	if mask == 0 {
+		return false
+	}
+	inv := ^mask
+	return (inv & (inv + 1)) == 0
+}
+
+func resolveGatewayQuickTarget(dev string) string {
+	d := strings.ToLower(strings.TrimSpace(dev))
+	switch {
+	case d == "wan" || strings.HasPrefix(d, "eth0.2") || strings.HasPrefix(d, "pppoe"):
+		return "wan"
+	case strings.Contains(d, "sta") || strings.Contains(d, "wwan"):
+		return "wwan"
+	case strings.HasPrefix(d, "usb") || strings.HasPrefix(d, "wwan"):
+		return "usbwan"
+	case d == "br-lan" || d == "lan":
+		return "lan"
+	default:
+		return "wan"
+	}
+}
 
 type NetworkInterfaceConfig struct {
 	Name          string   `json:"name"`           // lan, wan, wwan, usbwan
@@ -26,7 +53,8 @@ type NetworkInterfaceConfig struct {
 	Metric        string   `json:"metric"`         // route metric
 	MACAddr       string   `json:"macaddr"`        // optional MAC override
 	Username      string   `json:"username"`       // PPPoE username
-	Password      string   `json:"password"`       // PPPoE password
+	Password      string   `json:"password"`       // Never populated in GET responses
+	HasPassword   bool     `json:"has_password"`   // True if PPPoE password is stored in UCI
 	DHCPEnabled   bool     `json:"dhcp_enabled"`   // For LAN: whether dnsmasq DHCP is active
 	DHCPStart     string   `json:"dhcp_start"`     // e.g. 100
 	DHCPLimit     string   `json:"dhcp_limit"`     // e.g. 150
@@ -127,7 +155,8 @@ func readNetworkInterfacesConfig() ([]NetworkInterfaceConfig, string, string, []
 			Metric:      netUCI["network."+sec+".metric"],
 			MACAddr:     netUCI["network."+sec+".macaddr"],
 			Username:    netUCI["network."+sec+".username"],
-			Password:    netUCI["network."+sec+".password"],
+			Password:    "",
+			HasPassword: netUCI["network."+sec+".password"] != "",
 			LiveUp:      liveUp,
 			LiveIPv4:    liveIP,
 			LiveMAC:     liveMAC,
@@ -218,32 +247,46 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			if dev == "" {
 				dev = "br-lan"
 			}
+			if !safeTokenKeyPattern.MatchString(dev) || strings.HasPrefix(dev, "-") {
+				writeJSON(w, http.StatusBadRequest, false, "invalid device name")
+				return
+			}
+			targetSec := resolveGatewayQuickTarget(dev)
 			if gw != "" {
 				if net.ParseIP(gw) == nil {
 					writeJSON(w, http.StatusBadRequest, false, "invalid gateway IPv4 address")
 					return
 				}
-				_, _ = runCmd(4, "uci", "set", "network.lan.gateway="+gw)
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.gateway=%s", targetSec, gw))
 				_, _ = runCmd(4, "ip", "route", "replace", "default", "via", gw, "dev", dev)
 			} else {
-				_, _ = runCmd(4, "uci", "delete", "network.lan.gateway")
+				_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.gateway", targetSec))
 			}
 
 			var dnsList []string
 			for _, d := range body.DNS {
-				if net.ParseIP(strings.TrimSpace(d)) != nil {
-					dnsList = append(dnsList, strings.TrimSpace(d))
+				t := strings.TrimSpace(d)
+				if t != "" {
+					if net.ParseIP(t) == nil {
+						writeJSON(w, http.StatusBadRequest, false, "invalid DNS IP: "+t)
+						return
+					}
+					dnsList = append(dnsList, t)
 				}
 			}
 			for _, d := range strings.Fields(body.DNSString) {
-				if net.ParseIP(strings.TrimSpace(d)) != nil {
-					dnsList = append(dnsList, strings.TrimSpace(d))
+				t := strings.TrimSpace(d)
+				if net.ParseIP(t) == nil {
+					writeJSON(w, http.StatusBadRequest, false, "invalid DNS IP: "+t)
+					return
 				}
+				dnsList = append(dnsList, t)
 			}
 			if len(dnsList) > 0 {
-				_, _ = runCmd(4, "uci", "set", "network.lan.dns="+strings.Join(dnsList, " "))
-				_, _ = runCmd(4, "uci", "set", "network.wan.peerdns=0")
-				_, _ = runCmd(4, "uci", "set", "network.wan.dns="+strings.Join(dnsList, " "))
+				if targetSec != "lan" {
+					_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.peerdns=0", targetSec))
+				}
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.dns=%s", targetSec, strings.Join(dnsList, " ")))
 			}
 			_, _ = runCmd(5, "uci", "commit", "network")
 			go func() {
@@ -254,7 +297,7 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			ifaces, defaultGW, defaultDev, activeDNS := readNetworkInterfacesConfig()
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
 				"saved":           true,
-				"message":         "Đã cập nhật Default Gateway & DNS thành công!",
+				"message":         fmt.Sprintf("Đã cập nhật Default Gateway & DNS (%s / %s) thành công!", strings.ToUpper(targetSec), dev),
 				"interfaces":      ifaces,
 				"default_gateway": defaultGW,
 				"default_device":  defaultDev,
@@ -287,8 +330,12 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			nm := strings.TrimSpace(body.Netmask)
-			if net.ParseIP(nm) == nil {
+			if nm == "" {
 				nm = "255.255.255.0"
+			}
+			if !isValidIPv4Netmask(nm) {
+				writeJSON(w, http.StatusBadRequest, false, "Subnet Mask không hợp lệ cho chế độ Static IP")
+				return
 			}
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.ipaddr=%s", sec, ip))
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.netmask=%s", sec, nm))
@@ -310,7 +357,7 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			if body.Username != "" {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.username=%s", sec, strings.TrimSpace(body.Username)))
 			}
-			if body.Password != "" {
+			if body.Password != "" && !strings.HasPrefix(body.Password, "••••") {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.password=%s", sec, body.Password))
 			}
 		} else {
@@ -444,14 +491,22 @@ func handleNetworkInterfaceAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch body.Action {
 	case "ifup", "reconnect":
-		go func() {
-			_, _ = runCmd(10, "/sbin/ifup", sec)
-			time.Sleep(2 * time.Second)
-			refreshInternetStatus(true)
-		}()
+		if sec == "all" {
+			go func() {
+				_, _ = runCmd(10, "/etc/init.d/network", "reload")
+				time.Sleep(2 * time.Second)
+				refreshInternetStatus(true)
+			}()
+		} else {
+			go func() {
+				_, _ = runCmd(10, "/sbin/ifup", sec)
+				time.Sleep(2 * time.Second)
+				refreshInternetStatus(true)
+			}()
+		}
 	case "ifdown":
-		if sec == "lan" {
-			writeJSON(w, http.StatusBadRequest, false, "Không thể tắt cổng LAN chính để tránh mất kết nối quản trị")
+		if sec == "lan" || sec == "all" {
+			writeJSON(w, http.StatusBadRequest, false, "Không thể tắt cổng LAN hoặc toàn bộ giao diện để tránh mất kết nối quản trị")
 			return
 		}
 		go func() {

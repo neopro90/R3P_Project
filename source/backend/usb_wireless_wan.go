@@ -26,6 +26,7 @@ type InternetStatus struct {
 	Country    string  `json:"country"`
 	WanIface   string  `json:"wan_iface"`
 	WanMode    string  `json:"wan_mode"`
+	WanModeKey string  `json:"wan_mode_key"`
 	Gateway    string  `json:"gateway"`
 	CheckedAt  string  `json:"checked_at"`
 }
@@ -38,6 +39,7 @@ var (
 		ExternalIP: "—",
 		WanIface:   "wan",
 		WanMode:    "Disconnected",
+		WanModeKey: "offline",
 		CheckedAt:  time.Now().Format("15:04:05"),
 	}
 	lastExtIPFetch time.Time
@@ -79,13 +81,17 @@ func refreshInternetStatus(forceExtIP bool) InternetStatus {
 	}
 
 	wanMode := "Offline"
+	wanModeKey := "offline"
 	switch {
 	case strings.HasPrefix(wanIface, "usb") || strings.HasPrefix(wanIface, "wwan") || strings.HasPrefix(wanIface, "eth1") || strings.HasPrefix(wanIface, "enx"):
 		wanMode = "USB Tether / 4G"
+		wanModeKey = "usb_tether"
 	case strings.Contains(wanIface, "sta") || strings.Contains(wanIface, "wlan") || strings.Contains(wanIface, "phy") || strings.Contains(wanIface, "apcli"):
 		wanMode = "Wi-Fi Client (WWAN)"
+		wanModeKey = "wifi_client"
 	case wanIface != "":
 		wanMode = "Ethernet WAN (" + wanIface + ")"
+		wanModeKey = "ethernet_wan"
 	}
 
 	// 2. Ping test to 1.1.1.1 or 8.8.8.8
@@ -119,24 +125,26 @@ func refreshInternetStatus(forceExtIP bool) InternetStatus {
 		isp = ""
 	} else if forceExtIP || extIP == "" || extIP == "—" || extIP == "Offline" || time.Since(lastExtIPFetch) > 90*time.Second {
 		client := &http.Client{Timeout: 3500 * time.Millisecond}
-		resp, err := client.Get("http://ip-api.com/json/?fields=status,countryCode,isp,query")
+		resp, err := client.Get("https://ipwho.is/?fields=ip,country_code,connection.isp,success")
 		if err == nil {
 			defer resp.Body.Close()
 			var data struct {
-				Status      string `json:"status"`
-				CountryCode string `json:"countryCode"`
-				ISP         string `json:"isp"`
-				Query       string `json:"query"`
+				Success     bool   `json:"success"`
+				IP          string `json:"ip"`
+				CountryCode string `json:"country_code"`
+				Connection  struct {
+					ISP string `json:"isp"`
+				} `json:"connection"`
 			}
-			if json.NewDecoder(resp.Body).Decode(&data) == nil && data.Query != "" {
-				extIP = data.Query
-				isp = data.ISP
+			if json.NewDecoder(io.LimitReader(resp.Body, 16*1024)).Decode(&data) == nil && data.Success && data.IP != "" {
+				extIP = data.IP
+				isp = data.Connection.ISP
 				country = data.CountryCode
 				lastExtIPFetch = time.Now()
 			}
 		}
 		if extIP == "" || extIP == "—" || extIP == "Offline" {
-			if out, err := runCmd(4, "curl", "-s", "--max-time", "3", "https://api.ipify.org"); err == nil && netParseIP(strings.TrimSpace(out)) {
+			if out, err := runCmd(4, "curl", "-fsS", "--max-time", "3", "https://api.ipify.org"); err == nil && netParseIP(strings.TrimSpace(out)) {
 				extIP = strings.TrimSpace(out)
 				lastExtIPFetch = time.Now()
 			}
@@ -151,6 +159,7 @@ func refreshInternetStatus(forceExtIP bool) InternetStatus {
 		Country:    country,
 		WanIface:   wanIface,
 		WanMode:    wanMode,
+		WanModeKey: wanModeKey,
 		Gateway:    gateway,
 		CheckedAt:  time.Now().Format("15:04:05"),
 	}
@@ -204,16 +213,8 @@ var (
 	usbBenchMu   sync.Mutex
 	usbFormatMu  sync.Mutex
 	lastUsbBench = UsbBenchmarkResult{
-		TargetDir:   "/mnt/sda1",
-		WriteMBps:   34.27,
-		ReadMBps:    33.20,
-		WriteSec:    7.47,
-		ReadSec:     7.71,
-		SizeMB:      256,
-		TestedAt:    time.Now().Format("2006-01-02 15:04:05"),
-		Device:      "/dev/sda1",
-		Filesystem:  "ext4 (^has_journal, extent, dir_index)",
-		TuningState: "read_ahead_kb=4096 max_sectors_kb=1024 rq_affinity=2",
+		TargetDir: "/mnt/sda1",
+		TestedAt:  "",
 	}
 )
 
@@ -978,18 +979,25 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 	if targetDir == "" {
 		targetDir = "/mnt/sda1"
 	}
+	targetDir = filepath.ToSlash(filepath.Clean(targetDir))
+	if !isUnderBaseDir(targetDir, "/mnt") || targetDir == "/mnt" {
+		writeJSON(w, http.StatusBadRequest, false, "target_dir must be a mounted subdirectory under /mnt/")
+		return
+	}
 	sizeMB := body.SizeMB
 	if sizeMB < 16 || sizeMB > 512 {
 		sizeMB = 128
 	}
 
-	if _, err := os.Stat(targetDir); err != nil {
+	info, statErr := os.Stat(targetDir)
+	if statErr != nil || !info.IsDir() {
 		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s chưa được mount. Hãy cắm ổ cứng USB 3.0 trước!", targetDir))
 		return
 	}
 
 	testFile := filepath.Join(targetDir, ".r3p_speedtest.bin")
 	_ = os.Remove(testFile)
+	defer os.Remove(testFile)
 
 	// Write benchmark
 	t0 := time.Now()
@@ -1007,27 +1015,54 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 	// Drop page cache before Read benchmark
 	_ = os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0644)
 	t1 := time.Now()
-	_, _ = runCmd(45, "dd", "if="+testFile, "of=/dev/null", "bs=1M", fmt.Sprintf("count=%d", sizeMB))
+	if _, rErr := runCmd(45, "dd", "if="+testFile, "of=/dev/null", "bs=1M", fmt.Sprintf("count=%d", sizeMB)); rErr != nil {
+		writeJSON(w, http.StatusInternalServerError, false, "USB read benchmark failed: "+rErr.Error())
+		return
+	}
 	readSec := time.Since(t1).Seconds()
 	if readSec <= 0.05 {
 		readSec = 0.05
 	}
 	readMBps := float64(sizeMB) / readSec
-	_ = os.Remove(testFile)
 
+	devName, fsType := resolveMountDeviceAndFS(targetDir)
 	lastUsbBench = UsbBenchmarkResult{
-		TargetDir:   targetDir,
-		WriteMBps:   float64(int(writeMBps*100)) / 100,
-		ReadMBps:    float64(int(readMBps*100)) / 100,
-		WriteSec:    float64(int(writeSec*100)) / 100,
-		ReadSec:     float64(int(readSec*100)) / 100,
-		SizeMB:      sizeMB,
-		TestedAt:    time.Now().Format("2006-01-02 15:04:05"),
-		Device:      "/dev/sda1",
-		Filesystem:  "ext4 (^has_journal, extent, dir_index)",
-		TuningState: "read_ahead_kb=4096 max_sectors_kb=1024 rq_affinity=2",
+		TargetDir:  targetDir,
+		WriteMBps:  float64(int(writeMBps*100)) / 100,
+		ReadMBps:   float64(int(readMBps*100)) / 100,
+		WriteSec:   float64(int(writeSec*100)) / 100,
+		ReadSec:    float64(int(readSec*100)) / 100,
+		SizeMB:     sizeMB,
+		TestedAt:   time.Now().Format("2006-01-02 15:04:05"),
+		Device:     devName,
+		Filesystem: fsType,
 	}
 	writeJSON(w, http.StatusOK, true, lastUsbBench)
+}
+
+func resolveMountDeviceAndFS(targetDir string) (string, string) {
+	raw, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return "unknown", "unknown"
+	}
+	bestLen := -1
+	bestDev, bestFS := "unknown", "unknown"
+	cleanTarget := filepath.Clean(targetDir)
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		mp := filepath.Clean(fields[1])
+		if cleanTarget == mp || (mp != "/" && strings.HasPrefix(cleanTarget, mp+"/")) || mp == "/" {
+			if len(mp) > bestLen {
+				bestLen = len(mp)
+				bestDev = fields[0]
+				bestFS = fields[2]
+			}
+		}
+	}
+	return bestDev, bestFS
 }
 
 // ─── 3. Wireless Client / WISP Mode (Scan & Connect as STA Client) ─────────
@@ -1045,9 +1080,6 @@ type ScannedWifiNetwork struct {
 }
 
 func scanPhyWithIwinfo(phy, rad, band string) string {
-	// Ensure regulatory domain is set to US so 5GHz channels (36-165) allow active probe scanning (no "no IR")
-	_, _ = runCmd(2, "iw", "reg", "set", "US")
-
 	// 1. Check if an active netdev already exists on this phy via `iw dev`
 	iwOut, _ := runCmd(3, "iw", "dev")
 	curPhy := ""
@@ -1072,12 +1104,17 @@ func scanPhyWithIwinfo(phy, rad, band string) string {
 		}
 	}
 
-	// 2. If no active netdev on this phy (e.g. radio1 5GHz is disabled), create a persistent scan interface
+	// 2. If no active netdev on this phy (e.g. radio1 5GHz is disabled), create a temporary scan interface and remove it on exit
 	tmpIfc := "r3pscan0"
 	if phy == "phy1" {
 		tmpIfc = "r3pscan1"
 	}
-	_, _ = runCmd(4, "iw", "phy", phy, "interface", "add", tmpIfc, "type", "managed")
+	if _, err := runCmd(4, "iw", "phy", phy, "interface", "add", tmpIfc, "type", "managed"); err == nil {
+		defer func() {
+			_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "down")
+			_, _ = runCmd(3, "iw", "dev", tmpIfc, "del")
+		}()
+	}
 	_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "up")
 	// Give MT7615 5GHz RF calibration 700ms to settle when interface just came up
 	time.Sleep(700 * time.Millisecond)
@@ -1316,31 +1353,53 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		if proto != "static" {
 			proto = "dhcp"
 		}
+		staticIP := strings.TrimSpace(body.IPAddr)
+		nm := strings.TrimSpace(body.Netmask)
+		gw := strings.TrimSpace(body.Gateway)
+		var dnsList []string
+		for _, d := range strings.Fields(strings.ReplaceAll(body.DNS, ",", " ")) {
+			if net.ParseIP(d) == nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ DNS không hợp lệ: "+d)
+				return
+			}
+			dnsList = append(dnsList, d)
+		}
+		if proto == "static" {
+			if net.ParseIP(staticIP) == nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ IPv4 tĩnh không hợp lệ cho WWAN")
+				return
+			}
+			if nm == "" {
+				nm = "255.255.255.0"
+			}
+			if !isValidIPv4Netmask(nm) {
+				writeJSON(w, http.StatusBadRequest, false, "Subnet Mask không hợp lệ cho WWAN")
+				return
+			}
+		}
+		if gw != "" && net.ParseIP(gw) == nil {
+			writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway WWAN không hợp lệ")
+			return
+		}
+
 		_, _ = runCmd(4, "uci", "set", "network.wwan=interface")
 		_, _ = runCmd(4, "uci", "set", "network.wwan.proto="+proto)
 		_, _ = runCmd(4, "uci", "set", "network.wwan.metric=20")
-		if proto == "static" && net.ParseIP(strings.TrimSpace(body.IPAddr)) != nil {
-			_, _ = runCmd(4, "uci", "set", "network.wwan.ipaddr="+strings.TrimSpace(body.IPAddr))
-			nm := strings.TrimSpace(body.Netmask)
-			if net.ParseIP(nm) == nil {
-				nm = "255.255.255.0"
-			}
+		if proto == "static" {
+			_, _ = runCmd(4, "uci", "set", "network.wwan.ipaddr="+staticIP)
 			_, _ = runCmd(4, "uci", "set", "network.wwan.netmask="+nm)
-			if net.ParseIP(strings.TrimSpace(body.Gateway)) != nil {
-				_, _ = runCmd(4, "uci", "set", "network.wwan.gateway="+strings.TrimSpace(body.Gateway))
-			}
 		} else {
 			_, _ = runCmd(4, "uci", "delete", "network.wwan.ipaddr")
 			_, _ = runCmd(4, "uci", "delete", "network.wwan.netmask")
-			if net.ParseIP(strings.TrimSpace(body.Gateway)) != nil {
-				_, _ = runCmd(4, "uci", "set", "network.wwan.gateway="+strings.TrimSpace(body.Gateway))
-			} else {
-				_, _ = runCmd(4, "uci", "delete", "network.wwan.gateway")
-			}
 		}
-		if strings.TrimSpace(body.DNS) != "" {
+		if gw != "" {
+			_, _ = runCmd(4, "uci", "set", "network.wwan.gateway="+gw)
+		} else {
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.gateway")
+		}
+		if len(dnsList) > 0 {
 			_, _ = runCmd(4, "uci", "set", "network.wwan.peerdns=0")
-			_, _ = runCmd(4, "uci", "set", "network.wwan.dns="+strings.TrimSpace(body.DNS))
+			_, _ = runCmd(4, "uci", "set", "network.wwan.dns="+strings.Join(dnsList, " "))
 		}
 		_, _ = runCmd(4, "uci", "commit", "network")
 		ensureFirewallWanNetwork("wwan")
@@ -1360,7 +1419,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		} else {
 			_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta.bssid")
 		}
-		if body.Channel > 0 {
+		if body.Channel >= 1 && body.Channel <= 165 {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.channel=%d", body.Device, body.Channel))
 		}
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.disabled=0", body.Device))
@@ -1432,12 +1491,23 @@ type SavedWifiNetwork struct {
 	Channel       int    `json:"channel,omitempty"`
 	Encryption    string `json:"encryption"`
 	Key           string `json:"key,omitempty"`
+	HasKey        bool   `json:"has_key,omitempty"`
 	SavedAt       string `json:"saved_at"`
 	LastConnected string `json:"last_connected,omitempty"`
 	Proto         string `json:"proto,omitempty"`
 }
 
 var savedWifiMu sync.Mutex
+
+func sanitizeSavedWifiList(list []SavedWifiNetwork) []SavedWifiNetwork {
+	out := make([]SavedWifiNetwork, 0, len(list))
+	for _, item := range list {
+		item.HasKey = item.Key != ""
+		item.Key = ""
+		out = append(out, item)
+	}
+	return out
+}
 
 func loadSavedWifiList() []SavedWifiNetwork {
 	savedWifiMu.Lock()
@@ -1462,6 +1532,7 @@ func loadSavedWifiList() []SavedWifiNetwork {
 			list = []SavedWifiNetwork{
 				{
 					SSID:          activeSSID,
+					BSSID:         uciMap["wireless.wwan_sta.bssid"],
 					Device:        dev,
 					Band:          band,
 					Encryption:    uciMap["wireless.wwan_sta.encryption"],
@@ -1521,7 +1592,7 @@ func handleWirelessSaved(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
-		"networks": loadSavedWifiList(),
+		"networks": sanitizeSavedWifiList(loadSavedWifiList()),
 	})
 }
 
@@ -1574,7 +1645,7 @@ func handleWirelessSavedForget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"forgotten": true,
 		"ssid":      targetSSID,
-		"networks":  loadSavedWifiList(),
+		"networks":  sanitizeSavedWifiList(loadSavedWifiList()),
 		"message":   fmt.Sprintf("Đã quên mạng Wi-Fi '%s' và xóa dữ liệu mật khẩu thành công!", targetSSID),
 	})
 }
@@ -1614,6 +1685,10 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 	if enc == "" {
 		enc = "psk2"
 	}
+	if enc != "none" && matched.Key == "" {
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Mạng '%s' chưa có mật khẩu đã lưu, vui lòng nhập lại mật khẩu để kết nối.", matched.SSID))
+		return
+	}
 
 	_, _ = runCmd(4, "uci", "set", "network.wwan=interface")
 	_, _ = runCmd(4, "uci", "set", "network.wwan.proto=dhcp")
@@ -1629,9 +1704,16 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.encryption=%s", enc))
 	if enc != "none" && matched.Key != "" {
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.key=%s", matched.Key))
+	} else {
+		_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta.key")
 	}
 	if matched.BSSID != "" && safeWirelessVal.MatchString(matched.BSSID) {
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.bssid=%s", matched.BSSID))
+	} else {
+		_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta.bssid")
+	}
+	if matched.Channel >= 1 && matched.Channel <= 165 {
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.channel=%d", dev, matched.Channel))
 	}
 	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.disabled=0", dev))
 	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.disabled=0")

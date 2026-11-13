@@ -27,6 +27,8 @@ export function useSSE() {
           mem_used_percent?: number
           net_rx_bytes_per_second?: number
           net_tx_bytes_per_second?: number
+          wan_rx_bytes_per_second?: number
+          wan_tx_bytes_per_second?: number
           mem_total_mb?: number
           mem_used_mb?: number
           temp_celsius?: number | null
@@ -35,6 +37,9 @@ export function useSSE() {
           hostname?: string
           kernel?: string
           arch?: string
+          version?: string
+          hardware?: string
+          lan_ip?: string
           firmware_version?: string
           internet?: import('@/stores/system').InternetStatus
         }
@@ -48,12 +53,21 @@ export function useSSE() {
           hostname: data.hostname,
           kernel: data.kernel,
           arch: data.arch,
+          appVersion: data.version,
+          hardware: data.hardware,
+          lanIp: data.lan_ip,
           firmwareVersion: data.firmware_version,
           internet: data.internet,
           ...(data.load_avg === undefined ? {} : { loadAvg: data.load_avg }),
         })
-        if (data.net_rx_bytes_per_second !== undefined && data.net_tx_bytes_per_second !== undefined) {
-          networkStore.updateTrafficRates(data.net_rx_bytes_per_second, data.net_tx_bytes_per_second)
+        const rx = data.internet?.wan_iface && data.wan_rx_bytes_per_second !== undefined
+          ? data.wan_rx_bytes_per_second
+          : data.net_rx_bytes_per_second
+        const tx = data.internet?.wan_iface && data.wan_tx_bytes_per_second !== undefined
+          ? data.wan_tx_bytes_per_second
+          : data.net_tx_bytes_per_second
+        if (rx !== undefined && tx !== undefined) {
+          networkStore.updateTrafficRates(rx, tx)
         }
       } catch (cause) {
         error.value = `Invalid monitor event: ${(cause as Error).message}`

@@ -106,14 +106,14 @@ const usbStatus = ref<USBDualRoleStatus>({
 })
 const benchResult = ref<BenchmarkResult>({
   target_dir: '/mnt/sda1',
-  size_mb: 256,
-  write_mbps: 34.27,
-  read_mbps: 33.20,
-  write_sec: 7.47,
-  read_sec: 7.71,
-  filesystem: 'ext4 (no-journal, extent, dir_index)',
-  tuning_state: 'read_ahead_kb=4096 max_sectors_kb=1024 rq_affinity=2',
-  tested_at: 'Verified Hardware Baseline',
+  size_mb: 0,
+  write_mbps: 0,
+  read_mbps: 0,
+  write_sec: 0,
+  read_sec: 0,
+  filesystem: '—',
+  tuning_state: '—',
+  tested_at: 'Chưa đo',
 })
 const benchSizeMb = ref(64)
 const runningBench = ref(false)
@@ -1930,7 +1930,7 @@ onUnmounted(() => {
               1. Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>.<br>
               2. Tại mục <b>Step 1</b>: Tìm chọn <code class="text-amber-300">Drive API v3</code> &gt; tick chọn <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; Bấm <b>Authorize APIs</b> và đăng nhập tài khoản Google của bạn.<br>
               3. Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b>.<br>
-              4. Bạn sẽ thấy 2 ô xuất hiện: Sao chép chuỗi trong ô <code class="text-emerald-300 font-bold">Refresh token</code> (thường bắt đầu bằng <code class="text-emerald-300">1//...</code>) và dán vào ô <b>số 3</b> ở trên.<br>
+              4. Bạn sẽ thấy 2 ô xuất hiện: Sao chép chuỗi trong ô <code class="text-emerald-300 font-bold">Refresh token</code> (thường bắt đầu bằng <code class="text-emerald-300">1//...</code>) và dán vào ô <b>số 2</b> ở trên.<br>
               5. Bấm nút <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>. Từ nay router sẽ tự duy trì hoạt động vĩnh viễn!
             </p>
           </div>

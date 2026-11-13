@@ -557,44 +557,79 @@ async function sendMessage(textToSend?: string) {
       })
       await scrollToBottom()
       try {
-        const bridgeResp = await fetch(res.bridge.endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${res.bridge.api_key}`,
-          },
-          body: JSON.stringify({
-            model: res.bridge.model,
-            messages: res.bridge.messages,
-            temperature: 0.2,
-          }),
-        })
-        const bridgeData = await bridgeResp.json()
-        const rawContent = bridgeData?.choices?.[0]?.message?.content || ''
+        let bridgeMessages: Array<{ role: string; content: string }> = Array.isArray(res.bridge.messages)
+          ? [...res.bridge.messages]
+          : []
+        let prevCommands: AICmdLog[] = []
+        let finalContHistory: AIChatMessage[] | null = null
 
-        const contRes = await apiRequest<{
-          reply: AIChatMessage
-          history: AIChatMessage[]
-          memories?: AIMemoryEntry[]
-        }>('/ai/chat', {
-          method: 'POST',
-          body: JSON.stringify({
-            session_id: activeSessionId.value,
-            browser_reply: rawContent,
-            execute: config.value.allow_exec,
-          }),
-        })
-        history.value = contRes.history || []
-        if (contRes.memories) memories.value = contRes.memories
+        for (let turn = 0; turn < 3; turn++) {
+          const bridgeResp = await fetch(res.bridge.endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${res.bridge.api_key}`,
+            },
+            body: JSON.stringify({
+              model: res.bridge.model,
+              messages: bridgeMessages,
+              temperature: 0.2,
+            }),
+          })
+          const bridgeData = await bridgeResp.json().catch(() => ({}))
+          if (!bridgeResp.ok) {
+            const msg = bridgeData?.error?.message || bridgeData?.message || `HTTP ${bridgeResp.status}`
+            throw new Error(msg)
+          }
+          const rawContent = bridgeData?.choices?.[0]?.message?.content || ''
+          if (!rawContent) {
+            throw new Error('Phản hồi từ Browser Bridge rỗng hoặc sai định dạng')
+          }
+
+          const contRes = await apiRequest<{
+            reply?: AIChatMessage
+            history?: AIChatMessage[]
+            memories?: AIMemoryEntry[]
+            needs_browser_followup?: boolean
+            followup_user_prompt?: string
+            commands?: AICmdLog[]
+          }>('/ai/chat', {
+            method: 'POST',
+            body: JSON.stringify({
+              session_id: activeSessionId.value,
+              browser_reply: rawContent,
+              execute: config.value.allow_exec,
+              prev_commands: prevCommands,
+            }),
+          })
+          if (contRes.memories) memories.value = contRes.memories
+          if (contRes.needs_browser_followup && contRes.followup_user_prompt) {
+            prevCommands = contRes.commands || prevCommands
+            bridgeMessages = [
+              ...bridgeMessages,
+              { role: 'assistant', content: rawContent },
+              { role: 'user', content: contRes.followup_user_prompt },
+            ]
+            continue
+          }
+          if (Array.isArray(contRes.history)) {
+            finalContHistory = contRes.history
+          }
+          break
+        }
+        if (finalContHistory) {
+          history.value = finalContHistory
+        }
       } catch (bridgeErr: any) {
+        errorMsg.value = `Lỗi Browser Bridge: ${bridgeErr?.message || bridgeErr}`
         history.value.push({
           role: 'assistant',
           content: `❌ Lỗi gọi API qua cầu nối trình duyệt: ${bridgeErr?.message || bridgeErr}`,
           timestamp: new Date().toLocaleTimeString(),
         })
       }
-    } else {
-      history.value = res.history || []
+    } else if (Array.isArray(res.history)) {
+      history.value = res.history
     }
   } catch (e) {
     errorMsg.value = (e as Error).message
@@ -667,14 +702,16 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- Global Feedback / Error Banners (Always Visible) -->
+      <div v-if="feedback" class="mt-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
+        ✅ {{ feedback }}
+      </div>
+      <div v-if="errorMsg" class="mt-2 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+        ⚠️ {{ errorMsg }}
+      </div>
+
       <!-- Expandable API Configuration Form -->
       <div v-if="showConfig" class="mt-3 pt-3 border-t border-white/10 space-y-3">
-        <div v-if="feedback" class="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
-          ✅ {{ feedback }}
-        </div>
-        <div v-if="errorMsg" class="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
-          ⚠️ {{ errorMsg }}
-        </div>
 
         <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
           <div>

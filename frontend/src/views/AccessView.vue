@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useSystemStore } from '@/stores/system'
+
+const system = useSystemStore()
+const lanSubnetBadge = computed(() => (system.lanIp ? `${system.lanIp}/24` : 'LAN DHCP'))
+const defaultStaticPrefix = computed(() => {
+  const parts = (system.lanIp || '').split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.` : ''
+})
 
 interface StaticLease {
   id: string
@@ -62,10 +70,8 @@ const showDdnsToken = ref(false)
 
 const ddnsProviders = [
   { id: 'duckdns', name: '🦆 DuckDNS.org (Ưu tiên / Miễn phí trọn đời)', placeholder: 'subdomain (vd: r3phome)' },
-  { id: 'cloudflare', name: '☁️ Cloudflare DNS', placeholder: 'sub.domain.com' },
   { id: 'noip', name: '🌐 No-IP (noip.com)', placeholder: 'myhost.ddns.net' },
-  { id: 'dyndns', name: '⚡ DynDNS', placeholder: 'myhost.dyndns.org' },
-  { id: 'freedns', name: '🔒 FreeDNS (afraid.org)', placeholder: 'myhost.mooo.com' },
+  { id: 'dyndns', name: '⚡ DynDNS (Dyn.com)', placeholder: 'myhost.dyndns.org' },
   { id: 'custom', name: '🛠️ Custom URL (Tùy chỉnh máy chủ)', placeholder: 'myhost.example.com' },
 ]
 
@@ -82,7 +88,7 @@ const savingSSH = ref(false)
 const savingDHCP = ref(false)
 
 const showAddStatic = ref(false)
-const newStatic = ref({ name: '', mac: '', ip: '192.168.2.' })
+const newStatic = ref({ name: '', mac: '', ip: '' })
 const staticCardRef = ref<HTMLElement | null>(null)
 
 function showToast(msg: string, ms = 3800) {
@@ -237,7 +243,7 @@ async function addStaticLease() {
     })
     showToast(`Đã ghim IP cố định cho ${newStatic.value.name} (${newStatic.value.ip})!`)
     showAddStatic.value = false
-    newStatic.value = { name: '', mac: '', ip: '192.168.2.' }
+    newStatic.value = { name: '', mac: '', ip: defaultStaticPrefix.value }
     await loadAccess()
   } catch (err: any) {
     showToast('Lỗi thêm ghim IP: ' + (err?.message || err))
@@ -247,9 +253,8 @@ async function addStaticLease() {
 async function deleteStaticLease(id: string) {
   if (!confirm('Bạn có chắc chắn muốn xóa ghim IP này không?')) return
   try {
-    await apiRequest('/access/static-lease', {
+    await apiRequest(`/access/static-lease?id=${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      body: JSON.stringify({ id }),
     })
     showToast('Đã xóa ghim IP cố định!')
     await loadAccess()
@@ -307,7 +312,7 @@ onMounted(() => {
         <div>
           <div class="pro-card-header pb-2 mb-2 border-b border-white/10">
             <span class="pro-card-title">SSH Server (Dropbear)</span>
-            <span class="badge badge-green">RUNNING</span>
+            <span class="badge badge-blue">DROPBEAR</span>
           </div>
           <div class="space-y-2.5 text-[13px]">
             <div class="flex items-center justify-between">
@@ -336,7 +341,7 @@ onMounted(() => {
         <div>
           <div class="pro-card-header pb-2 mb-2 border-b border-white/10">
             <span class="pro-card-title">DHCP Server (dnsmasq)</span>
-            <span class="badge badge-green">192.168.2.1/24</span>
+            <span class="badge badge-green">{{ lanSubnetBadge }}</span>
           </div>
           <div class="space-y-2.5 text-[13px]">
             <div class="flex items-center justify-between">
@@ -463,7 +468,30 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Extra fields for Custom / Username / Interval -->
+      <!-- Extra fields for Username (No-IP / DynDNS), Check Interval, and Custom URL -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-[13px]">
+        <div v-if="ddnsConfig.provider === 'noip' || ddnsConfig.provider === 'dyndns'">
+          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Tài Khoản (Username / Email)</label>
+          <input
+            v-model.trim="ddnsConfig.username"
+            type="text"
+            class="w-full pro-input mono text-gray-200"
+            placeholder="Nhập Username tài khoản No-IP / DynDNS"
+          />
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Chu Kỳ Kiểm Tra IP (Phút)</label>
+          <input
+            v-model.number="ddnsConfig.check_interval"
+            type="number"
+            min="5"
+            max="1440"
+            class="w-full pro-input mono text-sky-300"
+            placeholder="10"
+          />
+        </div>
+      </div>
+
       <div v-if="ddnsConfig.provider === 'custom'" class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-2">
         <label class="block text-xs font-bold text-amber-300 uppercase">URL Cập Nhật Tùy Chỉnh (Custom HTTP GET URL)</label>
         <input

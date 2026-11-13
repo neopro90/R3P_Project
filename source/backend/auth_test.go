@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -209,5 +211,138 @@ func TestSessionResponseIsStructuredJSON(t *testing.T) {
 	}
 	if body["ok"] != true {
 		t.Fatalf("response is not successful: %v", body)
+	}
+}
+
+func TestLoadAPITokenFailsWithoutFileOrEnv(t *testing.T) {
+	t.Setenv("R3P_API_TOKEN", "")
+	t.Setenv("R3P_API_TOKEN_FILE", filepath.Join(t.TempDir(), "missing-token"))
+	token, err := loadAPIToken()
+	if err == nil || token != "" {
+		t.Fatalf("expected error and empty token, got token=%q err=%v", token, err)
+	}
+
+	emptyFile := filepath.Join(t.TempDir(), "empty-token")
+	if err := os.WriteFile(emptyFile, []byte(" \n "), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("R3P_API_TOKEN_FILE", emptyFile)
+	token, err = loadAPIToken()
+	if err == nil || token != "" {
+		t.Fatalf("expected error for empty token file, got token=%q err=%v", token, err)
+	}
+}
+
+func TestCryptShadowVectors(t *testing.T) {
+	vectors := []struct {
+		hash string
+		pass string
+		want bool
+	}{
+		{"$5$test1234$3qn9hN9IGIiA.t9YvawRvRqSaG73wotUNqDcB5uxD93", "mysecret", true},
+		{"$5$test1234$3qn9hN9IGIiA.t9YvawRvRqSaG73wotUNqDcB5uxD93", "wrongpass", false},
+		{"$1$abcd1234$yuVPdq603u5AD2TPDRBy71", "mysecret", true},
+		{"$1$abcd1234$yuVPdq603u5AD2TPDRBy71", "wrongpass", false},
+		{"$6$test1234$U7.iXcOsT9Mmt4x09aYtZ9vB4hb1JWJTdcr3T7.FX/Ov6m8RdjlRENe.yTzVO7ikkxjRXQqop3C89rmOoaYsP.", "mysecret", true},
+		{"!", "root", false},
+		{"*", "root", false},
+		{"", "root", false},
+	}
+	for _, v := range vectors {
+		if got := verifyCryptHash(v.pass, v.hash); got != v.want {
+			t.Errorf("verifyCryptHash(%q, %q) = %v, want %v", v.pass, v.hash, got, v.want)
+		}
+	}
+}
+
+func TestShadowPasswordAuthenticationRejectsHardcodedDefault(t *testing.T) {
+	shadow := filepath.Join(t.TempDir(), "shadow")
+	if err := os.WriteFile(shadow, []byte("root:$5$test1234$3qn9hN9IGIiA.t9YvawRvRqSaG73wotUNqDcB5uxD93:19000:0:99999:7:::\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth := newAuthenticator("hex-random-token-64")
+	auth.shadowPath = shadow
+
+	for _, bad := range []string{
+		`{"username":"root","password":"root"}`,
+		`{"username":"admin","password":"admin"}`,
+		`{"username":"root","password":"admin"}`,
+		`{"username":"other","password":"mysecret"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(bad))
+		req.RemoteAddr = "192.168.1.50:1234"
+		rec := httptest.NewRecorder()
+		auth.handleSession(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("body %s got status %d, want 401", bad, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"username":"root","password":"mysecret"}`))
+	req.RemoteAddr = "192.168.1.51:1234"
+	rec := httptest.NewRecorder()
+	auth.handleSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid shadow login got status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	// Simulate password rotation in /etc/shadow
+	if err := os.WriteFile(shadow, []byte("root:$1$abcd1234$yuVPdq603u5AD2TPDRBy71:19000:0:99999:7:::\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Old hash format swapped but verify rejection on wrong password
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"username":"root","password":"oldpassword"}`))
+	reqBad.RemoteAddr = "192.168.1.52:1234"
+	recBad := httptest.NewRecorder()
+	auth.handleSession(recBad, reqBad)
+	if recBad.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong shadow login got status %d, want 401", recBad.Code)
+	}
+}
+
+func TestLoginRateLimitReturns429(t *testing.T) {
+	auth := newAuthenticator("router-secret")
+	auth.shadowPath = ""
+	now := time.Now()
+	auth.now = func() time.Time { return now }
+
+	for i := 0; i < loginRateLimitMax; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"bad"}`))
+		req.RemoteAddr = "10.0.0.5:4321"
+		rec := httptest.NewRecorder()
+		auth.handleSession(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"router-secret"}`))
+	blockedReq.RemoteAddr = "10.0.0.5:4321"
+	blockedRec := httptest.NewRecorder()
+	auth.handleSession(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked attempt status = %d, want 429", blockedRec.Code)
+	}
+	if blockedRec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on 429 response")
+	}
+
+	// Different IP succeeds
+	otherReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"router-secret"}`))
+	otherReq.RemoteAddr = "10.0.0.6:4321"
+	otherRec := httptest.NewRecorder()
+	auth.handleSession(otherRec, otherReq)
+	if otherRec.Code != http.StatusOK {
+		t.Fatalf("other IP status = %d, want 200", otherRec.Code)
+	}
+
+	// Original IP recovers after window expires
+	now = now.Add(loginRateLimitWindow + time.Second)
+	recoverReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"router-secret"}`))
+	recoverReq.RemoteAddr = "10.0.0.5:4321"
+	recoverRec := httptest.NewRecorder()
+	auth.handleSession(recoverRec, recoverReq)
+	if recoverRec.Code != http.StatusOK {
+		t.Fatalf("post-window recovery status = %d, want 200", recoverRec.Code)
 	}
 }

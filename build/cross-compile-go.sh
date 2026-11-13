@@ -6,7 +6,7 @@
 
 set -e
 
-API_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/go-api"
+API_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/source/backend"
 OUTPUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/output"
 
 echo "=== R3P Go API Cross-Compile — Phase 0 ==="

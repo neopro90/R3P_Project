@@ -26,8 +26,17 @@ function showNotice(msg: string, ms = 4000) {
 }
 const selectedOutput = ref<{ name: string; output: string } | null>(null)
 
+const pluginPresets = [
+  { id: 'ram_flush', label: 'Flush Memory Cache (drop_caches + free -m)' },
+  { id: 'lan_probe', label: 'Gateway & LAN ARP Probe (br-lan + ip neigh)' },
+  { id: 'nand_health', label: 'NAND UBI Wear Inspector (/sys/class/ubi/ubi0)' },
+  { id: 'dns_reload', label: 'Reload dnsmasq AdBlock Shield' },
+  { id: 'disk_usage', label: 'Storage & Partition Check (df -h)' },
+  { id: 'uptime_check', label: 'System Load & Uptime Check' },
+]
+
 const showCreate = ref(false)
-const newPlugin = ref({ name: '', description: '', command: '' })
+const newPlugin = ref({ name: '', description: '', command: 'ram_flush' })
 
 async function loadPlugins() {
   loading.value = true
@@ -91,7 +100,7 @@ async function createPlugin() {
     })
     if (res?.plugins) plugins.value = res.plugins
     showCreate.value = false
-    newPlugin.value = { name: '', description: '', command: '' }
+    newPlugin.value = { name: '', description: '', command: 'ram_flush' }
     showNotice('Custom plugin created!')
   } catch (err: any) {
     showNotice('Create error: ' + (err?.message || err), 5000)
@@ -151,8 +160,10 @@ onMounted(() => {
           <input v-model="newPlugin.description" type="text" class="w-full pro-input" placeholder="Short summary" />
         </div>
         <div>
-          <label class="block text-[10px] text-gray-400 uppercase mb-1">Shell Command / Hook</label>
-          <input v-model="newPlugin.command" type="text" required class="w-full pro-input mono" placeholder="uptime && df -h" />
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">Preset Action Hook</label>
+          <select v-model="newPlugin.command" required class="w-full pro-input mono">
+            <option v-for="preset in pluginPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
+          </select>
         </div>
         <button type="submit" class="btn-primary justify-center py-1.5">Install Plugin</button>
       </form>

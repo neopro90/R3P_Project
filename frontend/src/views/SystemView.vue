@@ -89,6 +89,7 @@ const updatingFromGh = ref(false)
 const uploadingFw = ref(false)
 const applyingFw = ref(false)
 const keepSettings = ref(true)
+const forceFlash = ref(false)
 const selectedFwFile = ref<File | null>(null)
 
 const filteredLogs = computed(() => {
@@ -158,6 +159,7 @@ async function triggerGitHubUpdate(mode: 'os_bundle' | 'sysupgrade') {
     : 'Đang tải Firmware Sysupgrade (.bin) từ GitHub...'
   try {
     const res = await apiRequest<{
+      current?: SystemVersionInfo
       version?: SystemVersionInfo
       staged?: StagedFirmwareInfo
       logs?: string[]
@@ -171,8 +173,12 @@ async function triggerGitHubUpdate(mode: 'os_bundle' | 'sysupgrade') {
         keep_settings: keepSettings.value,
       }),
     })
-    if (res.version) currentVer.value = res.version
-    if (res.staged) stagedFw.value = res.staged
+    if (res.current) currentVer.value = res.current
+    else if (res.version) currentVer.value = res.version
+    if (res.staged) {
+      stagedFw.value = res.staged
+      forceFlash.value = false
+    }
     if (res.logs) fwLogs.value = res.logs
     notice.value = res.message
     await fetchFirmwareStatus()
@@ -194,26 +200,22 @@ async function uploadManualFirmware() {
   if (!selectedFwFile.value) return
   uploadingFw.value = true
   errorMsg.value = null
+  forceFlash.value = false
   notice.value = `Đang tải file '${selectedFwFile.value.name}' lên bộ nhớ RAM (/tmp) của Router...`
   try {
-    const resp = await fetch(
-      `/api/v1/system/firmware/upload?filename=${encodeURIComponent(selectedFwFile.value.name)}`,
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'X-Filename': selectedFwFile.value.name,
-        },
-        body: selectedFwFile.value,
-      },
-    )
-    const payload = await resp.json()
-    if (!resp.ok || !payload.ok) {
-      throw new Error(payload.error || payload.data || `HTTP ${resp.status}`)
-    }
-    if (payload.data?.staged) stagedFw.value = payload.data.staged
-    if (payload.data?.logs) fwLogs.value = payload.data.logs
-    notice.value = payload.data?.message || 'Tải lên và kiểm tra file Firmware thành công!'
+    const formData = new FormData()
+    formData.append('file', selectedFwFile.value)
+    const data = await apiRequest<{
+      staged?: StagedFirmwareInfo
+      logs?: string[]
+      message?: string
+    }>('/system/firmware/upload', {
+      method: 'POST',
+      body: formData,
+    })
+    if (data?.staged) stagedFw.value = data.staged
+    if (data?.logs) fwLogs.value = data.logs
+    notice.value = data?.message || 'Tải lên và kiểm tra file Firmware thành công!'
   } catch (err: any) {
     errorMsg.value = 'Lỗi tải lên Firmware: ' + (err?.message || err)
   } finally {
@@ -222,6 +224,10 @@ async function uploadManualFirmware() {
 }
 
 async function applyStagedFirmware() {
+  if (!stagedFw.value.valid && !forceFlash.value) {
+    errorMsg.value = 'File Firmware chưa vượt qua kiểm tra hợp lệ. Vui lòng tích xác nhận Force Flash nếu thực sự muốn tiếp tục.'
+    return
+  }
   applyingFw.value = true
   errorMsg.value = null
   notice.value = 'Đang thực thi cập nhật Firmware / OS... Vui lòng chờ hệ thống khởi động lại dịch vụ!'
@@ -234,7 +240,7 @@ async function applyStagedFirmware() {
       method: 'POST',
       body: JSON.stringify({
         keep_settings: keepSettings.value,
-        force: true,
+        force: forceFlash.value,
       }),
     })
     if (res.logs) fwLogs.value = res.logs
@@ -552,14 +558,20 @@ onMounted(async () => {
           </div>
 
           <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
-            <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
-              <input v-model="keepSettings" type="checkbox" class="rounded accent-sky-500" />
-              <span>Giữ lại toàn bộ cấu hình hiện tại (<code class="mono text-sky-300">sysupgrade -k</code>)</span>
-            </label>
+            <div class="space-y-1">
+              <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                <input v-model="keepSettings" type="checkbox" class="rounded accent-sky-500" />
+                <span>Giữ lại toàn bộ cấu hình hiện tại (<code class="mono text-sky-300">sysupgrade -k</code>)</span>
+              </label>
+              <label v-if="stagedFw.present && !stagedFw.valid" class="flex items-center gap-1.5 text-xs text-amber-300 cursor-pointer">
+                <input v-model="forceFlash" type="checkbox" class="rounded accent-amber-500" />
+                <span>⚠️ Kiểm tra thất bại — xác nhận Force Flash / Bỏ qua cảnh báo</span>
+              </label>
+            </div>
             <button
               type="button"
               class="btn-danger text-xs px-3.5 min-w-[216px] justify-center"
-              :disabled="!stagedFw.present || applyingFw"
+              :disabled="!stagedFw.present || applyingFw || (!stagedFw.valid && !forceFlash)"
               @click="applyStagedFirmware"
             >
               {{ applyingFw ? 'Đang nạp Firmware…' : '🔥 Áp Dụng / Flash Firmware Ngay' }}
@@ -621,11 +633,11 @@ onMounted(async () => {
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Distribution</span>
-            <span class="font-semibold text-sky-400">OpenWrt {{ system.firmwareVersion || '25.12.5' }}</span>
+            <span class="font-semibold text-sky-400">OpenWrt {{ system.firmwareVersion || '—' }}</span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Linux Kernel</span>
-            <span class="mono text-emerald-400">{{ system.kernel || '6.12.74' }}</span>
+            <span class="mono text-emerald-400">{{ system.kernel || '—' }}</span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Load Average</span>

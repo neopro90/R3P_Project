@@ -1,3 +1,4 @@
+import getpass
 import os
 import sys
 import time
@@ -8,9 +9,9 @@ import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import paramiko
 
-ROUTER_IP = "192.168.2.1"
-ROUTER_USER = "root"
-ROUTER_PASS = "root"
+ROUTER_IP = os.environ.get("R3P_HOST", "192.168.1.7")
+ROUTER_USER = os.environ.get("R3P_SSH_USER", "root")
+ROUTER_PASS = os.environ.get("R3P_SSH_PASS") or getpass.getpass(f"SSH password for {ROUTER_USER}@{ROUTER_IP}: ")
 CACHE_DIR = r"D:\R3P_Project\Supplementary Files\repo_cache"
 FRONTEND_DIST = r"D:\R3P_Project\frontend\dist"
 BACKEND_BIN = r"D:\R3P_Project\build\artifacts\r3p-api"

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,10 +12,176 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var safeGitBranchPattern = regexp.MustCompile(`^[a-zA-Z0-9._/-]{1,80}$`)
+
+func isSafeGitBranch(branch string) bool {
+	if !safeGitBranchPattern.MatchString(branch) {
+		return false
+	}
+	if strings.Contains(branch, "..") || strings.Contains(branch, "//") {
+		return false
+	}
+	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, ".") {
+		return false
+	}
+	return true
+}
+
+func isELFBinary(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var hdr [4]byte
+	n, err := io.ReadFull(f, hdr[:])
+	return err == nil && n == 4 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F'
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 16 {
+		return sha[:16]
+	}
+	return sha
+}
+
+// inspectTarGzSafety validates gzip and tar structure and rejects path traversal,
+// special device nodes, hardlinks, and unsafe symlinks before extracting onto '/'.
+func inspectTarGzSafety(tgzPath string, allowSafeSymlinks bool, allowedPrefixes []string) (int, error) {
+	f, err := os.Open(tgzPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return 0, fmt.Errorf("file gzip không hợp lệ: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	const maxEntries = 10000
+	const maxTotalBytes = int64(128 << 20)
+	var count int
+	var totalBytes int64
+	symlinkTargets := make(map[string]struct{})
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("lỗi đọc cấu trúc tar: %w", err)
+		}
+		count++
+		if count > maxEntries {
+			return 0, fmt.Errorf("gói nén vượt quá giới hạn %d tệp", maxEntries)
+		}
+		if hdr.Size < 0 || totalBytes+hdr.Size > maxTotalBytes {
+			return 0, fmt.Errorf("dung lượng giải nén vượt quá giới hạn an toàn")
+		}
+		totalBytes += hdr.Size
+
+		switch hdr.Typeflag {
+		case tar.TypeReg, tar.TypeRegA, tar.TypeDir, tar.TypeGNULongName, tar.TypeGNULongLink, tar.TypeXHeader, tar.TypeXGlobalHeader:
+		case tar.TypeSymlink:
+			if !allowSafeSymlinks {
+				return 0, fmt.Errorf("không cho phép symlink trong gói cập nhật: %s", hdr.Name)
+			}
+			link := filepath.ToSlash(hdr.Linkname)
+			for _, seg := range strings.Split(link, "/") {
+				if seg == ".." {
+					return 0, fmt.Errorf("symlink không an toàn trong gói nén: %s -> %s", hdr.Name, hdr.Linkname)
+				}
+			}
+		default:
+			return 0, fmt.Errorf("loại tệp không an toàn (%c) trong gói nén: %s", hdr.Typeflag, hdr.Name)
+		}
+
+		rawName := strings.TrimSpace(filepath.ToSlash(hdr.Name))
+		for _, seg := range strings.Split(rawName, "/") {
+			if seg == ".." {
+				return 0, fmt.Errorf("phát hiện path traversal trong gói nén: %s", hdr.Name)
+			}
+		}
+		clean := strings.TrimPrefix(rawName, "./")
+		clean = strings.TrimPrefix(clean, "/")
+		clean = strings.TrimSuffix(clean, "/")
+		if clean == "" || clean == "." {
+			continue
+		}
+		if len(allowedPrefixes) > 0 {
+			matched := false
+			for _, p := range allowedPrefixes {
+				pClean := strings.TrimSuffix(p, "/")
+				if clean == pClean || strings.HasPrefix(clean, p) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return 0, fmt.Errorf("đường dẫn không hợp lệ trong gói cập nhật: %s", hdr.Name)
+			}
+		}
+		parts := strings.Split(clean, "/")
+		prefix := ""
+		for i := 0; i < len(parts)-1; i++ {
+			if i > 0 {
+				prefix += "/"
+			}
+			prefix += parts[i]
+			if _, ok := symlinkTargets[prefix]; ok {
+				return 0, fmt.Errorf("tệp nằm dưới thư mục symlink không an toàn: %s", hdr.Name)
+			}
+		}
+		if hdr.Typeflag == tar.TypeSymlink {
+			symlinkTargets[clean] = struct{}{}
+		}
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("gói nén rỗng")
+	}
+	return count, nil
+}
+
+func verifyOptionalRemoteSHA256(client *http.Client, shaURL, localPath string) (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, shaURL, nil)
+	if err != nil {
+		return false, nil
+	}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return false, nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil {
+		return false, nil
+	}
+	fields := strings.Fields(string(body))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		return false, nil
+	}
+	if _, err := hex.DecodeString(fields[0]); err != nil {
+		return false, nil
+	}
+	actual := fileSHA256(localPath)
+	if !strings.EqualFold(actual, fields[0]) {
+		return false, fmt.Errorf("SHA256 mismatch: expected %s, got %s", fields[0], actual)
+	}
+	return true, nil
+}
 
 // ─── Firmware & GitHub Online System Updater ───────────────────────────────
 
@@ -160,7 +328,12 @@ func handleFirmwareConfigPut(w http.ResponseWriter, r *http.Request) {
 		ver.RepoURL = strings.TrimSpace(body.RepoURL)
 	}
 	if strings.TrimSpace(body.Branch) != "" {
-		ver.Branch = strings.TrimSpace(body.Branch)
+		branch := strings.TrimSpace(body.Branch)
+		if !isSafeGitBranch(branch) {
+			writeJSON(w, http.StatusBadRequest, false, "Tên nhánh Git (branch) không hợp lệ")
+			return
+		}
+		ver.Branch = branch
 	}
 	saveCurrentSystemVersion(ver)
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -183,6 +356,10 @@ func handleFirmwareGitHubCheck(w http.ResponseWriter, r *http.Request) {
 	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
 	if branch == "" {
 		branch = cur.Branch
+	}
+	if !isSafeGitBranch(branch) {
+		writeJSON(w, http.StatusBadRequest, false, "Tên nhánh Git (branch) không hợp lệ")
+		return
 	}
 
 	owner, repo, ok := parseGitHubOwnerRepo(repoURL)
@@ -347,6 +524,10 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	if branch == "" {
 		branch = cur.Branch
 	}
+	if !isSafeGitBranch(branch) {
+		writeJSON(w, http.StatusBadRequest, false, "Tên nhánh Git (branch) không hợp lệ")
+		return
+	}
 	owner, repo, ok := parseGitHubOwnerRepo(repoURL)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, false, "URL GitHub không hợp lệ")
@@ -359,6 +540,7 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appendFwLog(fmt.Sprintf("Bắt đầu cập nhật hệ thống từ GitHub %s/%s (nhánh %s, chế độ: %s)...", owner, repo, branch, mode))
+	dlClient := &http.Client{Timeout: 15 * time.Second}
 
 	if mode == "sysupgrade" {
 		fwURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/R3P-Firmware-Sysupgrade.bin", owner, repo, branch)
@@ -370,8 +552,17 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, false, "Không thể tải R3P-Firmware-Sysupgrade.bin từ GitHub (Kiểm tra kết nối Internet hoặc file trên nhánh "+branch+"): "+dlErr.Error())
 			return
 		}
+		if shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, fwURL+".sha256", stagedFwPath); shaErr != nil {
+			_ = os.Remove(stagedFwPath)
+			appendFwLog("Lỗi kiểm tra checksum SHA256: " + shaErr.Error())
+			writeJSON(w, http.StatusBadGateway, false, "Kiểm tra checksum SHA256 thất bại: "+shaErr.Error())
+			return
+		} else if shaOK {
+			appendFwLog("Đã xác thực chữ ký SHA256 sidecar khớp hoàn toàn.")
+		}
 		st, err := os.Stat(stagedFwPath)
 		if err != nil || st.Size() < 1024*1024 {
+			_ = os.Remove(stagedFwPath)
 			writeJSON(w, http.StatusBadGateway, false, "File firmware tải về không hợp lệ (< 1MB)")
 			return
 		}
@@ -392,7 +583,7 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
 			_ = os.WriteFile(stagedMetaPath, b, 0644)
 		}
-		appendFwLog(fmt.Sprintf("Đã tải xong R3P-Firmware-Sysupgrade.bin (%.2f MB, SHA256: %s). Sẵn sàng Flash!", float64(st.Size())/(1024*1024), sha[:16]))
+		appendFwLog(fmt.Sprintf("Đã tải xong R3P-Firmware-Sysupgrade.bin (%.2f MB, SHA256: %s). Sẵn sàng Flash!", float64(st.Size())/(1024*1024), shortSHA(sha)))
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"staged":  meta,
 			"logs":    getFwLogs(),
@@ -410,6 +601,18 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	_, err := runCmd(60, "curl", "-L", "-f", "-s", "-o", tmpBundle, bundleURL)
 	if err == nil {
 		if st, sErr := os.Stat(tmpBundle); sErr == nil && st.Size() > 100*1024 {
+			if shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, bundleURL+".sha256", tmpBundle); shaErr != nil {
+				appendFwLog("Từ chối gói cập nhật do sai lệch SHA256: " + shaErr.Error())
+				writeJSON(w, http.StatusBadGateway, false, "Gói cập nhật từ GitHub sai lệch SHA256: "+shaErr.Error())
+				return
+			} else if shaOK {
+				appendFwLog("Đã xác thực SHA256 sidecar của OS Bundle.")
+			}
+			if _, safetyErr := inspectTarGzSafety(tmpBundle, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"}); safetyErr != nil {
+				appendFwLog("Gói cập nhật không hợp lệ hoặc chứa đường dẫn không an toàn: " + safetyErr.Error())
+				writeJSON(w, http.StatusBadGateway, false, "Gói cập nhật tải về không hợp lệ: "+safetyErr.Error())
+				return
+			}
 			appendFwLog(fmt.Sprintf("Đã tải gói r3p-update-bundle.tar.gz (%.2f MB). Đang giải nén vào hệ thống...", float64(st.Size())/(1024*1024)))
 			_ = os.Remove("/usr/bin/r3p-api.old")
 			_ = os.Rename("/usr/bin/r3p-api", "/usr/bin/r3p-api.old")
@@ -441,14 +644,24 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, false, "Không thể tải bản cập nhật từ GitHub (Kiểm tra kết nối Internet của Router): "+binErr.Error())
 			return
 		}
-		if st, sErr := os.Stat(tmpBin); sErr == nil && st.Size() > 1024*1024 {
+		if shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, binURL+".sha256", tmpBin); shaErr != nil {
+			appendFwLog("Từ chối binary r3p-api do sai lệch SHA256: " + shaErr.Error())
+			writeJSON(w, http.StatusBadGateway, false, "Binary r3p-api sai lệch SHA256: "+shaErr.Error())
+			return
+		} else if shaOK {
+			appendFwLog("Đã xác thực SHA256 sidecar của binary r3p-api.")
+		}
+		if st, sErr := os.Stat(tmpBin); sErr == nil && st.Size() > 1024*1024 && isELFBinary(tmpBin) {
 			_ = os.Chmod(tmpBin, 0755)
 			// Use cp -f because /tmp and /usr/bin are on different filesystems (cross-device link)
-			_, _ = runCmd(10, "cp", "-f", tmpBin, "/usr/bin/r3p-api")
+			if _, cpErr := runCmd(10, "cp", "-f", tmpBin, "/usr/bin/r3p-api"); cpErr != nil {
+				writeJSON(w, http.StatusInternalServerError, false, "Không thể ghi đè /usr/bin/r3p-api: "+cpErr.Error())
+				return
+			}
 			_ = os.Remove(tmpBin)
 			appendFwLog(fmt.Sprintf("Đã cập nhật /usr/bin/r3p-api (%.2f MB) thành công!", float64(st.Size())/(1024*1024)))
 		} else {
-			writeJSON(w, http.StatusBadGateway, false, "File r3p-api tải từ GitHub không hợp lệ")
+			writeJSON(w, http.StatusBadGateway, false, "File r3p-api tải từ GitHub không hợp lệ (không phải ELF binary > 1MB)")
 			return
 		}
 	}
@@ -521,7 +734,7 @@ func handleFirmwareManualUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	_ = os.Remove(stagedFwPath)
-	out, err := os.Create(stagedFwPath)
+	out, err := os.OpenFile(stagedFwPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo file tạm trong /tmp: "+err.Error())
 		return
@@ -530,6 +743,7 @@ func handleFirmwareManualUpload(w http.ResponseWriter, r *http.Request) {
 	written, copyErr := io.Copy(io.MultiWriter(out, hashherWriter{hasher}), file)
 	out.Close()
 	if copyErr != nil {
+		_ = os.Remove(stagedFwPath)
 		writeJSON(w, http.StatusInternalServerError, false, "Lỗi khi ghi file firmware: "+copyErr.Error())
 		return
 	}
@@ -544,18 +758,22 @@ func handleFirmwareManualUpload(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
 		formatType = "os_bundle_targz"
-		tOut, tErr := runCmd(10, "tar", "-tzf", stagedFwPath)
-		valid = tErr == nil
-		if valid {
-			lines := strings.Split(strings.TrimSpace(tOut), "\n")
-			checkMsg = fmt.Sprintf("Gói cập nhật R3P OS Bundle hợp lệ (%d files bên trong).", len(lines))
+		entryCount, sErr := inspectTarGzSafety(stagedFwPath, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"})
+		if sErr != nil {
+			valid = false
+			checkMsg = "Gói .tar.gz không hợp lệ hoặc không an toàn: " + sErr.Error()
 		} else {
-			checkMsg = "File nén .tar.gz bị lỗi: " + tOut
+			valid = true
+			checkMsg = fmt.Sprintf("Gói cập nhật R3P OS Bundle hợp lệ (%d entries đã kiểm tra an toàn).", entryCount)
 		}
 	} else if lower == "r3p-api" || strings.HasPrefix(lower, "r3p-api") {
 		formatType = "r3p_api_binary"
-		valid = written > 1024*1024
-		checkMsg = "Binary r3p-api (MIPS Little-Endian) sẵn sàng cập nhật nóng."
+		valid = written > 1024*1024 && isELFBinary(stagedFwPath)
+		if valid {
+			checkMsg = "Binary ELF r3p-api (MIPS Little-Endian) sẵn sàng cập nhật nóng."
+		} else {
+			checkMsg = "File binary không hợp lệ (yêu cầu ELF executable > 1MB)."
+		}
 	} else {
 		formatType = "sysupgrade_bin"
 		chkOut, chkErr := runCmd(10, "sysupgrade", "-T", stagedFwPath)
@@ -582,7 +800,7 @@ func handleFirmwareManualUpload(w http.ResponseWriter, r *http.Request) {
 		_ = os.WriteFile(stagedMetaPath, b, 0644)
 	}
 
-	appendFwLog(fmt.Sprintf("Đã tải lên thủ công '%s' (%.2f MB, Loại: %s, SHA256: %s)", fname, float64(written)/(1024*1024), formatType, sha[:16]))
+	appendFwLog(fmt.Sprintf("Đã tải lên thủ công '%s' (%.2f MB, Loại: %s, SHA256: %s)", fname, float64(written)/(1024*1024), formatType, shortSHA(sha)))
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"staged":  meta,
@@ -619,9 +837,21 @@ func handleFirmwareApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "Chưa có file Firmware/Bundle nào được tải lên")
 		return
 	}
+	if staged.SHA256 != "" && !strings.EqualFold(fileSHA256(staged.Path), staged.SHA256) {
+		writeJSON(w, http.StatusBadRequest, false, "File tạm trên RAM không khớp mã SHA256 ban đầu — vui lòng tải lại file.")
+		return
+	}
+	if !staged.Valid && !body.Force {
+		writeJSON(w, http.StatusBadRequest, false, "File chưa vượt qua kiểm tra hợp lệ ("+staged.CheckMsg+"). Bật tùy chọn Force Flash nếu bạn chắc chắn.")
+		return
+	}
 
 	switch staged.FormatType {
 	case "os_bundle_targz":
+		if _, safetyErr := inspectTarGzSafety(staged.Path, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"}); safetyErr != nil && !body.Force {
+			writeJSON(w, http.StatusBadRequest, false, "Gói OS Bundle không an toàn để giải nén: "+safetyErr.Error())
+			return
+		}
 		appendFwLog("Đang giải nén gói R3P OS Bundle thủ công (" + staged.Filename + ") vào hệ thống...")
 		out, err := runCmd(35, "tar", "-xzf", staged.Path, "-C", "/")
 		if err != nil {
@@ -646,6 +876,10 @@ func handleFirmwareApply(w http.ResponseWriter, r *http.Request) {
 		}()
 
 	case "r3p_api_binary":
+		if !isELFBinary(staged.Path) && !body.Force {
+			writeJSON(w, http.StatusBadRequest, false, "File tải lên không phải binary ELF hợp lệ")
+			return
+		}
 		appendFwLog("Đang cập nhật binary /usr/bin/r3p-api từ file tải lên...")
 		_ = os.Chmod(staged.Path, 0755)
 		if err := os.Rename(staged.Path, "/usr/bin/r3p-api"); err != nil {

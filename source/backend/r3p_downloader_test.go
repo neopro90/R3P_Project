@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setupDownloaderTestEnv(t *testing.T) string {
@@ -208,5 +209,65 @@ func TestDownloadJobsAndAnalyzeHandlers(t *testing.T) {
 	}
 	if _, hasOldDevice := dbgResp.Data["device_url"]; hasOldDevice {
 		t.Fatalf("/debug should not expose legacy device_url field")
+	}
+}
+
+func TestDownloaderGuardsSSRFOutputDirRetryAndSchedules(t *testing.T) {
+	_ = setupDownloaderTestEnv(t)
+
+	// SSRF URL rejected cleanly
+	for _, badURL := range []string{
+		"http://127.0.0.1:8080/secret",
+		"http://192.168.1.1/admin",
+		"https://localhost/internal",
+		"http://router.lan/api",
+	} {
+		if _, _, err := enqueueR3pJob(badURL, "dashboard", "", "", false); err == nil {
+			t.Fatalf("expected SSRF URL %q to be rejected", badURL)
+		}
+	}
+
+	// Output directory whitelist check
+	for _, okDir := range []string{"/mnt/sda1/downloads", "/overlay/downloads", "/tmp/r3p-test"} {
+		if _, err := validateDownloaderOutputDir(okDir); err != nil {
+			t.Fatalf("expected outputDir %q to pass: %v", okDir, err)
+		}
+	}
+	for _, badDir := range []string{"/etc/r3p", "/www", "/root", "/mnt/../etc", "relative/dir"} {
+		if _, err := validateDownloaderOutputDir(badDir); err == nil {
+			t.Fatalf("expected dangerous outputDir %q to be rejected", badDir)
+		}
+	}
+
+	// Multi-ID Telegram validation accepts comma-separated numeric IDs and empty ID
+	if err := validateTelegramConfig("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-", "111111, -100222333"); err != nil {
+		t.Fatalf("multi chat ID validation failed: %v", err)
+	}
+	if err := validateTelegramConfig("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-", ""); err != nil {
+		t.Fatalf("empty chat ID validation failed: %v", err)
+	}
+
+	// Schedule weekly next run calculation
+	base := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC) // Saturday (Weekday 6)
+	sched := &ScheduledDownload{Recurrence: "weekly", Time: "12:00", Weekday: int(time.Monday)}
+	nextMs := computeNextScheduleRunMs(sched, base)
+	nextTime := time.UnixMilli(nextMs).UTC()
+	if nextTime.Weekday() != time.Monday || nextTime.Hour() != 12 {
+		t.Fatalf("weekly schedule computed %v, want next Monday 12:00", nextTime)
+	}
+
+	// Running job retry returns 409 Conflict
+	job, _, err := enqueueR3pJob("https://youtu.be/dQw4w9WgXcQ", "dashboard", "", "720p", false)
+	if err != nil {
+		t.Fatalf("enqueue valid job: %v", err)
+	}
+	dlMu.Lock()
+	job.RuntimeStatus = "RUNNING"
+	dlMu.Unlock()
+	retryReq := httptest.NewRequest(http.MethodPost, "/api/v1/download/jobs/"+job.ID+"/retry", nil)
+	retryRec := httptest.NewRecorder()
+	handleDownloadJobItem(retryRec, retryReq)
+	if retryRec.Code != http.StatusConflict {
+		t.Fatalf("retry while running status = %d, want 409", retryRec.Code)
 	}
 }

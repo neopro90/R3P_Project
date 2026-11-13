@@ -266,7 +266,7 @@ func saveGDriveConfigToFileLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 func saveGDriveConfigToFile() error {
@@ -540,7 +540,11 @@ func runGDriveSyncNow() {
 		if direction == "two_way" || direction == "download_only" {
 			for relPath, dFile := range driveFiles {
 				if _, exists := localFiles[relPath]; !exists {
-					destPath := filepath.Join(localDir, filepath.FromSlash(relPath))
+					destPath, ok := safeJoinUnderBase(localDir, relPath)
+					if !ok {
+						appendGDriveLog(fmt.Sprintf("    ⚠️ Bỏ qua đường dẫn Drive không an toàn: %s", relPath))
+						continue
+					}
 					_ = os.MkdirAll(filepath.Dir(destPath), 0755)
 
 					appendGDriveLog(fmt.Sprintf("  ⬇️ [DOWNLOAD] Tải tệp mới: %s (%d bytes)", relPath, dFile.Size))
@@ -682,11 +686,15 @@ func scanGDriveTree(token string, rootFolderID string) (map[string]string, map[s
 		}
 
 		for _, item := range items {
+			safeName, nameOK := sanitizeGDrivePathSegment(item.Name)
+			if !nameOK {
+				continue
+			}
 			var itemRelPath string
 			if curr.relPath == "" {
-				itemRelPath = item.Name
+				itemRelPath = safeName
 			} else {
-				itemRelPath = curr.relPath + "/" + item.Name
+				itemRelPath = curr.relPath + "/" + safeName
 			}
 
 			if item.MimeType == "application/vnd.google-apps.folder" {
@@ -695,11 +703,14 @@ func scanGDriveTree(token string, rootFolderID string) (map[string]string, map[s
 					folderID: item.ID,
 					relPath:  itemRelPath,
 				})
+			} else if strings.HasPrefix(item.MimeType, "application/vnd.google-apps.") {
+				// Native Google Docs/Sheets/Slides cannot be downloaded with alt=media
+				continue
 			} else {
 				sz, _ := strconv.ParseInt(item.Size, 10, 64)
 				driveFiles[itemRelPath] = gdriveSyncFile{
 					ID:           item.ID,
-					Name:         item.Name,
+					Name:         safeName,
 					RelPath:      itemRelPath,
 					ParentID:     curr.folderID,
 					Size:         sz,
@@ -713,43 +724,70 @@ func scanGDriveTree(token string, rootFolderID string) (map[string]string, map[s
 	return driveFolders, driveFiles, nil
 }
 
+func sanitizeGDrivePathSegment(name string) (string, bool) {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(name, "\x00", ""))
+	cleaned = strings.ReplaceAll(cleaned, "/", "_")
+	cleaned = strings.ReplaceAll(cleaned, "\\", "_")
+	if cleaned == "" || cleaned == "." || cleaned == ".." || strings.Contains(cleaned, "..") {
+		return "", false
+	}
+	return cleaned, true
+}
+
+func safeJoinUnderBase(baseDir, relPath string) (string, bool) {
+	cleanBase := filepath.Clean(baseDir)
+	joined := filepath.Clean(filepath.Join(cleanBase, filepath.FromSlash(relPath)))
+	rel, err := filepath.Rel(cleanBase, joined)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return joined, true
+}
+
+func queryGDriveFolderPage(token, folderID, pageToken string) (*gdriveFileListResponse, error) {
+	apiURL := fmt.Sprintf(
+		"https://www.googleapis.com/drive/v3/files?q='%s'+in+parents+and+trashed=false&fields=nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)&pageSize=1000",
+		url.QueryEscape(folderID),
+	)
+	if pageToken != "" {
+		apiURL += "&pageToken=" + url.QueryEscape(pageToken)
+	}
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := gdriveHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var listResp gdriveFileListResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4*1024*1024)).Decode(&listResp); err != nil {
+		return nil, err
+	}
+	return &listResp, nil
+}
+
 // queryGDriveFolderItems queries all direct children of folderID
 func queryGDriveFolderItems(token, folderID string) ([]gdriveRawItem, error) {
 	var results []gdriveRawItem
 	pageToken := ""
 
 	for {
-		apiURL := fmt.Sprintf(
-			"https://www.googleapis.com/drive/v3/files?q='%s'+in+parents+and+trashed=false&fields=nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)&pageSize=1000",
-			url.QueryEscape(folderID),
-		)
-		if pageToken != "" {
-			apiURL += "&pageToken=" + url.QueryEscape(pageToken)
-		}
-
-		req, err := http.NewRequest("GET", apiURL, nil)
+		listResp, err := queryGDriveFolderPage(token, folderID, pageToken)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := gdriveHTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
-		}
-
-		var listResp gdriveFileListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
-			return nil, err
-		}
-
 		results = append(results, listResp.Files...)
 		if listResp.NextPageToken == "" {
 			break
@@ -770,6 +808,9 @@ func scanLocalTree(localDir string) (map[string]bool, map[string]localSyncFile, 
 			return nil
 		}
 		if path == localDir {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		rel, err := filepath.Rel(localDir, path)
@@ -935,6 +976,7 @@ func uploadGDriveMultipart(token, folderID, localPath, fileName string) error {
 	}
 
 	pr, pw := io.Pipe()
+	defer pr.Close()
 	mpw := multipart.NewWriter(pw)
 
 	go func() {
@@ -1053,13 +1095,50 @@ func patchGDriveFile(token, fileID, localPath string) error {
 
 // Handlers for API endpoints
 
+func validateGDriveLocalDir(raw string) (string, error) {
+	dir := strings.TrimSpace(raw)
+	if dir == "" || strings.Contains(dir, "\\") || strings.Contains(dir, ":") || !strings.HasPrefix(dir, "/") {
+		return "", fmt.Errorf("Thư mục cục bộ phải bắt đầu bằng /mnt/ hoặc /overlay/")
+	}
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	if strings.Contains(clean, "..") {
+		return "", fmt.Errorf("Đường dẫn thư mục cục bộ không hợp lệ")
+	}
+	for _, prefix := range []string{"/mnt", "/overlay", "/tmp"} {
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			return clean, nil
+		}
+	}
+	return "", fmt.Errorf("Thư mục đồng bộ cục bộ chỉ cho phép trong /mnt/... hoặc /overlay/...")
+}
+
+func maskGDriveSecret(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 4 {
+		return "••••"
+	}
+	return "••••" + s[len(s)-4:]
+}
+
+func publicGDriveConfig(cfg GDriveSyncConfig) GDriveSyncConfig {
+	out := cfg
+	out.AccessToken = maskGDriveSecret(cfg.AccessToken)
+	out.RefreshToken = maskGDriveSecret(cfg.RefreshToken)
+	out.ClientSecret = maskGDriveSecret(cfg.ClientSecret)
+	out.APIKey = maskGDriveSecret(cfg.APIKey)
+	return out
+}
+
 func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		gdriveConfigLock.RLock()
 		cfg := currentGDriveCfg
 		gdriveConfigLock.RUnlock()
-		writeJSON(w, http.StatusOK, true, cfg)
+		writeJSON(w, http.StatusOK, true, publicGDriveConfig(cfg))
 
 	case http.MethodPost, http.MethodPut:
 		var incoming struct {
@@ -1087,7 +1166,13 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 			currentGDriveCfg.Enabled = *incoming.Enabled
 		}
 		if incoming.LocalDir != nil && *incoming.LocalDir != "" {
-			currentGDriveCfg.LocalDir = strings.TrimSpace(*incoming.LocalDir)
+			cleanLocal, dirErr := validateGDriveLocalDir(*incoming.LocalDir)
+			if dirErr != nil {
+				gdriveConfigLock.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, dirErr.Error())
+				return
+			}
+			currentGDriveCfg.LocalDir = cleanLocal
 		}
 		if incoming.DriveURL != nil {
 			currentGDriveCfg.DriveURL = strings.TrimSpace(*incoming.DriveURL)
@@ -1102,7 +1187,13 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 		if incoming.Folders != nil {
 			var cleanFolders []GDriveFolderMapping
 			for idx, f := range *incoming.Folders {
-				f.LocalDir = strings.TrimSpace(f.LocalDir)
+				cleanLocal, dirErr := validateGDriveLocalDir(f.LocalDir)
+				if dirErr != nil {
+					gdriveConfigLock.Unlock()
+					writeJSON(w, http.StatusBadRequest, false, dirErr.Error())
+					return
+				}
+				f.LocalDir = cleanLocal
 				f.DriveURL = strings.TrimSpace(f.DriveURL)
 				f.DriveFolderID = strings.TrimSpace(f.DriveFolderID)
 				if f.DriveFolderID == "" && f.DriveURL != "" {
@@ -1123,19 +1214,27 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if incoming.AccessToken != nil {
-			currentGDriveCfg.AccessToken = strings.TrimSpace(*incoming.AccessToken)
+			if v := strings.TrimSpace(*incoming.AccessToken); !strings.HasPrefix(v, "••••") {
+				currentGDriveCfg.AccessToken = v
+			}
 		}
 		if incoming.RefreshToken != nil {
-			currentGDriveCfg.RefreshToken = strings.TrimSpace(*incoming.RefreshToken)
+			if v := strings.TrimSpace(*incoming.RefreshToken); !strings.HasPrefix(v, "••••") {
+				currentGDriveCfg.RefreshToken = v
+			}
 		}
 		if incoming.ClientID != nil {
 			currentGDriveCfg.ClientID = strings.TrimSpace(*incoming.ClientID)
 		}
 		if incoming.ClientSecret != nil {
-			currentGDriveCfg.ClientSecret = strings.TrimSpace(*incoming.ClientSecret)
+			if v := strings.TrimSpace(*incoming.ClientSecret); !strings.HasPrefix(v, "••••") {
+				currentGDriveCfg.ClientSecret = v
+			}
 		}
 		if incoming.APIKey != nil {
-			currentGDriveCfg.APIKey = strings.TrimSpace(*incoming.APIKey)
+			if v := strings.TrimSpace(*incoming.APIKey); !strings.HasPrefix(v, "••••") {
+				currentGDriveCfg.APIKey = v
+			}
 		}
 		if incoming.IntervalMinutes != nil && *incoming.IntervalMinutes >= 0 {
 			currentGDriveCfg.IntervalMinutes = *incoming.IntervalMinutes
@@ -1154,7 +1253,7 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"message": "Đã lưu cài đặt đồng bộ Google Drive thành công!",
-			"config":  cfg,
+			"config":  publicGDriveConfig(cfg),
 		})
 
 	default:
@@ -1202,12 +1301,14 @@ func handleGDriveSyncRefresh(w http.ResponseWriter, r *http.Request) {
 
 	if payload.RefreshToken != "" {
 		gdriveConfigLock.Lock()
-		currentGDriveCfg.RefreshToken = strings.TrimSpace(payload.RefreshToken)
+		if v := strings.TrimSpace(payload.RefreshToken); v != "" && !strings.HasPrefix(v, "••••") {
+			currentGDriveCfg.RefreshToken = v
+		}
 		if payload.ClientID != "" {
 			currentGDriveCfg.ClientID = strings.TrimSpace(payload.ClientID)
 		}
-		if payload.ClientSecret != "" {
-			currentGDriveCfg.ClientSecret = strings.TrimSpace(payload.ClientSecret)
+		if v := strings.TrimSpace(payload.ClientSecret); v != "" && !strings.HasPrefix(v, "••••") {
+			currentGDriveCfg.ClientSecret = v
 		}
 		_ = saveGDriveConfigToFileLocked()
 		gdriveConfigLock.Unlock()
@@ -1221,7 +1322,7 @@ func handleGDriveSyncRefresh(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"message":      "Đã làm mới Access Token thành công!",
-		"access_token": newToken,
+		"access_token": maskGDriveSecret(newToken),
 	})
 }
 

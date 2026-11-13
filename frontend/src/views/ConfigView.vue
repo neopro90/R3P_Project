@@ -64,10 +64,14 @@ onMounted(() => {
 <template>
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
     <!-- Floating Toast Notification (Never shifts layout) -->
-    <div v-if="notice" class="r3p-toast r3p-toast-success">
+    <div
+      v-if="notice"
+      class="r3p-toast"
+      :class="notice.startsWith('Error') || notice.startsWith('Save failed') ? 'r3p-toast-error' : 'r3p-toast-success'"
+    >
       <div class="flex items-start justify-between gap-3">
         <span class="r3p-toast-text">{{ notice }}</span>
-        <button type="button" class="text-emerald-300 hover:text-white shrink-0 font-bold" @click="notice = null">✕</button>
+        <button type="button" class="hover:text-white shrink-0 font-bold" @click="notice = null">✕</button>
       </div>
     </div>
 

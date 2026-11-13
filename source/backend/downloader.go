@@ -135,13 +135,22 @@ func sanitizeDownloadDir(dir string) string {
 		_ = os.MkdirAll(defaultFallback, 0755)
 		return defaultFallback
 	}
-	clean := filepath.Clean(dir)
-	if strings.HasPrefix(clean, "/mnt/") || strings.HasPrefix(clean, "/media/") || strings.HasPrefix(clean, "/tmp/") || strings.HasPrefix(clean, "/overlay/") {
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	if (isUnderBaseDir(clean, "/mnt") && clean != "/mnt") ||
+		(isUnderBaseDir(clean, "/media") && clean != "/media") ||
+		isUnderBaseDir(clean, "/tmp/downloads") ||
+		isUnderBaseDir(clean, "/overlay/downloads") {
 		_ = os.MkdirAll(clean, 0755)
 		return clean
 	}
 	_ = os.MkdirAll(defaultFallback, 0755)
 	return defaultFallback
+}
+
+func isUnderBaseDir(clean, base string) bool {
+	c := filepath.ToSlash(clean)
+	b := filepath.ToSlash(base)
+	return c == b || strings.HasPrefix(c, b+"/")
 }
 
 func filenameFromURL(rawURL string) string {
@@ -179,6 +188,11 @@ func (m *NativeDownloadManager) addTask(rawURL, dir string) (*NativeDownloadTask
 	parsed, err := url.ParseRequestURI(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "magnet") {
 		return nil, fmt.Errorf("only HTTP, HTTPS, and Magnet links are supported")
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		if err := validateDownloadURL(rawURL); err != nil {
+			return nil, err
+		}
 	}
 
 	m.mu.Lock()
@@ -298,6 +312,10 @@ func (m *NativeDownloadManager) startWorker(gid string) {
 		existingSize = 0
 	}
 
+	if linfo, lerr := os.Lstat(filePath); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		m.failTask(gid, "refusing to overwrite symlink target")
+		return
+	}
 	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
 	f, err := os.OpenFile(filePath, openFlags, 0644)
 	if err != nil {
@@ -561,6 +579,12 @@ func handleDownloadsFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, false, "file not found")
 		return
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", task.Name))
+	linfo, lerr := os.Lstat(task.FilePath)
+	if lerr != nil || linfo.Mode()&os.ModeSymlink != 0 || linfo.IsDir() {
+		writeJSON(w, http.StatusNotFound, false, "file not found")
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(task.FilePath)))
 	http.ServeFile(w, r, task.FilePath)
 }

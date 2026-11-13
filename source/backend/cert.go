@@ -63,6 +63,31 @@ func generateSelfSignedCertificate(certPath, keyPath string) error {
 		notBefore = now.Add(-time.Hour)
 		notAfter = now.AddDate(1, 0, 0)
 	}
+	ipSANs := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+	seenIPs := map[string]struct{}{"127.0.0.1": {}, "::1": {}}
+	if ifaces, ifErr := net.Interfaces(); ifErr == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 {
+				continue
+			}
+			addrs, addrErr := iface.Addrs()
+			if addrErr != nil {
+				continue
+			}
+			for _, a := range addrs {
+				ipNet, ok := a.(*net.IPNet)
+				if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() {
+					continue
+				}
+				if v4 := ipNet.IP.To4(); v4 != nil {
+					if _, exists := seenIPs[v4.String()]; !exists {
+						seenIPs[v4.String()] = struct{}{}
+						ipSANs = append(ipSANs, v4)
+					}
+				}
+			}
+		}
+	}
 	template := x509.Certificate{
 		SerialNumber:          serialNumber,
 		Subject:               pkix.Name{CommonName: hostname},
@@ -72,7 +97,7 @@ func generateSelfSignedCertificate(certPath, keyPath string) error {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		DNSNames:              []string{"localhost", hostname},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		IPAddresses:           ipSANs,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
 	if err != nil {

@@ -6,6 +6,7 @@ Packages R3P OS Update Bundle (r3p-update-bundle.tar.gz) containing:
   - etc/r3p/version.json (Release metadata)
 And optionally deploys & verifies it on the live R3P router (192.168.2.1).
 """
+import getpass
 import io
 import json
 import os
@@ -63,8 +64,13 @@ def build_bundle() -> Path:
     return BUNDLE_PATH
 
 
-def deploy_to_router(host="192.168.2.1", user="root", password="root"):
+def deploy_to_router(host="192.168.1.7", user="root", password=None):
     import paramiko
+
+    if password is None:
+        password = os.environ.get("R3P_SSH_PASS")
+    if not password:
+        password = getpass.getpass(f"SSH password for {user}@{host}: ")
 
     target_hosts = [host]
     if "--host" in sys.argv:
@@ -80,7 +86,8 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
         print(f"[*] Trying connection to {user}@{h} ...")
         try:
             client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
             client.connect(h, username=user, password=password, timeout=4)
             ssh = client
             active_host = h
@@ -126,7 +133,7 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
             print(f"  [{c} stderr] -> {e}")
 
     ssh.close()
-    print("[OK] Deployment to 192.168.2.1 completed!")
+    print(f"[OK] Deployment to {active_host} completed!")
 
 
 if __name__ == "__main__":

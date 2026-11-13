@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,7 +85,8 @@ func isFileEditable(name string) bool {
 }
 
 func sanitizeExplorerPath(p string) string {
-	cleaned := filepath.Clean(strings.TrimSpace(p))
+	trimmed := strings.TrimSpace(strings.ReplaceAll(p, "\x00", ""))
+	cleaned := filepath.ToSlash(filepath.Clean(trimmed))
 	if cleaned == "" || cleaned == "." {
 		return "/overlay"
 	}
@@ -92,6 +94,30 @@ func sanitizeExplorerPath(p string) string {
 		cleaned = "/" + cleaned
 	}
 	return cleaned
+}
+
+func isSmallTextFile(fullPath string, size int64) bool {
+	if size <= 0 || size >= 512*1024 {
+		return size == 0
+	}
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return bytes.IndexByte(buf[:n], 0) < 0
+}
+
+func isProtectedExplorerPath(p string) bool {
+	switch p {
+	case "/", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/rom",
+		"/etc", "/etc/r3p", "/overlay", "/www", "/root",
+		"/dev", "/proc", "/sys", "/boot":
+		return true
+	}
+	return false
 }
 
 // GET /api/v1/explorer/list?path=/mnt/sda1
@@ -116,17 +142,20 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result []ExplorerEntry
+	result := make([]ExplorerEntry, 0, len(entries))
 	for _, e := range entries {
 		info, iErr := e.Info()
 		if iErr != nil {
 			continue
 		}
+		isSym := info.Mode()&os.ModeSymlink != 0
 		full := filepath.Join(targetPath, e.Name())
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		isImg := !e.IsDir() && isImageFile(ext)
-		isVid := !e.IsDir() && isVideoFile(ext)
-		isAud := !e.IsDir() && isAudioFile(ext)
+		isImg := !e.IsDir() && !isSym && isImageFile(ext)
+		isVid := !e.IsDir() && !isSym && isVideoFile(ext)
+		isAud := !e.IsDir() && !isSym && isAudioFile(ext)
+		isEdit := !e.IsDir() && !isSym && !isImg && !isVid && !isAud &&
+			(isFileEditable(e.Name()) || isSmallTextFile(full, info.Size()))
 		result = append(result, ExplorerEntry{
 			Name:       e.Name(),
 			Path:       full,
@@ -135,7 +164,7 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 			Mode:       info.Mode().String(),
 			ModTime:    info.ModTime().Format("2006-01-02 15:04:05"),
 			Ext:        ext,
-			IsEditable: !e.IsDir() && !isImg && !isVid && !isAud && (isFileEditable(e.Name()) || info.Size() < 512*1024),
+			IsEditable: isEdit,
 			IsImage:    isImg,
 			IsVideo:    isVid,
 			IsAudio:    isAud,
@@ -176,9 +205,13 @@ func handleExplorerRead(w http.ResponseWriter, r *http.Request) {
 	}
 	targetPath := sanitizeExplorerPath(r.URL.Query().Get("path"))
 
-	st, err := os.Stat(targetPath)
+	st, err := os.Lstat(targetPath)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, false, "Tệp không tồn tại: "+err.Error())
+		return
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Không hỗ trợ đọc qua symbolic link")
 		return
 	}
 	if st.IsDir() {
@@ -193,6 +226,10 @@ func handleExplorerRead(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, false, "Lỗi đọc tệp: "+err.Error())
+		return
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Tệp nhị phân không hỗ trợ mở bằng trình soạn thảo văn bản")
 		return
 	}
 
@@ -226,21 +263,29 @@ func handleExplorerWrite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "Đường dẫn không hợp lệ")
 		return
 	}
-
-	// Create backup if requested or file exists
-	if body.Backup {
-		if orig, err := os.ReadFile(targetPath); err == nil {
-			_ = os.WriteFile(targetPath+".bak", orig, 0644)
-		}
+	if stSym, err := os.Lstat(targetPath); err == nil && stSym.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Không được ghi đè qua symbolic link")
+		return
 	}
 
 	_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
 
 	perm := os.FileMode(0644)
-	if st, err := os.Stat(targetPath); err == nil {
+	if st, err := os.Lstat(targetPath); err == nil {
 		perm = st.Mode().Perm()
 	} else if strings.HasSuffix(targetPath, ".sh") || strings.HasPrefix(targetPath, "/etc/init.d/") || strings.HasPrefix(targetPath, "/etc/hotplug.d/") {
 		perm = 0755
+	}
+
+	// Create backup if requested, preserving original file permissions (e.g. 0600 for sensitive configs)
+	if body.Backup {
+		if orig, err := os.ReadFile(targetPath); err == nil {
+			bakPerm := perm
+			if bakPerm == 0 {
+				bakPerm = 0600
+			}
+			_ = os.WriteFile(targetPath+".bak", orig, bakPerm)
+		}
 	}
 
 	if err := os.WriteFile(targetPath, []byte(body.Content), perm); err != nil {
@@ -275,11 +320,15 @@ func handleExplorerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	parent := sanitizeExplorerPath(body.ParentPath)
 	name := strings.TrimSpace(body.Name)
-	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 		writeJSON(w, http.StatusBadRequest, false, "Tên không hợp lệ")
 		return
 	}
 	targetPath := filepath.Join(parent, name)
+	if st, err := os.Lstat(parent); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Thư mục cha không hợp lệ (symlink)")
+		return
+	}
 
 	if body.Type == "dir" {
 		if err := os.MkdirAll(targetPath, 0755); err != nil {
@@ -313,12 +362,12 @@ func handleExplorerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetPath := sanitizeExplorerPath(r.URL.Query().Get("path"))
-	if targetPath == "/" || targetPath == "/bin" || targetPath == "/sbin" || targetPath == "/lib" || targetPath == "/usr" || targetPath == "/rom" {
+	if isProtectedExplorerPath(targetPath) {
 		writeJSON(w, http.StatusForbidden, false, "Không được phép xóa các thư mục cốt lõi của hệ thống!")
 		return
 	}
 
-	st, err := os.Stat(targetPath)
+	st, err := os.Lstat(targetPath)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, false, "Đường dẫn không tồn tại: "+err.Error())
 		return
@@ -349,9 +398,17 @@ func handleExplorerRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetPath := sanitizeExplorerPath(r.URL.Query().Get("path"))
-	st, err := os.Stat(targetPath)
+	serveExplorerRawFile(w, r, targetPath)
+}
+
+func serveExplorerRawFile(w http.ResponseWriter, r *http.Request, targetPath string) {
+	st, err := os.Lstat(targetPath)
 	if err != nil {
 		http.Error(w, "Tệp không tồn tại: "+err.Error(), http.StatusNotFound)
+		return
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		http.Error(w, "Không hỗ trợ phục vụ symbolic link", http.StatusBadRequest)
 		return
 	}
 	if st.IsDir() {
@@ -360,6 +417,7 @@ func handleExplorerRaw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(targetPath))
+	safeInline := true
 	switch ext {
 	case ".jpg", ".jpeg":
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -369,8 +427,6 @@ func handleExplorerRaw(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/webp")
 	case ".gif":
 		w.Header().Set("Content-Type", "image/gif")
-	case ".svg":
-		w.Header().Set("Content-Type", "image/svg+xml")
 	case ".bmp":
 		w.Header().Set("Content-Type", "image/bmp")
 	case ".ico":
@@ -399,9 +455,16 @@ func handleExplorerRaw(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "audio/flac")
 	case ".wav":
 		w.Header().Set("Content-Type", "audio/wav")
+	default:
+		// Prevent stored XSS via .svg, .html, .htm, .xml, .js or arbitrary active files
+		safeInline = false
+		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 
-	isDownload := r.URL.Query().Get("download") == "1"
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox; media-src 'self'; img-src 'self'")
+
+	isDownload := r.URL.Query().Get("download") == "1" || !safeInline
 	if isDownload {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", st.Name()))
 	} else {

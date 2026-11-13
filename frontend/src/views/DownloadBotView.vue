@@ -158,7 +158,7 @@ async function addDownloadJob() {
       body: JSON.stringify({
         url: u,
         quality: selectedQuality.value,
-        force: true,
+        force: false,
       }),
     })
 
@@ -179,8 +179,9 @@ async function deleteJob(id: string) {
   try {
     await apiRequest(`/download/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
     await fetchJobs()
-  } catch {
-    // ignore
+  } catch (err: any) {
+    notice.value = `Lỗi xóa job: ${err?.message || err}`
+    setTimeout(() => { notice.value = null }, 3500)
   }
 }
 
@@ -190,8 +191,9 @@ async function clearFinishedJobs() {
     notice.value = 'Đã dọn sạch các job đã hoàn tất!'
     await fetchJobs()
     setTimeout(() => { notice.value = null }, 2500)
-  } catch {
-    // ignore
+  } catch (err: any) {
+    notice.value = `Lỗi dọn hàng đợi: ${err?.message || err}`
+    setTimeout(() => { notice.value = null }, 3500)
   }
 }
 
@@ -203,8 +205,9 @@ async function retryJob(job: DownloadJob) {
     notice.value = 'Đã thử lại tải link!'
     await fetchJobs()
     setTimeout(() => { notice.value = null }, 2500)
-  } catch {
-    // ignore
+  } catch (err: any) {
+    notice.value = `Không thể thử lại job: ${err?.message || err}`
+    setTimeout(() => { notice.value = null }, 3500)
   }
 }
 

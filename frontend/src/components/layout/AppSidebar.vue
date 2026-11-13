@@ -185,9 +185,9 @@ function handleNavClick() {
         <div class="flex items-center justify-between text-gray-300">
           <span class="flex items-center gap-2">
             <span class="w-2.5 h-2.5 rounded-full" :class="system.connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"></span>
-            {{ system.connected ? '192.168.2.1' : prefs.t('disconnected') }}
+            {{ system.connected ? (system.lanIp || '—') : prefs.t('disconnected') }}
           </span>
-          <span class="mono text-gray-400 text-[12px]">MT7621 · v1.1.0</span>
+          <span class="mono text-gray-400 text-[12px] truncate max-w-[120px]">MT7621 · {{ system.appVersion }}</span>
         </div>
       </div>
       <div v-else class="flex justify-center">

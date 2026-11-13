@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/go-api"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/source/backend"
 OUT_DIR="$(dirname "${BASH_SOURCE[0]}")/output"
 
 mkdir -p "$OUT_DIR"

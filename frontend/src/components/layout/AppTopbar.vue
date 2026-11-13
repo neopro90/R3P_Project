@@ -39,10 +39,12 @@ const currentTitle = computed(() => {
 })
 
 const wanModeLabel = computed(() => {
-  const m = system.internet?.wan_mode || ''
-  if (m === 'usb_tether') return 'USB TETHER'
-  if (m === 'wifi_client') return 'WIFI CLIENT'
-  if (m === 'ethernet_wan') return 'WAN ETH'
+  const key = system.internet?.wan_mode_key || ''
+  const raw = system.internet?.wan_mode || ''
+  if (key === 'usb_tether' || raw === 'usb_tether' || raw.includes('USB Tether')) return 'USB TETHER'
+  if (key === 'wifi_client' || raw === 'wifi_client' || raw.includes('Wi-Fi Client')) return 'WIFI CLIENT'
+  if (key === 'ethernet_wan' || raw === 'ethernet_wan' || raw.includes('Ethernet WAN')) return 'WAN ETH'
+  if (key === 'offline' || raw.toLowerCase() === 'offline' || raw.toLowerCase() === 'disconnected') return 'OFFLINE'
   if (system.internet?.wan_iface) return system.internet.wan_iface.toUpperCase()
   return 'WAN'
 })

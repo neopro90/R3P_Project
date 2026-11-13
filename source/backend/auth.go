@@ -6,37 +6,60 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	sessionCookieName = "r3p_session"
-	sessionDuration   = 8 * time.Hour
-	maxAuthBody       = 1024
+	sessionCookieName    = "r3p_session"
+	sessionDuration      = 8 * time.Hour
+	maxAuthBody          = 1024
+	loginRateLimitWindow = 5 * time.Minute
+	loginRateLimitMax    = 10
+	maxTrackedAttemptIPs = 256
 )
+
+type loginAttemptState struct {
+	failures  int
+	windowEnd time.Time
+}
 
 type authenticator struct {
 	tokenHash       [sha256.Size]byte
 	tokenConfigured bool
+	shadowPath      string
 	mu              sync.Mutex
 	sessions        map[string]time.Time
+	attempts        map[string]loginAttemptState
 	now             func() time.Time
 }
 
 var globalAuth *authenticator
+
+func defaultShadowPath() string {
+	if info, err := os.Stat("/etc/shadow"); err == nil && !info.IsDir() {
+		return "/etc/shadow"
+	}
+	return ""
+}
 
 func newAuthenticator(token string) *authenticator {
 	token = strings.TrimSpace(token)
 	a := &authenticator{
 		tokenHash:       sha256.Sum256([]byte(token)),
 		tokenConfigured: token != "",
+		shadowPath:      defaultShadowPath(),
 		sessions:        make(map[string]time.Time),
+		attempts:        make(map[string]loginAttemptState),
 		now:             time.Now,
 	}
 	globalAuth = a
@@ -62,11 +85,11 @@ func loadAPIToken() (string, error) {
 	}
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		return "root", nil
+		return "", fmt.Errorf("read API token %s: %w", tokenPath, err)
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "root", nil
+		return "", errors.New("API token file is empty")
 	}
 	return token, nil
 }
@@ -104,9 +127,83 @@ func (a *authenticator) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func clientRemoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	if addr := strings.TrimSpace(r.RemoteAddr); addr != "" {
+		return addr
+	}
+	return "unknown"
+}
+
+func (a *authenticator) rateLimitRetryAfter(ip string, now time.Time) (int, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k, v := range a.attempts {
+		if !now.Before(v.windowEnd) {
+			delete(a.attempts, k)
+		}
+	}
+	st, ok := a.attempts[ip]
+	if ok && st.failures >= loginRateLimitMax && now.Before(st.windowEnd) {
+		sec := int(st.windowEnd.Sub(now).Seconds())
+		if sec < 1 {
+			sec = 1
+		}
+		return sec, true
+	}
+	return 0, false
+}
+
+func (a *authenticator) recordLoginFailure(ip string, now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.attempts) >= maxTrackedAttemptIPs {
+		for k, v := range a.attempts {
+			if !now.Before(v.windowEnd) {
+				delete(a.attempts, k)
+			}
+		}
+		if len(a.attempts) >= maxTrackedAttemptIPs {
+			for k := range a.attempts {
+				delete(a.attempts, k)
+				if len(a.attempts) < maxTrackedAttemptIPs {
+					break
+				}
+			}
+		}
+	}
+	st, ok := a.attempts[ip]
+	if !ok || !now.Before(st.windowEnd) {
+		a.attempts[ip] = loginAttemptState{
+			failures:  1,
+			windowEnd: now.Add(loginRateLimitWindow),
+		}
+		return
+	}
+	st.failures++
+	a.attempts[ip] = st
+}
+
+func (a *authenticator) clearLoginFailures(ip string) {
+	a.mu.Lock()
+	delete(a.attempts, ip)
+	a.mu.Unlock()
+}
+
 func (a *authenticator) createSession(w http.ResponseWriter, r *http.Request) {
 	if !a.tokenConfigured {
 		writeJSON(w, http.StatusServiceUnavailable, false, "API token is not configured")
+		return
+	}
+
+	now := a.now()
+	ip := clientRemoteIP(r)
+	if retryAfter, limited := a.rateLimitRetryAfter(ip, now); limited {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeJSON(w, http.StatusTooManyRequests, false, "too many failed login attempts")
 		return
 	}
 
@@ -131,27 +228,35 @@ func (a *authenticator) createSession(w http.ResponseWriter, r *http.Request) {
 	authenticated := false
 	if body.Token != "" {
 		providedHash := sha256.Sum256([]byte(body.Token))
-		if subtle.ConstantTimeCompare(providedHash[:], a.tokenHash[:]) == 1 {
+		a.mu.Lock()
+		expectedHash := a.tokenHash
+		a.mu.Unlock()
+		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1 {
 			authenticated = true
 		}
 	}
-	if !authenticated && (body.Username != "" || body.Password != "") {
+	if !authenticated && body.Password != "" {
 		user := strings.ToLower(strings.TrimSpace(body.Username))
-		pass := body.Password
-		if (user == "root" || user == "admin") && (pass == "root" || pass == "admin") {
-			authenticated = true
-		} else {
-			providedHash := sha256.Sum256([]byte(pass))
-			if subtle.ConstantTimeCompare(providedHash[:], a.tokenHash[:]) == 1 {
+		if user == "" || user == "root" || user == "admin" {
+			providedHash := sha256.Sum256([]byte(body.Password))
+			a.mu.Lock()
+			expectedHash := a.tokenHash
+			shadowPath := a.shadowPath
+			a.mu.Unlock()
+			if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1 {
 				authenticated = true
+			} else if (user == "root" || user == "admin") && shadowPath != "" {
+				authenticated = verifyShadowPassword(shadowPath, "root", body.Password)
 			}
 		}
 	}
 
 	if !authenticated {
+		a.recordLoginFailure(ip, now)
 		writeJSON(w, http.StatusUnauthorized, false, "invalid credentials")
 		return
 	}
+	a.clearLoginFailures(ip)
 
 	rawID := make([]byte, 32)
 	if _, err := rand.Read(rawID); err != nil {
