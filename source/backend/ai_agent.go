@@ -117,7 +117,7 @@ const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOM
 - **Daemon Trung Tâm**: /usr/bin/r3p-api (Quản lý bởi /etc/init.d/r3p-api)
   - Cổng HTTP: 80 (Web UI & REST API v1)
   - Cổng HTTPS: 8443 (TLS Web UI & REST API v1)
-  - Cổng Localhost Runtime: 8787 (ESP32-Download Linux Runtime & Telegram Poller)
+  - API & Web UI Download cục bộ tích hợp trực tiếp tại /downloads và /api/v1/download/* (không còn module ESP32 / cổng 8787 ngoài luồng)
 - **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 R3P MINI SERVER OS Dashboard)
 - **Thư Mục Cấu Hình Bền Vững (/etc/r3p/)**:
   - /etc/r3p/SYSTEM_BLUEPRINT.md : Tài liệu cấu trúc hệ thống này
@@ -127,10 +127,11 @@ const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOM
   - /etc/r3p/ai_sessions.json    : Lịch sử các phiên trò chuyện (Multi-Session) của AI
   - /etc/r3p/adblock.json        : Cấu hình DNS AdBlock, nguồn danh sách chặn, bộ lọc luồng quảng cáo
   - /etc/r3p/saved-wifi.json     : Danh sách các mạng Wi-Fi đã lưu và mật khẩu kết nối
-  - /etc/r3p/esp32-local-config.json : Cấu hình bền vững của ESP32-Download & Telegram Bot
-- **Hệ Thống Tải Xuống Đa Phương Tiện (ESP32-Download Linux Host)**:
-  - Giao diện Web: /overlay/esp32-download-host/public/ (phục vụ tại /esp32-download/ và cổng :8787)
-  - Thư mục lưu video/file tải về: /mnt/sda1/esp32-downloads (hoặc /overlay/downloads khi không cắm USB)
+  - /etc/r3p/downloader.json : Cấu hình bền vững của R3P Local Downloader & Telegram Bot
+  - /etc/r3p/downloader-queue.json : Hàng đợi công việc tải xuống yt-dlp
+- **Hệ Thống Tải Xuống Đa Phương Tiện (R3P Native Local Downloader)**:
+  - Giao diện Web & API: Tích hợp trực tiếp tại /downloads và /api/v1/download/* trên r3p-api (cổng 80 / 8443)
+  - Thư mục lưu video/file tải về mặc định: /mnt/sda1/downloads (hoặc /overlay/downloads khi không cắm USB; giữ nguyên outputDirectory nếu đã tùy chỉnh)
   - Công cụ dòng lệnh: /usr/bin/yt-dlp, /usr/bin/aria2c, /usr/bin/curl, /usr/sbin/iwinfo
 
 ## 4. Bộ Công Cụ Quyền Root Dành Cho AI (AI Root Tool Directives)
@@ -146,7 +147,7 @@ AI có toàn quyền thực thi và chỉnh sửa hệ thống bằng cách xu�
    </uci_set>
 4. Lưu thông tin quan trọng vào Bộ Nhớ Dài Hạn của AI (/etc/r3p/ai_memory.json):
    <memory_save>Ghi chú hoặc cài đặt cần nhớ lâu dài</memory_save>
-5. Đẩy link video/file vào hàng đợi tải xuống ESP32-Download:
+5. Đẩy link video/file vào hàng đợi tải xuống R3P Downloader:
    <download_url>https://...</download_url>
 
 ## 5. Quy Chuẩn Lệnh Phù Hợp Với BusyBox / OpenWrt
@@ -187,8 +188,8 @@ const defaultQuickCommandsJSON = `{
   ],
   "download": [
     { "label": "⬇️ Phiên bản yt-dlp & aria2c", "cmd": "!yt-dlp --version; aria2c --version | head -n 1" },
-    { "label": "📂 File video đã tải về (/mnt/sda1)", "cmd": "!ls -lah /mnt/sda1/esp32-downloads 2>/dev/null || ls -lah /overlay/downloads" },
-    { "label": "🤖 Kiểm tra cổng 8787 ESP32 Runtime", "cmd": "!netstat -tlpn | grep 8787" }
+    { "label": "📂 Thư mục & File video đã tải", "cmd": "!grep outputDirectory /etc/r3p/downloader.json 2>/dev/null; ls -lah /mnt/sda1/downloads 2>/dev/null || ls -lah /overlay/downloads" },
+    { "label": "🤖 Kiểm tra dịch vụ r3p-api (80/8443)", "cmd": "!netstat -tlpn | grep r3p-api" }
   ],
   "maintenance": [
     { "label": "🧹 Giải phóng RAM (Drop Caches)", "cmd": "!sync && echo 3 > /proc/sys/vm/drop_caches && free -m" },
@@ -200,7 +201,7 @@ const defaultQuickCommandsJSON = `{
 
 func ensureSystemBlueprintFile() string {
 	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") {
+	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 50 && strings.Contains(string(b), "## 5.") && strings.Contains(string(b), "downloader.json") && !strings.Contains(string(b), "8787") && !strings.Contains(string(b), "ESP32-Download") {
 		return string(b)
 	}
 	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)
@@ -544,7 +545,7 @@ Khi người dùng yêu cầu kiểm tra, cài đặt, chỉnh sửa hệ thốn
    </uci_set>
 4. Ghi nhớ thông tin/quy tắc/cài đặt mới vào bộ nhớ dài hạn của AI:
    <memory_save>nội dung cần ghi nhớ lâu dài</memory_save>
-5. Đẩy URL vào hàng đợi tải xuống ESP32-Download:
+5. Đẩy URL vào hàng đợi tải xuống R3P Downloader:
    <download_url>https://...</download_url>
 
 %s`, blueprint, memBlock, netStatus.Online, netStatus.WanMode, netStatus.WanIface, netStatus.LatencyMs, netStatus.ExternalIP, netStatus.ISP, dfOut, ipOut, routeOut, wifiOut, extra)
@@ -588,14 +589,14 @@ func executeAIToolBlocksForChat(respText string, allowExec bool, telegramChatID 
 	for _, m := range dlMatches {
 		u := strings.TrimSpace(m[1])
 		if u != "" {
-			job, dup, err := enqueueEspJob(u, "ai_agent", telegramChatID, false)
+			job, dup, err := enqueueR3pJob(u, "ai_agent", telegramChatID, "", false)
 			outMsg := ""
 			if err != nil {
 				outMsg = "Lỗi thêm URL tải xuống: " + err.Error()
 			} else if dup {
 				outMsg = "URL đã có trong hàng đợi tải xuống: #" + job.ID
 			} else {
-				outMsg = "Đã thêm vào hàng đợi ESP32-Download: #" + job.ID + " (" + u + ")"
+				outMsg = "Đã thêm vào hàng đợi R3P Downloader: #" + job.ID + " (" + u + ")"
 			}
 			allToolEvents = append(allToolEvents, AIToolAction{
 				Tool:    "download_url",
@@ -1514,19 +1515,19 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filter bare URL messages: route directly to Host Download without cluttering AI chat
+	// Filter bare URL messages: route directly to R3P Downloader without cluttering AI chat
 	if isBareURLMessage(userMsg) {
 		urls := urlExtractRegex.FindAllString(userMsg, 5)
 		var queuedIDs []string
 		for _, u := range urls {
-			if job, _, err := enqueueEspJob(u, "ai_url_filter", "", false); err == nil && job != nil {
+			if job, _, err := enqueueR3pJob(u, "ai_url_filter", "", "", false); err == nil && job != nil {
 				queuedIDs = append(queuedIDs, "#"+job.ID)
 			}
 		}
 		_, histCopy := getActiveSessionMessages(activeSessID)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"filtered_url": true,
-			"message":      "Đã chuyển thẳng URL sang Host Download (" + strings.Join(queuedIDs, ", ") + ") và lọc khỏi cửa sổ giao tiếp AI.",
+			"message":      "Đã chuyển thẳng URL sang R3P Downloader (" + strings.Join(queuedIDs, ", ") + ") và lọc khỏi cửa sổ giao tiếp AI.",
 			"history":      histCopy,
 		})
 		return

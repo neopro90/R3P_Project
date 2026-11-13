@@ -5,7 +5,7 @@ ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect("192.168.2.1", username="root", password="root", timeout=8)
 
 cmds = [
-    # 1. Add firewall rules to allow ports 8443, 8787, and 80 from WAN/WWAN
+    # 1. Add firewall rules to allow ports 8443 and 80 from WAN/WWAN
     "uci set firewall.allow_wan_8443=rule",
     "uci set firewall.allow_wan_8443.name='Allow-WAN-HTTPS-8443'",
     "uci set firewall.allow_wan_8443.src='wan'",
@@ -13,12 +13,7 @@ cmds = [
     "uci set firewall.allow_wan_8443.dest_port='8443'",
     "uci set firewall.allow_wan_8443.target='ACCEPT'",
 
-    "uci set firewall.allow_wan_8787=rule",
-    "uci set firewall.allow_wan_8787.name='Allow-WAN-Host-8787'",
-    "uci set firewall.allow_wan_8787.src='wan'",
-    "uci set firewall.allow_wan_8787.proto='tcp'",
-    "uci set firewall.allow_wan_8787.dest_port='8787'",
-    "uci set firewall.allow_wan_8787.target='ACCEPT'",
+    "uci -q delete firewall.allow_wan_8787 || true",
 
     # Clean bloated zone 1 network list
     "uci set firewall.@zone[1].network='wan wan6 usbwan wwan'",

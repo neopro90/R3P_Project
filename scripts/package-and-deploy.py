@@ -19,7 +19,6 @@ BINARY_PATH = ROOT / "build" / "artifacts" / "r3p-api"
 DIST_DIR = ROOT / "frontend" / "dist"
 RELEASE_JSON = ROOT / "release.json"
 BUNDLE_PATH = ROOT / "build" / "artifacts" / "r3p-update-bundle.tar.gz"
-ESP_PUBLIC_DIR = Path(r"D:\Source_Tools\Esp32-Download\local-host\public")
 
 
 def build_bundle() -> Path:
@@ -59,20 +58,6 @@ def build_bundle() -> Path:
                 ti_web.mode = 0o644
                 ti_web.mtime = now
                 tar.addfile(ti_web, io.BytesIO(data))
-
-        # 4. Add overlay/esp32-download-host/public/* (EXCLUDING .apk and media files to protect NAND flash)
-        if ESP_PUBLIC_DIR.exists():
-            for fpath in sorted(ESP_PUBLIC_DIR.rglob("*")):
-                if fpath.is_file():
-                    if fpath.suffix.lower() in [".apk", ".mp4", ".mkv", ".zip", ".bin", ".tar", ".gz"]:
-                        continue
-                    rel = fpath.relative_to(ESP_PUBLIC_DIR).as_posix()
-                    data = fpath.read_bytes()
-                    ti_esp = tarfile.TarInfo(name=f"overlay/esp32-download-host/public/{rel}")
-                    ti_esp.size = len(data)
-                    ti_esp.mode = 0o644
-                    ti_esp.mtime = now
-                    tar.addfile(ti_esp, io.BytesIO(data))
 
     print(f"[OK] Built {BUNDLE_PATH} ({BUNDLE_PATH.stat().st_size:,} bytes)")
     return BUNDLE_PATH
@@ -123,10 +108,8 @@ def deploy_to_router(host="192.168.2.1", user="root", password="root"):
         "tar -xzf /tmp/r3p-update-bundle.tar.gz -C /",
         "rm -f /tmp/r3p-update-bundle.tar.gz",
         "rm -rf /var/cache/apk/* /lib/apk/cache/* 2>/dev/null || true",
-        "mkdir -p /mnt/sda1/esp32-download-host/public",
-        "[ -d /mnt/sda1/esp32-download-host/public ] && cp -rf /overlay/esp32-download-host/public/* /mnt/sda1/esp32-download-host/public/ 2>/dev/null || true",
         "rm -rf /overlay/esp32-download-host 2>/dev/null || true",
-        "[ -d /mnt/sda1/esp32-download-host ] && ln -sf /mnt/sda1/esp32-download-host /overlay/esp32-download-host || true",
+        "uci -q delete firewall.allow_wan_8787 && uci commit firewall && /etc/init.d/firewall reload 2>/dev/null || true",
         "[ -d /mnt/sda1/downloads ] && [ ! -L /overlay/downloads ] && ln -sf /mnt/sda1/downloads /overlay/downloads || true",
         "chmod 755 /usr/bin/r3p-api",
         "sync",

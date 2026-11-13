@@ -6,6 +6,7 @@ interface DownloadJob {
   id: string
   url: string
   source: string
+  quality?: string
   status: string // "RUNNING" | "DOWNLOADING" | "QUEUED" | "COMPLETED" | "FAILED"
   progress: number
   speed: string
@@ -42,7 +43,7 @@ const jobs = ref<DownloadJob[]>([])
 const downloadedFiles = ref<DownloadFileItem[]>([])
 const activeTab = ref<'all' | 'running' | 'completed' | 'failed'>('all')
 
-const outputDir = ref('/mnt/sda1/esp32-downloads')
+const outputDir = ref('/mnt/sda1/downloads')
 const savingOutputDir = ref(false)
 const showEditOutputDir = ref(false)
 
@@ -88,7 +89,7 @@ const failedJobsCount = computed(() => {
 
 async function fetchJobs() {
   try {
-    const res = await fetch('/api/device/api/v1/jobs').then(r => r.json())
+    const res = await apiRequest<{ jobs: DownloadJob[] }>('/download/jobs')
     if (res?.jobs) {
       jobs.value = res.jobs
     }
@@ -150,23 +151,24 @@ async function addDownloadJob() {
     return
   }
   addingJob.value = true
-  notice.value = 'Đang đẩy link vào hàng đợi R3P Linux…'
+  notice.value = 'Đang đẩy link vào hàng đợi R3P Local Downloader…'
   try {
-    const res = await fetch('/api/device/api/v1/jobs', {
+    const res = await apiRequest<{ duplicate?: boolean; job?: { id: string; url: string; quality?: string; status: string } }>('/download/jobs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: u, force: true }),
-    }).then(r => r.json())
+      body: JSON.stringify({
+        url: u,
+        quality: selectedQuality.value,
+        force: true,
+      }),
+    })
 
-    if (res?.job?.id || res?.accepted) {
-      notice.value = `Đã thêm vào hàng đợi tải xuống thành công! #${res?.job?.id || res?.jobId || ''}`
+    if (res?.job?.id) {
+      notice.value = `Đã thêm vào hàng đợi tải xuống thành công! #${res.job.id}`
       newUrl.value = ''
       await fetchJobs()
-    } else if (res?.error) {
-      notice.value = `Lỗi thêm URL: ${res.error}`
     }
   } catch (err: any) {
-    notice.value = `Lỗi kết nối: ${err?.message || err}`
+    notice.value = `Lỗi thêm URL: ${err?.message || err}`
   } finally {
     addingJob.value = false
     setTimeout(() => { notice.value = null }, 3500)
@@ -175,7 +177,7 @@ async function addDownloadJob() {
 
 async function deleteJob(id: string) {
   try {
-    await fetch(`/api/local/runtime/jobs/${id}`, { method: 'DELETE' })
+    await apiRequest(`/download/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
     await fetchJobs()
   } catch {
     // ignore
@@ -184,7 +186,7 @@ async function deleteJob(id: string) {
 
 async function clearFinishedJobs() {
   try {
-    await fetch('/api/local/runtime/jobs', { method: 'DELETE' })
+    await apiRequest('/download/jobs', { method: 'DELETE' })
     notice.value = 'Đã dọn sạch các job đã hoàn tất!'
     await fetchJobs()
     setTimeout(() => { notice.value = null }, 2500)
@@ -195,10 +197,8 @@ async function clearFinishedJobs() {
 
 async function retryJob(job: DownloadJob) {
   try {
-    await fetch('/api/device/api/v1/jobs', {
+    await apiRequest(`/download/jobs/${encodeURIComponent(job.id)}/retry`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: job.url, force: true }),
     })
     notice.value = 'Đã thử lại tải link!'
     await fetchJobs()
@@ -210,7 +210,7 @@ async function retryJob(job: DownloadJob) {
 
 async function fetchTelegramLogs() {
   try {
-    const res = await fetch('/api/local/telegram/log').then(r => r.json())
+    const res = await apiRequest<{ entries: TelegramLogItem[] }>('/download/telegram/log')
     if (Array.isArray(res?.entries)) {
       telegramLogs.value = res.entries
     }
@@ -221,7 +221,7 @@ async function fetchTelegramLogs() {
 
 async function clearTelegramLogs() {
   try {
-    await fetch('/api/local/log/delete-all', { method: 'DELETE' })
+    await apiRequest('/download/telegram/log', { method: 'DELETE' })
     telegramLogs.value = []
     debugNotice.value = 'Đã xoá nhật ký phân tích Telegram.'
     setTimeout(() => { debugNotice.value = null }, 3000)
@@ -234,19 +234,14 @@ async function sendTelegramTest() {
   testingTelegram.value = true
   debugNotice.value = 'Đang gửi tin nhắn thử tới Telegram...'
   try {
-    const res = await fetch('/api/local/telegram/test', {
+    const res = await apiRequest<{ sent: boolean; chat_id?: string }>('/download/telegram/test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
-    }).then(r => r.json())
-    if (res?.sent) {
-      debugNotice.value = `✅ Đã gửi tin thử thành công tới Chat ID ${res.chatId}!`
-    } else {
-      debugNotice.value = `❌ Lỗi gửi Telegram: ${res?.error || 'Không rõ nguyên nhân'}`
-    }
+    })
+    debugNotice.value = `✅ Đã gửi tin thử thành công tới Chat ID ${res?.chat_id || 'đã cấu hình'}!`
     await runDiagnostic(false)
   } catch (err: any) {
-    debugNotice.value = `❌ Lỗi kết nối Telegram: ${err?.message || err}`
+    debugNotice.value = `❌ Lỗi gửi Telegram: ${err?.message || err}`
   } finally {
     testingTelegram.value = false
     setTimeout(() => { debugNotice.value = null }, 5000)
@@ -255,10 +250,10 @@ async function sendTelegramTest() {
 
 async function runDiagnostic(autoFix = false) {
   runningDebug.value = true
-  debugNotice.value = autoFix ? 'Đang tự động đồng bộ và sửa cấu hình hệ thống…' : 'Đang kiểm tra kết nối IP, Telegram, Port và Thư mục…'
+  debugNotice.value = autoFix ? 'Đang tự động đồng bộ và sửa cấu hình hệ thống…' : 'Đang kiểm tra kết nối IP, Telegram, Dịch vụ R3P và Thư mục…'
   try {
     const method = autoFix ? 'POST' : 'GET'
-    const res = await fetch('/api/local/debug-sync', { method }).then(r => r.json())
+    const res = await apiRequest<any>('/download/debug', { method })
     debugResult.value = res
     if (Array.isArray(res?.telegram_logs)) {
       telegramLogs.value = res.telegram_logs
@@ -452,23 +447,23 @@ onUnmounted(() => {
       <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-[13px]">
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
           <div class="flex items-center justify-between font-bold text-gray-100">
-            <span>🌐 Router IP & Cổng 8787</span>
-            <span class="badge" :class="debugResult?.port_8787_listening ? 'badge-green' : 'badge-red'">
-              {{ debugResult?.port_8787_listening ? 'PORT 8787 OK' : 'PORT LỖI' }}
+            <span>🌐 R3P Local Runtime (Cục Bộ)</span>
+            <span class="badge" :class="debugResult?.service_online !== false ? 'badge-green' : 'badge-red'">
+              {{ debugResult?.service_online !== false ? `HTTPS :${debugResult?.https_port || 8443} OK` : 'DỊCH VỤ LỖI' }}
             </span>
           </div>
           <div class="text-gray-300">LAN IP: <span class="mono text-gray-100 font-bold">{{ debugResult?.lan_ip || '192.168.2.1' }}</span></div>
-          <div class="text-gray-300 truncate">URL: <span class="mono text-sky-400 font-semibold">{{ debugResult?.runtime_base_url || 'http://192.168.2.1:8787' }}</span></div>
+          <div class="text-gray-300 truncate">URL: <span class="mono text-sky-400 font-semibold">{{ debugResult?.service_url || `https://${debugResult?.lan_ip || '192.168.2.1'}:8443/downloads` }}</span></div>
         </div>
 
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
           <div class="flex items-center justify-between font-bold text-gray-100">
             <span>💾 Thư Mục Đầu Ra (USB)</span>
             <span class="badge" :class="debugResult?.output_dir_writable ? 'badge-green' : 'badge-orange'">
-              {{ debugResult?.output_dir_writable ? 'SẴN SÀNG GHI (0777)' : 'CHƯA CÓ QUYỀN' }}
+              {{ debugResult?.output_dir_writable ? 'SẴN SÀNG GHI' : 'CHƯA CÓ QUYỀN' }}
             </span>
           </div>
-          <div class="text-gray-300 truncate mono text-[12px] font-medium">{{ debugResult?.output_dir || '/mnt/sda1/esp32-downloads' }}</div>
+          <div class="text-gray-300 truncate mono text-[12px] font-medium">{{ debugResult?.output_dir || '/mnt/sda1/downloads' }}</div>
           <div class="text-gray-300">Trống: <span class="mono text-emerald-400 font-bold">{{ debugResult?.storage?.freeGb || '0' }} GB</span></div>
         </div>
 
@@ -762,7 +757,7 @@ onUnmounted(() => {
             v-model="outputDir"
             type="text"
             class="pro-input mono flex-1 min-w-[280px]"
-            placeholder="/mnt/sda1/esp32-downloads"
+            placeholder="/mnt/sda1/downloads"
           />
           <button
             type="button"
@@ -774,7 +769,7 @@ onUnmounted(() => {
           </button>
         </div>
         <p class="text-[11px] text-gray-400">
-          Khuyên dùng các đường dẫn nằm trên ổ cứng USB 3.0 (ví dụ: <code class="mono text-sky-300">/mnt/sda1/esp32-downloads</code> hoặc <code class="mono text-sky-300">/mnt/sda1/videos</code>) để tránh đầy bộ nhớ Flash nội bộ NAND.
+          Khuyên dùng các đường dẫn nằm trên ổ cứng USB 3.0 (ví dụ: <code class="mono text-sky-300">/mnt/sda1/downloads</code> hoặc <code class="mono text-sky-300">/mnt/sda1/videos</code>) để tránh đầy bộ nhớ Flash nội bộ NAND.
         </p>
       </div>
 

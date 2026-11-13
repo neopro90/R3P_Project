@@ -159,7 +159,7 @@ func (s *telegramService) clearConfig() error {
 	isDefaultPath := s.configPath == "/etc/r3p/telegram.json"
 	s.mu.Unlock()
 	if isDefaultPath {
-		syncTelegramConfigToEsp("", "", false)
+		syncTelegramConfigToDownloader("", "", false)
 	}
 	return nil
 }
@@ -168,8 +168,8 @@ func (s *telegramService) startLocked() {
 	if s.config == nil {
 		return
 	}
-	// Unified polling runs in espTelegramPollerLoop so /api/v1/telegram and
-	// /api/local/status never spawn competing getUpdates requests (HTTP 409).
+	// Unified polling runs in r3pTelegramPollerLoop so /api/v1/telegram and
+	// /api/v1/download/* never spawn competing getUpdates requests (HTTP 409).
 	s.status.Running = s.config.Enabled
 	if !s.config.Enabled {
 		s.status.Connected = false
@@ -178,17 +178,23 @@ func (s *telegramService) startLocked() {
 		tok := s.config.BotToken
 		chatID := s.config.ChatID
 		enabled := s.config.Enabled
-		go syncTelegramConfigToEsp(tok, chatID, enabled)
+		go syncTelegramConfigToDownloader(tok, chatID, enabled)
 	}
 }
 
-func (s *telegramService) syncFromEsp(botToken, chatID string, enabled bool) {
+func (s *telegramService) syncFromDownloader(botToken, chatID string, enabled bool, defaultMount, defaultPath string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	botToken = strings.TrimSpace(botToken)
 	chatID = strings.TrimSpace(chatID)
 	mount := "/mnt/sda1"
-	path := "esp32-downloads"
+	path := "downloads"
+	if strings.TrimSpace(defaultMount) != "" {
+		mount = defaultMount
+	}
+	if strings.TrimSpace(defaultPath) != "" {
+		path = defaultPath
+	}
 	if s.config != nil {
 		if s.config.Mount != "" {
 			mount = s.config.Mount

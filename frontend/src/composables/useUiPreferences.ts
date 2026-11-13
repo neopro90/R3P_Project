@@ -161,7 +161,7 @@ export const translations: Record<LangCode, Record<string, string>> = {
     nav_firewall: '防火墙与端口转发',
     nav_access: '账户与 DHCP 服务',
     nav_config: 'UCI 系统配置',
-    nav_downloads: '下载中心 (ESP32)',
+    nav_downloads: '下载中心',
     nav_nas: 'NAS 与 USB 3.0',
     nav_explorer: '文件管理与目录树',
     nav_apps: 'OpenWrt 应用商店',

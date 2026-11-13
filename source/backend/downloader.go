@@ -72,7 +72,6 @@ func (m *NativeDownloadManager) init() {
 	if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
 		_ = os.MkdirAll("/mnt/sda1/downloads", 0755)
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
-		_ = os.MkdirAll("/mnt/sda1/esp32-downloads", 0755)
 		m.settings.DefaultDir = "/mnt/sda1/downloads"
 	} else if m.settings.DefaultDir == "" || strings.HasPrefix(m.settings.DefaultDir, "/overlay") {
 		m.settings.DefaultDir = "/tmp/downloads"

@@ -250,7 +250,7 @@ case "$DEVNAME" in
             mount -o noatime,nodiratime "/dev/$DEVNAME" "$MNT" 2>/dev/null || mount "/dev/$DEVNAME" "$MNT" 2>/dev/null
             if mountpoint -q "$MNT"; then
                 ln -sfn "$MNT" /mnt/usb
-                mkdir -p "$MNT/downloads" "$MNT/share" "$MNT/esp32-downloads"
+                mkdir -p "$MNT/downloads" "$MNT/share"
                 logger -t r3p-usb "Mounted USB 3.0 storage /dev/$DEVNAME at $MNT"
             fi
         elif [ "$ACTION" = "remove" ]; then
@@ -313,7 +313,6 @@ esac
 		_ = os.Symlink("/mnt/sda1", "/mnt/usb")
 		_ = os.MkdirAll("/mnt/sda1/downloads", 0755)
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
-		_ = os.MkdirAll("/mnt/sda1/esp32-downloads", 0755)
 		ensureUsbNASShares()
 	}
 }
@@ -359,7 +358,7 @@ func ensureUsbNASShares() {
 	if !hasUsbShare {
 		shares = append([]ShareItem{
 			{Name: "USB_HDD_500G", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB High-Speed HDD Share"},
-			{Name: "ESP32_Downloads", Path: "/mnt/sda1/esp32-downloads", ReadOnly: false, GuestOk: true, Comment: "ESP32 Auto-Downloader Media Library"},
+			{Name: "R3P_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Local Auto-Downloader Media Library"},
 		}, shares...)
 		saveNASShares(shares)
 	}
@@ -738,7 +737,6 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 	_ = os.Symlink(mntPoint, "/mnt/usb")
 	_ = os.MkdirAll(mntPoint+"/downloads", 0755)
 	_ = os.MkdirAll(mntPoint+"/share", 0755)
-	_ = os.MkdirAll(mntPoint+"/esp32-downloads", 0755)
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"mounted":         true,
@@ -934,9 +932,8 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		_ = os.Symlink(mntPoint, "/mnt/usb")
 		_ = os.MkdirAll(mntPoint+"/downloads", 0755)
 		_ = os.MkdirAll(mntPoint+"/share", 0755)
-		_ = os.MkdirAll(mntPoint+"/esp32-downloads", 0755)
 		ensureUsbNASShares()
-		appendLog(fmt.Sprintf("Đã tự động mount %s vào %s và khởi tạo thư mục NAS / ESP32_Downloads!", targetPart, mntPoint))
+		appendLog(fmt.Sprintf("Đã tự động mount %s vào %s và khởi tạo thư mục NAS / R3P_Downloads!", targetPart, mntPoint))
 	} else {
 		appendLog("Cảnh báo mount: " + mErr.Error())
 	}

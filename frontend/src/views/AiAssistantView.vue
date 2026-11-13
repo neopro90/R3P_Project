@@ -132,8 +132,8 @@ const defaultQuickCommands: Record<string, QuickCommandItem[]> = {
   ],
   download: [
     { label: '⬇️ Phiên bản yt-dlp & aria2c', cmd: '!yt-dlp --version; aria2c --version | head -n 1' },
-    { label: '📂 File video đã tải về (/mnt/sda1)', cmd: '!ls -lah /mnt/sda1/esp32-downloads 2>/dev/null || ls -lah /overlay/downloads' },
-    { label: '🤖 Kiểm tra cổng 8787 ESP32 Runtime', cmd: '!netstat -tlpn | grep 8787' },
+    { label: '📂 Thư mục & File video đã tải', cmd: '!grep outputDirectory /etc/r3p/downloader.json 2>/dev/null; ls -lah /mnt/sda1/downloads 2>/dev/null || ls -lah /overlay/downloads' },
+    { label: '🤖 Kiểm tra dịch vụ r3p-api (80/8443)', cmd: '!netstat -tlpn | grep r3p-api' },
   ],
   maintenance: [
     { label: '🧹 Giải phóng RAM (Drop Caches)', cmd: '!sync && echo 3 > /proc/sys/vm/drop_caches && free -m' },

@@ -1739,7 +1739,6 @@ onUnmounted(() => {
                         <option value="">-- Chọn Nhanh --</option>
                         <option value="/mnt/sda1/GDrive">/mnt/sda1/GDrive</option>
                         <option value="/mnt/sda1/downloads">/mnt/sda1/downloads</option>
-                        <option value="/mnt/sda1/esp32-downloads">/mnt/sda1/esp32-downloads</option>
                         <option v-for="s in shares" :key="s.name" :value="s.path">{{ s.name }} ({{ s.path }})</option>
                         <option value="/overlay/downloads">/overlay/downloads</option>
                         <option value="/overlay/share">/overlay/share (NAND)</option>

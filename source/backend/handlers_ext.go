@@ -772,8 +772,7 @@ func loadNASShares() []ShareItem {
 	if len(list) == 0 {
 		list = []ShareItem{
 			{Name: "USB_500G_HDD", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB External HDD Root"},
-			{Name: "ESP32_Downloads", Path: "/mnt/sda1/esp32-downloads", ReadOnly: false, GuestOk: true, Comment: "ESP32 Auto-Downloader Media Output"},
-			{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 High-Speed Downloads"},
+			{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true, Comment: "Persistent NAND Shared Storage"},
 			{Name: "Downloads", Path: "/overlay/downloads", ReadOnly: false, GuestOk: true, Comment: "NAND Download Folder"},
 			{Name: "RAM_Scratch", Path: "/tmp/downloads", ReadOnly: false, GuestOk: true, Comment: "High-Speed RAM Scratch Disk"},
@@ -792,8 +791,7 @@ func loadNASShares() []ShareItem {
 		if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
 			list = append([]ShareItem{
 				{Name: "USB_500G_HDD", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB External HDD Root"},
-				{Name: "ESP32_Downloads", Path: "/mnt/sda1/esp32-downloads", ReadOnly: false, GuestOk: true, Comment: "ESP32 Auto-Downloader Media Output"},
-				{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 High-Speed Downloads"},
+				{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			}, list...)
 			saveNASShares(list)
 		}
@@ -1722,11 +1720,11 @@ func handleDownloadFiles(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
-	espMu.Lock()
-	baseDir := espConfig.OutputDirectory
-	espMu.Unlock()
+	dlMu.Lock()
+	baseDir := dlConfig.OutputDirectory
+	dlMu.Unlock()
 	if baseDir == "" {
-		baseDir = "/mnt/sda1/esp32-downloads"
+		baseDir = getDefaultDownloadOutputDir()
 	}
 
 	var files []DownloadFileItem
@@ -1779,11 +1777,11 @@ func handleDownloadFileServe(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
-	espMu.Lock()
-	baseDir := espConfig.OutputDirectory
-	espMu.Unlock()
+	dlMu.Lock()
+	baseDir := dlConfig.OutputDirectory
+	dlMu.Unlock()
 	if baseDir == "" {
-		baseDir = "/mnt/sda1/esp32-downloads"
+		baseDir = getDefaultDownloadOutputDir()
 	}
 
 	sub := r.URL.Query().Get("sub_path")
@@ -1810,9 +1808,9 @@ func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		espMu.Lock()
-		outDir := espConfig.OutputDirectory
-		espMu.Unlock()
+		dlMu.Lock()
+		outDir := dlConfig.OutputDirectory
+		dlMu.Unlock()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"output_directory": outDir,
 		})
@@ -1830,10 +1828,11 @@ func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		target = filepath.Clean(target)
 		_ = os.MkdirAll(target, 0755)
-		espMu.Lock()
-		espConfig.OutputDirectory = target
-		saveEspConfig()
-		espMu.Unlock()
+		dlMu.Lock()
+		dlConfig.OutputDirectory = target
+		saveDownloaderConfig()
+		dlMu.Unlock()
+		syncR3pDownloaderSettings()
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"saved":            true,

@@ -155,7 +155,7 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 		{Label: "Cấu Hình /etc", Path: "/etc", Icon: "⚙️", Desc: "Cấu hình OpenWrt UCI, init scripts và daemon"},
 		{Label: "Dữ Liệu R3P", Path: "/etc/r3p", Icon: "🛡️", Desc: "Blueprint, AI Memory, Sessions và AdBlock"},
 		{Label: "Bộ Nhớ RAM /tmp", Path: "/tmp", Icon: "🚀", Desc: "RAM tmpfs tạm thời của Router"},
-		{Label: "Tải Về /downloads", Path: "/mnt/sda1/esp32-downloads", Icon: "📥", Desc: "Thư mục tải video yt-dlp và media"},
+		{Label: "Tải Về /downloads", Path: "/mnt/sda1/downloads", Icon: "📥", Desc: "Thư mục tải video yt-dlp và media"},
 		{Label: "Giao Diện Web /www", Path: "/www", Icon: "🌐", Desc: "Mã nguồn frontend Vue 3 Dashboard"},
 		{Label: "Thư Mục /root", Path: "/root", Icon: "👤", Desc: "Thư mục cá nhân của tài khoản root"},
 	}
