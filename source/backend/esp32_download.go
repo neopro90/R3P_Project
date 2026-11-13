@@ -182,17 +182,23 @@ type EspTelegramLogEntry struct {
 }
 
 var (
-	espMu          sync.Mutex
-	espConfig      EspLocalConfig
-	espQueue       []*EspRuntimeJob
-	espSchedules   []*EspScheduledDownload
-	espTelegramLog []EspTelegramLogEntry
-	espActiveCmds  = map[string]context.CancelFunc{}
-	espSessions    = map[string]int64{}
-	espAllowedPins = []int{2, 4, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33}
-	espBotUsername = ""
-	espTgState     = "polling"
-	espTgLastErr   = ""
+	espMu              sync.Mutex
+	espConfig          EspLocalConfig
+	espQueue           []*EspRuntimeJob
+	espSchedules       []*EspScheduledDownload
+	espTelegramLog     []EspTelegramLogEntry
+	espActiveCmds      = map[string]context.CancelFunc{}
+	espSessions        = map[string]int64{}
+	espAllowedPins     = []int{2, 4, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33}
+	espBotUsername     = ""
+	espTgState         = "idle"
+	espTgLastErr       = ""
+	espTgLastErrorCode = 0
+	espTgLastPollAt    = ""
+	espTgLastSuccessAt = ""
+	espTgWebhookURL    = ""
+	espTgWakeCh        = make(chan struct{}, 1)
+	espTgPollCancel    context.CancelFunc
 )
 
 func randHex(n int) string {
@@ -205,21 +211,21 @@ func defaultEspConfig() EspLocalConfig {
 	return EspLocalConfig{
 		SchemaVersion:         2,
 		SystemID:              "esp-host-r3p-linux",
-		DeviceBaseUrl:         "http://192.168.2.150",
-		RuntimeBaseUrl:        "http://192.168.2.1:8787",
-		DeviceToken:           "8bf676342f265f93cf66fe3053741d701b442fb72eb8f7a0",
-		TelegramBotToken:      "9246238020:AAHuExTQB3iN2iGh4Sg_anMk6XlxQPvJ-3s",
-		TelegramEnabled:       true,
-		TelegramAllowedChatId: "2041840936",
+		DeviceBaseUrl:         "",
+		RuntimeBaseUrl:        "",
+		DeviceToken:           "",
+		TelegramBotToken:      "",
+		TelegramEnabled:       false,
+		TelegramAllowedChatId: "",
 		TelegramUpdateOffset:  0,
 		YtDlpPath:             "/usr/bin/yt-dlp",
 		FfmpegPath:            "/usr/bin/ffmpeg",
 		DenoPath:              "",
 		OutputDirectory:       getEspDefaultOutputDir(),
 		UrlRetentionDays:      30,
-		DdnsEnabled:           true,
-		DdnsDomain:            "esp32downloaderbot",
-		DdnsToken:             "c528ea18-b74e-42b8-8d60-b8585f3db1f0",
+		DdnsEnabled:           false,
+		DdnsDomain:            "",
+		DdnsToken:             "",
 		GpioCommands:          []EspGpioCommand{},
 		WorkerName:            "R3P-Linux-Runtime",
 		DownloadSettings: EspDownloadSettings{
@@ -249,8 +255,8 @@ func defaultEspConfig() EspLocalConfig {
 		MaxLoginAttempts:      5,
 		LoginWindowMinutes:    15,
 		AuthUsername:          "admin",
-		AuthSalt:              "1a1524e64ed20377ffe11153b7e5626e",
-		AuthPasswordHash:      "admin",
+		AuthSalt:              "",
+		AuthPasswordHash:      "",
 		SettingsRevision:      28,
 	}
 }
@@ -367,20 +373,13 @@ func getRouterLanIP() string {
 // 3. DDNS domain
 // 4. Output directory (/mnt/sda1/esp32-downloads or /overlay/downloads)
 func syncEspAndRouterSettings() {
-	// 1. Storage & Path Folder
-	if isSda1Mounted() {
-		espConfig.OutputDirectory = "/mnt/sda1/esp32-downloads"
-	} else if espConfig.OutputDirectory == "" || !strings.HasPrefix(espConfig.OutputDirectory, "/mnt/sda1") {
-		espConfig.OutputDirectory = "/overlay/downloads"
-	}
-	_ = os.MkdirAll(espConfig.OutputDirectory, 0777)
-	_ = os.Chmod(espConfig.OutputDirectory, 0777)
-
-	// 2. IP Address & Local Host
 	lanIP := getRouterLanIP()
-	espConfig.RuntimeBaseUrl = fmt.Sprintf("http://%s:%d", lanIP, espHostPort)
+	sdaMounted := isSda1Mounted()
+	ddnsDom := ""
+	if out, err := runCmd(2, "uci", "-q", "get", "ddns.myddns.domain"); err == nil {
+		ddnsDom = strings.TrimSpace(out)
+	}
 
-	// 3. Telegram API & Chat ID synchronization
 	tgPath := "/etc/r3p/telegram.json"
 	type tgFileModel struct {
 		BotToken string `json:"bot_token"`
@@ -390,50 +389,181 @@ func syncEspAndRouterSettings() {
 		Enabled  bool   `json:"enabled"`
 	}
 	var tg tgFileModel
+	tgFileExists := false
 	if b, err := os.ReadFile(tgPath); err == nil {
-		_ = json.Unmarshal(b, &tg)
+		if json.Unmarshal(b, &tg) == nil {
+			tgFileExists = true
+		}
+	}
+
+	espMu.Lock()
+	// 1. Storage & Path Folder
+	outDir := espConfig.OutputDirectory
+	if sdaMounted {
+		outDir = "/mnt/sda1/esp32-downloads"
+	} else if outDir == "" || !strings.HasPrefix(outDir, "/mnt/sda1") {
+		outDir = "/overlay/downloads"
+	}
+	changedEsp := espConfig.OutputDirectory != outDir
+	espConfig.OutputDirectory = outDir
+
+	// 2. IP Address & Local Host
+	runtimeURL := fmt.Sprintf("http://%s:%d", lanIP, espHostPort)
+	if espConfig.RuntimeBaseUrl != runtimeURL {
+		espConfig.RuntimeBaseUrl = runtimeURL
+		changedEsp = true
+	}
+
+	// 3. Telegram API & Chat ID synchronization (never overwrite configured tokens with empty defaults)
+	if tg.BotToken != "" && espConfig.TelegramBotToken == "" {
+		espConfig.TelegramBotToken = tg.BotToken
+		espConfig.TelegramEnabled = tg.Enabled
+		changedEsp = true
+	}
+	if tg.ChatID != "" && espConfig.TelegramAllowedChatId == "" {
+		espConfig.TelegramAllowedChatId = tg.ChatID
+		changedEsp = true
+	}
+
+	mountTarget := "/overlay"
+	pathTarget := "downloads"
+	if sdaMounted {
+		mountTarget = "/mnt/sda1"
+		pathTarget = "esp32-downloads"
 	}
 
 	changedTgFile := false
-	if tg.BotToken != "" && espConfig.TelegramBotToken == "" {
-		espConfig.TelegramBotToken = tg.BotToken
-	} else if espConfig.TelegramBotToken != "" && tg.BotToken != espConfig.TelegramBotToken {
-		tg.BotToken = espConfig.TelegramBotToken
-		changedTgFile = true
-	}
-
-	if tg.ChatID != "" && espConfig.TelegramAllowedChatId == "" {
-		espConfig.TelegramAllowedChatId = tg.ChatID
-	} else if espConfig.TelegramAllowedChatId != "" && tg.ChatID != espConfig.TelegramAllowedChatId {
-		tg.ChatID = espConfig.TelegramAllowedChatId
-		changedTgFile = true
-	}
-
-	if isSda1Mounted() {
-		if tg.Mount != "/mnt/sda1" || tg.Path != "esp32-downloads" {
-			tg.Mount = "/mnt/sda1"
-			tg.Path = "esp32-downloads"
+	if espConfig.TelegramBotToken != "" {
+		if tg.BotToken != espConfig.TelegramBotToken {
+			tg.BotToken = espConfig.TelegramBotToken
+			changedTgFile = true
+		}
+		if tg.ChatID != espConfig.TelegramAllowedChatId {
+			tg.ChatID = espConfig.TelegramAllowedChatId
+			changedTgFile = true
+		}
+		if tg.Enabled != espConfig.TelegramEnabled {
+			tg.Enabled = espConfig.TelegramEnabled
+			changedTgFile = true
+		}
+		if tg.Mount != mountTarget || tg.Path != pathTarget {
+			tg.Mount = mountTarget
+			tg.Path = pathTarget
 			changedTgFile = true
 		}
 	}
 
-	if (changedTgFile || !tg.Enabled) && (tg.BotToken != "" || tg.ChatID != "") {
-		tg.Enabled = true
-		if tb, err := json.MarshalIndent(tg, "", "  "); err == nil {
-			_ = os.WriteFile(tgPath, tb, 0600)
+	// 4. DDNS domain synchronization (only enabled when actually configured)
+	if ddnsDom != "" && espConfig.DdnsDomain != ddnsDom {
+		espConfig.DdnsDomain = ddnsDom
+		changedEsp = true
+	}
+	ddnsActive := espConfig.DdnsDomain != "" || espConfig.DdnsToken != ""
+	if espConfig.DdnsEnabled != ddnsActive {
+		espConfig.DdnsEnabled = ddnsActive
+		changedEsp = true
+	}
+
+	if changedEsp {
+		saveEspConfig()
+	}
+	syncTok := espConfig.TelegramBotToken
+	syncChat := espConfig.TelegramAllowedChatId
+	syncEn := espConfig.TelegramEnabled
+	espMu.Unlock()
+
+	_ = os.MkdirAll(outDir, 0777)
+	_ = os.Chmod(outDir, 0777)
+
+	if espTgShouldWriteFile(tgFileExists, changedTgFile, syncTok) {
+		_ = writePrivateJSON(tgPath, tg)
+	}
+	telegramDownloader.syncFromEsp(syncTok, syncChat, syncEn)
+}
+
+func espTgShouldWriteFile(fileExists, changed bool, token string) bool {
+	return token != "" && (!fileExists || changed)
+}
+
+func wakeUnifiedTelegramPoller(cancelActivePoll bool) {
+	if cancelActivePoll {
+		espMu.Lock()
+		cancelFn := espTgPollCancel
+		espMu.Unlock()
+		if cancelFn != nil {
+			cancelFn()
 		}
 	}
-
-	// 4. DDNS domain synchronization
-	if espConfig.DdnsDomain == "" {
-		espConfig.DdnsDomain = "esp32downloaderbot"
+	select {
+	case espTgWakeCh <- struct{}{}:
+	default:
 	}
-	if out, err := runCmd(2, "uci", "-q", "get", "ddns.myddns.domain"); err == nil && strings.TrimSpace(out) != "" {
-		espConfig.DdnsDomain = strings.TrimSpace(out)
-	}
-	espConfig.DdnsEnabled = true
+}
 
-	saveEspConfig()
+func syncTelegramConfigToEsp(botToken, chatID string, enabled bool) {
+	botToken = strings.TrimSpace(botToken)
+	chatID = strings.TrimSpace(chatID)
+	espMu.Lock()
+	tokenChanged := espConfig.TelegramBotToken != botToken
+	changed := tokenChanged || espConfig.TelegramAllowedChatId != chatID || espConfig.TelegramEnabled != enabled
+	if tokenChanged {
+		espConfig.TelegramBotToken = botToken
+		espConfig.TelegramUpdateOffset = 0
+		espTgWebhookURL = ""
+		espBotUsername = ""
+	}
+	espConfig.TelegramAllowedChatId = chatID
+	espConfig.TelegramEnabled = enabled
+	if changed {
+		saveEspConfig()
+	}
+	espMu.Unlock()
+	if changed {
+		wakeUnifiedTelegramPoller(true)
+	}
+}
+
+func appendEspTelegramLog(entry EspTelegramLogEntry) {
+	if strings.TrimSpace(entry.ReceivedAt) == "" {
+		entry.ReceivedAt = time.Now().Format("2006-01-02 15:04:05")
+	}
+	espMu.Lock()
+	espTelegramLog = append([]EspTelegramLogEntry{entry}, espTelegramLog...)
+	if len(espTelegramLog) > 64 {
+		espTelegramLog = espTelegramLog[:64]
+	}
+	espMu.Unlock()
+}
+
+func updateEspTelegramLogEntry(id, jobStatus, reason string, updateID int64) {
+	if id == "" {
+		return
+	}
+	espMu.Lock()
+	for i := range espTelegramLog {
+		if espTelegramLog[i].ID == id {
+			if jobStatus != "" {
+				espTelegramLog[i].JobStatus = jobStatus
+			}
+			if reason != "" {
+				espTelegramLog[i].Reason = reason
+			}
+			if updateID > 0 {
+				espTelegramLog[i].UpdateID = updateID
+			}
+			break
+		}
+	}
+	espMu.Unlock()
+}
+
+func truncateLogText(s string, maxRunes int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func saveEspConfig() {
@@ -563,7 +693,7 @@ func checkEspTelegramToken(token string) map[string]interface{} {
 			"message":    "Chưa cấu hình token Telegram.",
 		}
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newTelegramHTTPClient(6 * time.Second)
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/getMe")
 	if err != nil {
 		return map[string]interface{}{
@@ -608,6 +738,100 @@ func checkEspTelegramToken(token string) map[string]interface{} {
 	}
 }
 
+func newTelegramHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   8 * time.Second,
+			ResponseHeaderTimeout: timeout,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          4,
+			IdleConnTimeout:       20 * time.Second,
+		},
+	}
+}
+
+func getTelegramWebhookInfo(token string) (string, error) {
+	if strings.TrimSpace(token) == "" {
+		return "", nil
+	}
+	client := newTelegramHTTPClient(6 * time.Second)
+	resp, err := client.Get("https://api.telegram.org/bot" + token + "/getWebhookInfo")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var data struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			URL string `json:"url"`
+		} `json:"result"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data)
+	if !data.OK {
+		if data.Description != "" {
+			return "", fmt.Errorf("%s", data.Description)
+		}
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	espMu.Lock()
+	espTgWebhookURL = data.Result.URL
+	espMu.Unlock()
+	return data.Result.URL, nil
+}
+
+func ensureTelegramWebhookDeleted(token string) error {
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	hookURL, err := getTelegramWebhookInfo(token)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(hookURL) == "" {
+		return nil
+	}
+	client := newTelegramHTTPClient(8 * time.Second)
+	resp, err := client.Get("https://api.telegram.org/bot" + token + "/deleteWebhook?drop_pending_updates=false")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var data struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data)
+	if !data.OK {
+		if data.Description != "" {
+			return fmt.Errorf("deleteWebhook: %s", data.Description)
+		}
+		return fmt.Errorf("deleteWebhook: HTTP %d", resp.StatusCode)
+	}
+	espMu.Lock()
+	espTgWebhookURL = ""
+	espMu.Unlock()
+	return nil
+}
+
+func sendEspTelegramChatAction(chatID, action string) {
+	espMu.Lock()
+	tok := espConfig.TelegramBotToken
+	espMu.Unlock()
+	if tok == "" || chatID == "" || action == "" {
+		return
+	}
+	payload := map[string]string{"chat_id": chatID, "action": action}
+	b, _ := json.Marshal(payload)
+	client := newTelegramHTTPClient(5 * time.Second)
+	resp, err := client.Post("https://api.telegram.org/bot"+tok+"/sendChatAction", "application/json", bytes.NewReader(b))
+	if err == nil && resp != nil {
+		resp.Body.Close()
+	}
+}
+
 func sendEspTelegramMsg(chatID, text string) error {
 	espMu.Lock()
 	tok := espConfig.TelegramBotToken
@@ -615,16 +839,32 @@ func sendEspTelegramMsg(chatID, text string) error {
 	if tok == "" || chatID == "" {
 		return fmt.Errorf("missing token or chat_id")
 	}
-	payload := map[string]string{"chat_id": chatID, "text": text}
-	b, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Post("https://api.telegram.org/bot"+tok+"/sendMessage", "application/json", bytes.NewReader(b))
-	if err != nil {
-		return err
+	chunks := splitTelegramMessage(text, 3800)
+	if len(chunks) == 0 {
+		return nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	client := newTelegramHTTPClient(12 * time.Second)
+	for _, chunk := range chunks {
+		payload := map[string]string{"chat_id": chatID, "text": chunk}
+		b, _ := json.Marshal(payload)
+		resp, err := client.Post("https://api.telegram.org/bot"+tok+"/sendMessage", "application/json", bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		resp.Body.Close()
+		var tgResp struct {
+			OK          bool   `json:"ok"`
+			ErrorCode   int    `json:"error_code"`
+			Description string `json:"description"`
+		}
+		_ = json.Unmarshal(bodyBytes, &tgResp)
+		if resp.StatusCode >= 300 || !tgResp.OK {
+			if tgResp.Description != "" {
+				return fmt.Errorf("Telegram HTTP %d (%d): %s", resp.StatusCode, tgResp.ErrorCode, tgResp.Description)
+			}
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
 	}
 	return nil
 }
@@ -672,10 +912,16 @@ func buildEspLocalStatus() map[string]interface{} {
 	}
 
 	ytVer, ytErr := getYtDlpVer()
-	storage := espOutputStorageStatus(espConfig.OutputDirectory)
 
 	espMu.Lock()
 	cfg := espConfig
+	tgState := espTgState
+	tgLastErr := espTgLastErr
+	tgErrCode := espTgLastErrorCode
+	tgLastPollAt := espTgLastPollAt
+	tgLastSuccessAt := espTgLastSuccessAt
+	tgWebhookURL := espTgWebhookURL
+	botUser := espBotUsername
 	activeCount := len(espActiveCmds)
 	pendingCount := 0
 	completedCount := 0
@@ -716,6 +962,8 @@ func buildEspLocalStatus() map[string]interface{} {
 	}
 	espMu.Unlock()
 
+	storage := espOutputStorageStatus(cfg.OutputDirectory)
+
 	if histJobs == nil {
 		histJobs = []map[string]interface{}{}
 	}
@@ -737,7 +985,11 @@ func buildEspLocalStatus() map[string]interface{} {
 	device["ipAddress"] = lanIP
 	device["ddnsDomain"] = cfg.DdnsDomain
 	device["ddnsEnabled"] = cfg.DdnsEnabled
-	device["ddnsLastStatus"] = fmt.Sprintf("%s · Online", cfg.DdnsDomain)
+	if cfg.DdnsDomain != "" {
+		device["ddnsLastStatus"] = fmt.Sprintf("%s · Online", cfg.DdnsDomain)
+	} else {
+		device["ddnsLastStatus"] = "Chưa cấu hình"
+	}
 	device["telegramBotToken"] = cfg.TelegramBotToken
 	device["telegramAllowedChatId"] = cfg.TelegramAllowedChatId
 	device["telegramConfigured"] = cfg.TelegramBotToken != ""
@@ -766,6 +1018,22 @@ func buildEspLocalStatus() map[string]interface{} {
 		hostAddress = fmt.Sprintf("http://%s:%d", lanIP, espHostPort)
 	}
 
+	tgMsg := "Chưa cấu hình Bot Token Telegram."
+	if cfg.TelegramBotToken != "" {
+		switch tgState {
+		case "polling":
+			tgMsg = fmt.Sprintf("Đang lắng nghe tin nhắn (URL -> Downloader, Văn bản -> AI) · Chat ID: %s", cfg.TelegramAllowedChatId)
+		case "disabled":
+			tgMsg = "Polling Telegram đang tắt."
+		case "conflict":
+			tgMsg = tgLastErr
+		case "auth_error", "error":
+			tgMsg = tgLastErr
+		default:
+			tgMsg = fmt.Sprintf("Đang khởi tạo polling · Chat ID: %s", cfg.TelegramAllowedChatId)
+		}
+	}
+
 	return map[string]interface{}{
 		"host": map[string]interface{}{
 			"address":             hostAddress,
@@ -781,17 +1049,23 @@ func buildEspLocalStatus() map[string]interface{} {
 		"device": device,
 		"telegram": map[string]interface{}{
 			"configured":          cfg.TelegramBotToken != "",
-			"reachable":           true,
-			"tokenValid":          cfg.TelegramBotToken != "",
-			"botUsername":         espBotUsername,
+			"enabled":             cfg.TelegramEnabled,
+			"reachable":           tgState == "polling" || tgLastErr == "",
+			"tokenValid":          cfg.TelegramBotToken != "" && tgState != "auth_error",
+			"botUsername":         botUser,
 			"botName":             "ESP32 & R3P Auto Downloader Bot",
 			"tokenLast4":          tgTokTail,
 			"chatId":              cfg.TelegramAllowedChatId,
 			"ownerChatId":         cfg.TelegramAllowedChatId,
 			"ownerChatConfigured": cfg.TelegramAllowedChatId != "",
-			"pollingState":        espTgState,
-			"lastError":           espTgLastErr,
-			"message":             fmt.Sprintf("Bot đang chờ URL · Chat ID: %s", cfg.TelegramAllowedChatId),
+			"pollingState":        tgState,
+			"lastError":           tgLastErr,
+			"lastErrorCode":       tgErrCode,
+			"lastPollAt":          tgLastPollAt,
+			"lastSuccessAt":       tgLastSuccessAt,
+			"webhookUrl":          tgWebhookURL,
+			"updateOffset":        cfg.TelegramUpdateOffset,
+			"message":             tgMsg,
 		},
 		"runtime": map[string]interface{}{
 			"address":                  cfg.RuntimeBaseUrl,
@@ -1317,98 +1591,293 @@ func espWorkerLoop() {
 
 var urlExtractRegex = regexp.MustCompile(`https?://[^\s<>"']+`)
 
+func waitTelegramPollBackoff(d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-espTgWakeCh:
+	case <-timer.C:
+	}
+}
+
+func setEspTgPollState(state, lastErr string, errCode int, markPoll, markSuccess bool) {
+	nowStr := time.Now().Format("2006-01-02 15:04:05")
+	espMu.Lock()
+	espTgState = state
+	espTgLastErr = lastErr
+	espTgLastErrorCode = errCode
+	if markPoll {
+		espTgLastPollAt = nowStr
+	}
+	if markSuccess {
+		espTgLastSuccessAt = nowStr
+	}
+	espMu.Unlock()
+}
+
 func espTelegramPollerLoop() {
-	client := &http.Client{Timeout: 25 * time.Second}
+	client := newTelegramHTTPClient(32 * time.Second)
+	webhookClearedToken := ""
+
 	for {
 		espMu.Lock()
 		enabled := espConfig.TelegramEnabled
-		tok := espConfig.TelegramBotToken
-		allowedChat := strings.TrimSpace(espConfig.TelegramAllowedChatId)
+		tok := strings.TrimSpace(espConfig.TelegramBotToken)
 		offset := espConfig.TelegramUpdateOffset
 		espMu.Unlock()
 
-		if !enabled || tok == "" {
-			time.Sleep(4 * time.Second)
+		if tok == "" {
+			webhookClearedToken = ""
+			setEspTgPollState("unconfigured", "", 0, false, false)
+			telegramDownloader.updatePollStatus(false, "Chưa cấu hình Telegram Bot Token.")
+			waitTelegramPollBackoff(4 * time.Second)
+			continue
+		}
+		if !enabled {
+			setEspTgPollState("disabled", "", 0, false, false)
+			telegramDownloader.updatePollStatus(false, "Polling Telegram đang tạm tắt.")
+			waitTelegramPollBackoff(4 * time.Second)
 			continue
 		}
 
-		pollURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=15&limit=20&offset=%d", tok, offset)
-		resp, err := client.Get(pollURL)
-		if err != nil {
+		// Clear any legacy webhook once per active token so getUpdates works immediately.
+		if webhookClearedToken != tok {
+			if err := ensureTelegramWebhookDeleted(tok); err != nil {
+				log.Printf("Telegram webhook check warning: %v", err)
+			} else {
+				webhookClearedToken = tok
+			}
 			espMu.Lock()
-			espTgLastErr = err.Error()
+			needBotUser := espBotUsername == ""
 			espMu.Unlock()
-			time.Sleep(5 * time.Second)
-			continue
-		}
-		var data struct {
-			OK     bool `json:"ok"`
-			Result []struct {
-				UpdateID int64 `json:"update_id"`
-				Message  *struct {
-					Text string `json:"text"`
-					Chat struct {
-						ID int64 `json:"id"`
-					} `json:"chat"`
-				} `json:"message"`
-			} `json:"result"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&data)
-		resp.Body.Close()
-
-		if !data.OK {
-			time.Sleep(5 * time.Second)
-			continue
+			if needBotUser {
+				_ = checkEspTelegramToken(tok)
+			}
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
 		espMu.Lock()
-		espTgState = "polling"
-		espTgLastErr = ""
+		espTgPollCancel = cancel
 		espMu.Unlock()
+
+		pollURL := fmt.Sprintf(
+			"https://api.telegram.org/bot%s/getUpdates?timeout=15&limit=20&offset=%d&allowed_updates=%%5B%%22message%%22%%2C%%22channel_post%%22%%5D",
+			tok, offset,
+		)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if reqErr != nil {
+			cancel()
+			espMu.Lock()
+			espTgPollCancel = nil
+			espMu.Unlock()
+			setEspTgPollState("error", reqErr.Error(), 0, true, false)
+			telegramDownloader.updatePollStatus(false, reqErr.Error())
+			waitTelegramPollBackoff(5 * time.Second)
+			continue
+		}
+
+		resp, err := client.Do(req)
+		wasCanceled := ctx.Err() == context.Canceled
+		cancel()
+		espMu.Lock()
+		espTgPollCancel = nil
+		espMu.Unlock()
+
+		if err != nil {
+			client.CloseIdleConnections()
+			if wasCanceled {
+				continue
+			}
+			errMsg := err.Error()
+			setEspTgPollState("error", errMsg, 0, true, false)
+			telegramDownloader.updatePollStatus(false, errMsg)
+			waitTelegramPollBackoff(5 * time.Second)
+			continue
+		}
+
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			client.CloseIdleConnections()
+			errMsg := readErr.Error()
+			setEspTgPollState("error", errMsg, 0, true, false)
+			telegramDownloader.updatePollStatus(false, errMsg)
+			waitTelegramPollBackoff(5 * time.Second)
+			continue
+		}
+
+		var data struct {
+			OK          bool             `json:"ok"`
+			ErrorCode   int              `json:"error_code"`
+			Description string           `json:"description"`
+			Result      []telegramUpdate `json:"result"`
+		}
+		if decErr := json.Unmarshal(bodyBytes, &data); decErr != nil {
+			client.CloseIdleConnections()
+			errMsg := fmt.Sprintf("Telegram JSON decode error (HTTP %d): %v", resp.StatusCode, decErr)
+			setEspTgPollState("error", errMsg, resp.StatusCode, true, false)
+			telegramDownloader.updatePollStatus(false, errMsg)
+			waitTelegramPollBackoff(5 * time.Second)
+			continue
+		}
+
+		if !data.OK || resp.StatusCode >= 300 {
+			client.CloseIdleConnections()
+			state := "error"
+			errMsg := data.Description
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			switch data.ErrorCode {
+			case 409:
+				state = "conflict"
+				errMsg = fmt.Sprintf("HTTP 409 Conflict: %s — Có tiến trình hoặc thiết bị khác (vd: ESP32 / bot khác) đang gọi getUpdates với cùng Bot Token này.", data.Description)
+				webhookClearedToken = ""
+			case 401:
+				state = "auth_error"
+				errMsg = fmt.Sprintf("HTTP 401 Unauthorized: Bot Token không hợp lệ (%s)", data.Description)
+			default:
+				if data.ErrorCode != 0 {
+					errMsg = fmt.Sprintf("Telegram HTTP %d (%d): %s", resp.StatusCode, data.ErrorCode, data.Description)
+				}
+			}
+			setEspTgPollState(state, errMsg, data.ErrorCode, true, false)
+			telegramDownloader.updatePollStatus(false, errMsg)
+			if data.ErrorCode == 409 {
+				waitTelegramPollBackoff(6 * time.Second)
+			} else {
+				waitTelegramPollBackoff(5 * time.Second)
+			}
+			continue
+		}
+
+		setEspTgPollState("polling", "", 0, true, true)
+		telegramDownloader.updatePollStatus(true, "")
 
 		for _, upd := range data.Result {
 			espMu.Lock()
+			if espConfig.TelegramBotToken != tok {
+				espMu.Unlock()
+				break
+			}
 			if upd.UpdateID >= espConfig.TelegramUpdateOffset {
 				espConfig.TelegramUpdateOffset = upd.UpdateID + 1
 				saveEspConfig()
 			}
+			allowedChat := strings.TrimSpace(espConfig.TelegramAllowedChatId)
 			espMu.Unlock()
 
-			if upd.Message == nil {
+			msg := upd.Message
+			if msg == nil {
+				msg = upd.ChannelPost
+			}
+			if msg == nil {
 				continue
 			}
-			chatStr := strconv.FormatInt(upd.Message.Chat.ID, 10)
-			text := strings.TrimSpace(upd.Message.Text)
-			if text == "" {
+
+			chatStr := strings.TrimSpace(msg.Chat.ID.String())
+			text := strings.TrimSpace(strings.TrimSpace(msg.Text) + "\n" + strings.TrimSpace(msg.Caption))
+			analysis := analyzeTelegramMessage(text)
+			if analysis.Route == TelegramRouteIgnore {
 				continue
 			}
-			if strings.HasPrefix(text, "/start") || strings.HasPrefix(text, "/id") {
-				_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("🤖 R3P Linux ESP32-Download & Root AI Bot sẵn sàng!\nChat ID của bạn: %s\n- Gửi URL (TikTok, YouTube, Facebook...) để tự động tải về ổ cứng.\n- Gửi văn bản hoặc lệnh !<lệnh> để giao tiếp trực tiếp với Trợ Lý AI Root R3P!", chatStr))
+
+			if analysis.Route == TelegramRouteHelp {
+				appendEspTelegramLog(EspTelegramLogEntry{
+					ID:        fmt.Sprintf("help_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
+					UpdateID:  upd.UpdateID,
+					ChatID:    chatStr,
+					URL:       truncateLogText(analysis.CleanText, 120),
+					Decision:  "HELP",
+					Reason:    "Lệnh hướng dẫn /start hoặc /id",
+					JobStatus: "REPLIED",
+				})
+				_ = sendEspTelegramMsg(chatStr, fmt.Sprintf(
+					"🤖 R3P Linux Auto Downloader & Root AI Bot sẵn sàng!\nChat ID của bạn: %s\n• Gửi CHỈ URL (TikTok, YouTube, Facebook...) -> Tự động tải về ổ cứng USB qua yt-dlp.\n• Gửi tin nhắn văn bản, câu hỏi hoặc !<lệnh> -> Chuyển trực tiếp sang Trợ Lý AI Root R3P!",
+					chatStr,
+				))
 				continue
 			}
-			if allowedChat != "" && !strings.Contains(allowedChat, chatStr) {
-				_ = sendEspTelegramMsg(chatStr, "Chat ID "+chatStr+" chưa được cấp quyền trong cài đặt.")
+
+			if allowedChat != "" && !isAllowedTelegramChat(allowedChat, chatStr) {
+				appendEspTelegramLog(EspTelegramLogEntry{
+					ID:        fmt.Sprintf("rej_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
+					UpdateID:  upd.UpdateID,
+					ChatID:    chatStr,
+					URL:       truncateLogText(analysis.CleanText, 120),
+					Decision:  "REJECTED",
+					Reason:    "Chat ID chưa được cấp quyền: " + chatStr,
+					JobStatus: "BLOCKED",
+				})
+				_ = sendEspTelegramMsg(chatStr, "⛔ Chat ID "+chatStr+" chưa được cấp quyền trong cài đặt.")
 				continue
 			}
-			urls := urlExtractRegex.FindAllString(text, 5)
-			for _, u := range urls {
-				job, dup, err := enqueueEspJob(u, "telegram", chatStr, false)
-				if err != nil {
-					_ = sendEspTelegramMsg(chatStr, "❌ Lỗi: "+err.Error())
-				} else if dup {
-					_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("ℹ️ [R3P] URL này đã có trong hàng đợi (#%s):\n%s", job.ID, u))
-				} else {
-					_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("📥 [R3P] Đã nhận URL, đang tải về ổ cứng USB 3.0 (#%s):\n%s", job.ID, u))
+
+			switch analysis.Route {
+			case TelegramRouteDownloader:
+				urls := analysis.URLs
+				if len(urls) > 5 {
+					urls = urls[:5]
 				}
-			}
-			// If message has text beyond just bare URLs, forward to Root AI Agent and reply on Telegram!
-			if !isBareURLMessage(text) {
-				go func(msgText, cid string) {
-					aiReply := processTelegramAIChat(msgText, cid)
-					if strings.TrimSpace(aiReply) != "" {
-						_ = sendEspTelegramMsg(cid, aiReply)
+				for _, u := range urls {
+					job, dup, qErr := enqueueEspJob(u, "telegram", chatStr, false)
+					if qErr != nil {
+						appendEspTelegramLog(EspTelegramLogEntry{
+							ID:        fmt.Sprintf("dlerr_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
+							UpdateID:  upd.UpdateID,
+							ChatID:    chatStr,
+							URL:       u,
+							Decision:  "DOWNLOAD_ERROR",
+							Reason:    "Phân tích: chỉ có URL -> Downloader lỗi: " + qErr.Error(),
+							JobStatus: "ERROR",
+						})
+						_ = sendEspTelegramMsg(chatStr, "❌ Lỗi: "+qErr.Error())
+					} else if dup {
+						appendEspTelegramLog(EspTelegramLogEntry{
+							ID:        fmt.Sprintf("dup_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
+							UpdateID:  upd.UpdateID,
+							ChatID:    chatStr,
+							URL:       u,
+							Decision:  "DUPLICATE",
+							Reason:    "Phân tích: chỉ có URL -> Đã có trong hàng đợi Downloader",
+							JobID:     job.ID,
+							JobStatus: job.RuntimeStatus,
+						})
+						_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("ℹ️ [R3P] URL này đã có trong hàng đợi (#%s):\n%s", job.ID, u))
+					} else {
+						updateEspTelegramLogEntry("log_"+job.ID, "", "Phân tích: chỉ có URL -> Downloader (yt-dlp)", upd.UpdateID)
+						_ = sendEspTelegramMsg(chatStr, fmt.Sprintf("📥 [R3P Downloader] Đã nhận URL, đang tải về ổ cứng USB 3.0 (#%s):\n%s", job.ID, u))
 					}
-				}(text, chatStr)
+				}
+
+			case TelegramRouteAI:
+				logID := fmt.Sprintf("ai_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000)
+				appendEspTelegramLog(EspTelegramLogEntry{
+					ID:        logID,
+					UpdateID:  upd.UpdateID,
+					ChatID:    chatStr,
+					URL:       truncateLogText(analysis.CleanText, 120),
+					Decision:  "AI_AGENT",
+					Reason:    "Phân tích: tin nhắn thường (" + analysis.Reason + ") -> Module AI",
+					JobStatus: "PROCESSING",
+				})
+				go func(lid, msgText, cid, reason string) {
+					sendEspTelegramChatAction(cid, "typing")
+					aiReply := processTelegramAIChat(msgText, cid)
+					if strings.TrimSpace(aiReply) == "" {
+						updateEspTelegramLogEntry(lid, "DONE", "AI hoàn tất (không có nội dung trả lời)", 0)
+						return
+					}
+					if sErr := sendEspTelegramMsg(cid, aiReply); sErr != nil {
+						errText := "Gửi phản hồi AI thất bại: " + sErr.Error()
+						updateEspTelegramLogEntry(lid, "SEND_ERROR", errText, 0)
+						espMu.Lock()
+						espTgLastErr = errText
+						espMu.Unlock()
+					} else {
+						updateEspTelegramLogEntry(lid, "REPLIED", "Phân tích: tin nhắn thường ("+reason+") -> Đã trả lời AI", 0)
+					}
+				}(logID, analysis.CleanText, chatStr, analysis.Reason)
 			}
 		}
 	}
@@ -1647,11 +2116,23 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["deviceToken"].(string); ok && strings.TrimSpace(v) != "" {
 			espConfig.DeviceToken = strings.TrimSpace(v)
 		}
+		oldTok := espConfig.TelegramBotToken
+		oldChat := espConfig.TelegramAllowedChatId
+		oldEn := espConfig.TelegramEnabled
 		if v, ok := body["telegramBotToken"].(string); ok && strings.TrimSpace(v) != "" {
-			espConfig.TelegramBotToken = strings.TrimSpace(v)
+			newTok := strings.TrimSpace(v)
+			if newTok != oldTok {
+				espConfig.TelegramBotToken = newTok
+				espConfig.TelegramUpdateOffset = 0
+				espTgWebhookURL = ""
+				espBotUsername = ""
+			}
 		}
 		if v, ok := body["clearTelegramToken"].(bool); ok && v {
 			espConfig.TelegramBotToken = ""
+			espConfig.TelegramUpdateOffset = 0
+			espTgWebhookURL = ""
+			espBotUsername = ""
 		}
 		if v, ok := body["telegramAllowedChatId"].(string); ok {
 			espConfig.TelegramAllowedChatId = strings.TrimSpace(v)
@@ -1671,8 +2152,18 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		if v, ok := body["ddnsToken"].(string); ok && strings.TrimSpace(v) != "" {
 			espConfig.DdnsToken = strings.TrimSpace(v)
 		}
+		tgTokChanged := espConfig.TelegramBotToken != oldTok
+		tgCfgChanged := tgTokChanged || espConfig.TelegramAllowedChatId != oldChat || espConfig.TelegramEnabled != oldEn
 		saveEspConfig()
+		newTok := espConfig.TelegramBotToken
+		newChat := espConfig.TelegramAllowedChatId
+		newEn := espConfig.TelegramEnabled
 		espMu.Unlock()
+		if tgCfgChanged {
+			syncEspAndRouterSettings()
+			telegramDownloader.syncFromEsp(newTok, newChat, newEn)
+			wakeUnifiedTelegramPoller(tgTokChanged || espConfig.TelegramEnabled != oldEn)
+		}
 		espWriteJSON(w, http.StatusOK, publicEspConfig())
 		return
 	}
@@ -1797,14 +2288,48 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		chatID := strings.TrimSpace(body.ChatID)
 		if chatID == "" {
 			espMu.Lock()
-			chatID = strings.FieldsFunc(espConfig.TelegramAllowedChatId, func(r rune) bool { return r == ',' || r == ' ' || r == ';' })[0]
+			fields := strings.FieldsFunc(espConfig.TelegramAllowedChatId, func(r rune) bool { return r == ',' || r == ' ' || r == ';' || r == '|' })
+			if len(fields) > 0 {
+				chatID = fields[0]
+			}
 			espMu.Unlock()
 		}
-		if err := sendEspTelegramMsg(chatID, "✅ Tin nhắn thử từ R3P Linux ESP32-Download Host! Kết nối Telegram hoạt động hoàn hảo."); err != nil {
+		if chatID == "" {
+			espWriteJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "Chưa cấu hình Chat ID Telegram hợp lệ."})
+			return
+		}
+		if err := sendEspTelegramMsg(chatID, "✅ Tin nhắn thử từ R3P Linux Host! Kênh gửi Telegram hoạt động bình thường."); err != nil {
 			espWriteJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 			return
 		}
 		espWriteJSON(w, http.StatusOK, map[string]interface{}{"sent": true, "chatId": chatID})
+		return
+	}
+	if p == "/api/local/telegram/log" && r.Method == http.MethodGet {
+		espMu.Lock()
+		entries := append([]EspTelegramLogEntry{}, espTelegramLog...)
+		espMu.Unlock()
+		if entries == nil {
+			entries = []EspTelegramLogEntry{}
+		}
+		espWriteJSON(w, http.StatusOK, map[string]interface{}{
+			"entries":    entries,
+			"total":      len(entries),
+			"maxEntries": 64,
+		})
+		return
+	}
+	if p == "/api/local/telegram/analyze" && r.Method == http.MethodPost {
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16384)).Decode(&body); err != nil {
+			espWriteJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		espWriteJSON(w, http.StatusOK, map[string]interface{}{
+			"analysis": analyzeTelegramMessage(body.Text),
+		})
 		return
 	}
 	if p == "/api/local/scheduled-downloads" && r.Method == http.MethodGet {
@@ -1940,8 +2465,24 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		syncEspAndRouterSettings()
 		ytVer, _ := getYtDlpVer()
 		lanIP := getRouterLanIP()
-		storage := espOutputStorageStatus(espConfig.OutputDirectory)
+		espMu.Lock()
+		cfg := espConfig
+		espMu.Unlock()
+
+		storage := espOutputStorageStatus(cfg.OutputDirectory)
 		tools := checkEspSystemTools()
+
+		var tgCheck map[string]interface{}
+		webhookURL := ""
+		webhookErr := ""
+		if strings.TrimSpace(cfg.TelegramBotToken) != "" {
+			tgCheck = checkEspTelegramToken(cfg.TelegramBotToken)
+			if hURL, hErr := getTelegramWebhookInfo(cfg.TelegramBotToken); hErr != nil {
+				webhookErr = hErr.Error()
+			} else {
+				webhookURL = hURL
+			}
+		}
 
 		// Test port 8787 listening
 		port8787OK := false
@@ -1953,38 +2494,73 @@ func handleEsp32DownloadHTTP(w http.ResponseWriter, r *http.Request) {
 		// Test ESP32 device reachable
 		devReachable := false
 		devStatus := "ESP32 Ngoại tuyến (R3P Linux hoạt động độc lập 100%)"
-		if status, _, err := callEspDevice("/api/v1/system", http.MethodGet, nil, 800); err == nil && status >= 200 && status < 300 {
-			devReachable = true
-			devStatus = "ESP32 Trực tuyến & Đã kết nối"
+		if cfg.DeviceBaseUrl != "" {
+			if status, _, err := callEspDevice("/api/v1/system", http.MethodGet, nil, 800); err == nil && status >= 200 && status < 300 {
+				devReachable = true
+				devStatus = "ESP32 Trực tuyến & Đã kết nối"
+			}
 		}
 
 		// Check writability on OutputDirectory
-		testFile := filepath.Join(espConfig.OutputDirectory, ".write_test")
+		testFile := filepath.Join(cfg.OutputDirectory, ".write_test")
 		writeOK := false
 		if err := os.WriteFile(testFile, []byte("ok"), 0666); err == nil {
 			_ = os.Remove(testFile)
 			writeOK = true
 		}
 
+		espMu.Lock()
+		tgTokTail := ""
+		if len(espConfig.TelegramBotToken) >= 4 {
+			tgTokTail = espConfig.TelegramBotToken[len(espConfig.TelegramBotToken)-4:]
+		}
+		tgState := espTgState
+		tgLastErr := espTgLastErr
+		tgErrCode := espTgLastErrorCode
+		tgLastPollAt := espTgLastPollAt
+		tgLastSuccessAt := espTgLastSuccessAt
+		if webhookURL == "" {
+			webhookURL = espTgWebhookURL
+		}
+		botUser := espBotUsername
+		maxLogs := len(espTelegramLog)
+		if maxLogs > 20 {
+			maxLogs = 20
+		}
+		recentLogs := append([]EspTelegramLogEntry{}, espTelegramLog[:maxLogs]...)
+		espMu.Unlock()
+
 		report := map[string]interface{}{
-			"ok":                  true,
-			"timestamp":           time.Now().Format("2006-01-02 15:04:05"),
-			"lan_ip":              lanIP,
-			"runtime_base_url":    espConfig.RuntimeBaseUrl,
-			"port_8787":           espHostPort,
-			"port_8787_listening": port8787OK,
-			"output_dir":          espConfig.OutputDirectory,
-			"output_dir_writable": writeOK,
-			"storage":             storage,
-			"yt_dlp_version":      ytVer,
-			"device_url":          espConfig.DeviceBaseUrl,
-			"device_reachable":    devReachable,
-			"device_status":       devStatus,
-			"telegram_enabled":    espConfig.TelegramEnabled,
-			"telegram_token_set":  len(espConfig.TelegramBotToken) > 10,
-			"telegram_chat_id":    espConfig.TelegramAllowedChatId,
-			"tools":               tools,
-			"message":             "Đã kiểm tra và đồng bộ toàn bộ thông số IP, Cổng 8787, Thư mục USB và yt-dlp thành công!",
+			"ok":                       true,
+			"timestamp":                time.Now().Format("2006-01-02 15:04:05"),
+			"lan_ip":                   lanIP,
+			"runtime_base_url":         cfg.RuntimeBaseUrl,
+			"port_8787":                espHostPort,
+			"port_8787_listening":      port8787OK,
+			"output_dir":               cfg.OutputDirectory,
+			"output_dir_writable":      writeOK,
+			"storage":                  storage,
+			"yt_dlp_version":           ytVer,
+			"device_url":               cfg.DeviceBaseUrl,
+			"device_reachable":         devReachable,
+			"device_status":            devStatus,
+			"telegram_enabled":         cfg.TelegramEnabled,
+			"telegram_token_set":       len(cfg.TelegramBotToken) > 10,
+			"telegram_token_last4":     tgTokTail,
+			"telegram_chat_id":         cfg.TelegramAllowedChatId,
+			"telegram_bot_username":    botUser,
+			"telegram_polling_state":   tgState,
+			"telegram_last_error":      tgLastErr,
+			"telegram_last_error_code": tgErrCode,
+			"telegram_last_poll_at":    tgLastPollAt,
+			"telegram_last_success_at": tgLastSuccessAt,
+			"telegram_webhook_url":     webhookURL,
+			"telegram_webhook_error":   webhookErr,
+			"telegram_update_offset":   cfg.TelegramUpdateOffset,
+			"telegram_check":           tgCheck,
+			"telegram_logs":            recentLogs,
+			"tools":                    tools,
+			"message":                  "Đã kiểm tra và đồng bộ toàn bộ thông số IP, Cổng 8787, Telegram Polling, Thư mục USB và yt-dlp!",
 		}
 		espWriteJSON(w, http.StatusOK, report)
 		return

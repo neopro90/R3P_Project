@@ -5,16 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
+
+type TelegramMessageRoute string
+
+const (
+	TelegramRouteIgnore     TelegramMessageRoute = "ignore"
+	TelegramRouteHelp       TelegramMessageRoute = "help"
+	TelegramRouteDownloader TelegramMessageRoute = "downloader"
+	TelegramRouteAI         TelegramMessageRoute = "ai"
+)
+
+type TelegramMessageAnalysis struct {
+	Route     TelegramMessageRoute `json:"route"`
+	Reason    string               `json:"reason"`
+	URLs      []string             `json:"urls,omitempty"`
+	CleanText string               `json:"clean_text,omitempty"`
+}
+
+var telegramURLRegex = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
 
 type telegramConfig struct {
 	BotToken string `json:"bot_token"`
@@ -128,28 +146,74 @@ func (s *telegramService) setConfig(config telegramConfig) error {
 
 func (s *telegramService) clearConfig() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
 	}
 	if err := os.Remove(s.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.mu.Unlock()
 		return fmt.Errorf("remove Telegram configuration: %w", err)
 	}
 	s.config = nil
 	s.status = telegramServiceStatus{}
+	isDefaultPath := s.configPath == "/etc/r3p/telegram.json"
+	s.mu.Unlock()
+	if isDefaultPath {
+		syncTelegramConfigToEsp("", "", false)
+	}
 	return nil
 }
 
 func (s *telegramService) startLocked() {
-	if s.config == nil || !s.config.Enabled {
+	if s.config == nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	s.status.Running = true
-	config := *s.config
-	go s.poll(ctx, config)
+	// Unified polling runs in espTelegramPollerLoop so /api/v1/telegram and
+	// /api/local/status never spawn competing getUpdates requests (HTTP 409).
+	s.status.Running = s.config.Enabled
+	if !s.config.Enabled {
+		s.status.Connected = false
+	}
+	if s.configPath == "/etc/r3p/telegram.json" {
+		tok := s.config.BotToken
+		chatID := s.config.ChatID
+		enabled := s.config.Enabled
+		go syncTelegramConfigToEsp(tok, chatID, enabled)
+	}
+}
+
+func (s *telegramService) syncFromEsp(botToken, chatID string, enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	botToken = strings.TrimSpace(botToken)
+	chatID = strings.TrimSpace(chatID)
+	mount := "/mnt/sda1"
+	path := "esp32-downloads"
+	if s.config != nil {
+		if s.config.Mount != "" {
+			mount = s.config.Mount
+		}
+		if s.config.Path != "" {
+			path = s.config.Path
+		}
+	}
+	configured := botToken != ""
+	s.config = &telegramConfig{
+		BotToken: botToken,
+		ChatID:   chatID,
+		Mount:    mount,
+		Path:     path,
+		Enabled:  enabled,
+	}
+	s.status.Configured = configured
+	s.status.Enabled = enabled
+	s.status.Running = configured && enabled
+	s.status.ChatID = chatID
+	s.status.Mount = mount
+	s.status.Path = path
+	if !configured || !enabled {
+		s.status.Connected = false
+	}
 }
 
 func (s *telegramService) updatePollStatus(connected bool, lastError string) {
@@ -160,77 +224,207 @@ func (s *telegramService) updatePollStatus(connected bool, lastError string) {
 	s.mu.Unlock()
 }
 
-func (s *telegramService) poll(ctx context.Context, config telegramConfig) {
-	var offset int64
-	var queuedUpdateID int64 = -1
-	queuedForUpdate := make(map[string]struct{})
-	for {
-		updates, err := telegramGetUpdates(ctx, config.BotToken, offset)
-		if err != nil {
-			s.updatePollStatus(false, "Telegram polling failed; check connectivity, token, or webhook configuration.")
-			if !waitContext(ctx, 5*time.Second) {
-				return
+// analyzeTelegramMessage inspects incoming Telegram text and decides whether it
+// belongs to the Downloader (URL-only messages) or the Root AI Agent (normal text,
+// questions referencing URLs, or ! shell commands).
+func analyzeTelegramMessage(text string) TelegramMessageAnalysis {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return TelegramMessageAnalysis{Route: TelegramRouteIgnore, Reason: "empty"}
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "/") {
+		cmdBase := strings.ToLower(strings.SplitN(fields[0], "@", 2)[0])
+		if cmdBase == "/start" || cmdBase == "/id" {
+			return TelegramMessageAnalysis{
+				Route:     TelegramRouteHelp,
+				Reason:    "help_cmd",
+				CleanText: trimmed,
 			}
-			continue
 		}
-		s.updatePollStatus(true, "")
-		retry := false
-		for _, update := range updates {
-			if queuedUpdateID != update.UpdateID {
-				queuedUpdateID = update.UpdateID
-				queuedForUpdate = make(map[string]struct{})
+		if cmdBase == "/exec" || cmdBase == "/sh" {
+			return TelegramMessageAnalysis{
+				Route:     TelegramRouteAI,
+				Reason:    "shell_cmd",
+				CleanText: trimmed,
 			}
-			message := update.Message
-			if message == nil {
-				message = update.ChannelPost
-			}
-			if telegramMessageMatchesChat(message, config.ChatID) {
-				text := strings.TrimSpace(message.Text + "\n" + message.Caption)
-				urls := parseDownloadURLs(text)
-				destination, destinationErr := validateDownloadDestination(config.Mount, config.Path)
-				if len(urls) > 0 && destinationErr != nil {
-					s.updatePollStatus(false, "Telegram destination is unavailable; verify the mounted USB folder.")
-					retry = true
-					break
-				}
-				allQueued := true
-				for _, downloadURL := range urls {
-					if _, exists := queuedForUpdate[downloadURL]; exists {
-						continue
-					}
-					if _, err := dlManager.addTask(downloadURL, destination); err != nil {
-						s.updatePollStatus(false, "Downloader could not queue Telegram URL: "+err.Error())
-						allQueued = false
-						break
-					}
-					queuedForUpdate[downloadURL] = struct{}{}
-				}
-				if !allQueued {
-					retry = true
-					break
-				}
-			}
-			offset = update.UpdateID + 1
-		}
-		if retry && !waitContext(ctx, 5*time.Second) {
-			return
 		}
 	}
+	if strings.HasPrefix(trimmed, "!") {
+		return TelegramMessageAnalysis{
+			Route:     TelegramRouteAI,
+			Reason:    "shell_cmd",
+			CleanText: trimmed,
+		}
+	}
+
+	rawMatches := telegramURLRegex.FindAllString(trimmed, -1)
+	seen := make(map[string]struct{}, len(rawMatches))
+	urls := make([]string, 0, len(rawMatches))
+	for _, m := range rawMatches {
+		u := trimExtractedURL(m)
+		if u == "" {
+			continue
+		}
+		if _, dup := seen[u]; dup {
+			continue
+		}
+		seen[u] = struct{}{}
+		urls = append(urls, u)
+	}
+
+	if len(urls) > 0 {
+		leftover := telegramURLRegex.ReplaceAllString(trimmed, " ")
+		onlySeparators := true
+		for _, r := range leftover {
+			if unicode.IsSpace(r) {
+				continue
+			}
+			switch r {
+			case ',', ';', '|', '<', '>', '(', ')', '[', ']', '{', '}', '"', '\'', '`':
+				continue
+			default:
+				onlySeparators = false
+			}
+			if !onlySeparators {
+				break
+			}
+		}
+		if onlySeparators {
+			return TelegramMessageAnalysis{
+				Route:     TelegramRouteDownloader,
+				Reason:    "url_only",
+				URLs:      urls,
+				CleanText: trimmed,
+			}
+		}
+		return TelegramMessageAnalysis{
+			Route:     TelegramRouteAI,
+			Reason:    "text_with_url",
+			URLs:      urls,
+			CleanText: trimmed,
+		}
+	}
+
+	return TelegramMessageAnalysis{
+		Route:     TelegramRouteAI,
+		Reason:    "normal_text",
+		CleanText: trimmed,
+	}
+}
+
+func trimExtractedURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	for u != "" {
+		last := u[len(u)-1]
+		switch last {
+		case '.', ',', ';', ':', '!', '?', '"', '\'', '`':
+			u = u[:len(u)-1]
+		case ')':
+			if strings.Count(u, "(") < strings.Count(u, ")") {
+				u = u[:len(u)-1]
+			} else {
+				goto parsed
+			}
+		case ']':
+			if strings.Count(u, "[") < strings.Count(u, "]") {
+				u = u[:len(u)-1]
+			} else {
+				goto parsed
+			}
+		case '}':
+			if strings.Count(u, "{") < strings.Count(u, "}") {
+				u = u[:len(u)-1]
+			} else {
+				goto parsed
+			}
+		default:
+			goto parsed
+		}
+	}
+parsed:
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	return u
+}
+
+func isAllowedTelegramChat(allowedList, chatID string) bool {
+	chatID = strings.TrimSpace(chatID)
+	allowedList = strings.TrimSpace(allowedList)
+	if chatID == "" || allowedList == "" {
+		return false
+	}
+	tokens := strings.FieldsFunc(allowedList, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ',' || r == ';' || r == '|'
+	})
+	for _, tok := range tokens {
+		if tok == chatID {
+			return true
+		}
+	}
+	return false
 }
 
 func telegramMessageMatchesChat(message *telegramMessage, allowedChatID string) bool {
-	return message != nil && message.Chat.ID.String() == allowedChatID
+	if message == nil {
+		return false
+	}
+	return isAllowedTelegramChat(allowedChatID, message.Chat.ID.String())
 }
 
-func waitContext(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+// splitTelegramMessage divides long replies into Telegram-safe UTF-8 chunks (<4096 chars).
+func splitTelegramMessage(text string, maxRunes int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
 	}
+	if maxRunes <= 0 {
+		maxRunes = 3800
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return []string{text}
+	}
+	chunks := make([]string, 0, (len(runes)/maxRunes)+1)
+	for start := 0; start < len(runes); {
+		end := start + maxRunes
+		if end >= len(runes) {
+			chunks = append(chunks, strings.TrimSpace(string(runes[start:])))
+			break
+		}
+		splitAt := end
+		minBreak := start + (maxRunes / 2)
+		for i := end; i > minBreak; i-- {
+			if runes[i-1] == '\n' {
+				splitAt = i
+				break
+			}
+		}
+		if splitAt == end {
+			for i := end; i > minBreak; i-- {
+				if runes[i-1] == ' ' || runes[i-1] == '\t' {
+					splitAt = i
+					break
+				}
+			}
+		}
+		part := strings.TrimSpace(string(runes[start:splitAt]))
+		if part != "" {
+			chunks = append(chunks, part)
+		}
+		start = splitAt
+		for start < len(runes) && (runes[start] == '\n' || runes[start] == ' ' || runes[start] == '\t') {
+			start++
+		}
+	}
+	return chunks
 }
 
 type telegramUpdate struct {
@@ -240,44 +434,12 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	Chat struct {
+	MessageID int64 `json:"message_id"`
+	Chat      struct {
 		ID json.Number `json:"id"`
 	} `json:"chat"`
 	Text    string `json:"text"`
 	Caption string `json:"caption"`
-}
-
-func telegramGetUpdates(ctx context.Context, token string, offset int64) ([]telegramUpdate, error) {
-	endpoint := "https://api.telegram.org/bot" + token + "/getUpdates"
-	query := url.Values{}
-	query.Set("timeout", "15")
-	query.Set("allowed_updates", `["message","channel_post"]`)
-	if offset > 0 {
-		query.Set("offset", strconv.FormatInt(offset, 10))
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
-	if err != nil {
-		return nil, errors.New("create Telegram request")
-	}
-	client := &http.Client{Timeout: 22 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, errors.New("Telegram request failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, errors.New("Telegram returned an unsuccessful status")
-	}
-	var result struct {
-		OK     bool             `json:"ok"`
-		Result []telegramUpdate `json:"result"`
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 2<<20))
-	decoder.UseNumber()
-	if err := decoder.Decode(&result); err != nil || !result.OK {
-		return nil, errors.New("Telegram returned an invalid response")
-	}
-	return result.Result, nil
 }
 
 func writePrivateJSON(path string, value interface{}) error {

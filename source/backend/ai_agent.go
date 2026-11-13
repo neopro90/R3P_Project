@@ -208,17 +208,7 @@ func ensureSystemBlueprintFile() string {
 }
 
 func isBareURLMessage(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	matches := urlExtractRegex.FindAllString(trimmed, -1)
-	if len(matches) == 0 {
-		return false
-	}
-	leftover := urlExtractRegex.ReplaceAllString(trimmed, "")
-	leftover = strings.TrimSpace(leftover)
-	return leftover == ""
+	return analyzeTelegramMessage(text).Route == TelegramRouteDownloader
 }
 
 func filterOutBareURLMessages(msgs []AIChatMessage) []AIChatMessage {
@@ -570,6 +560,10 @@ var (
 
 // Executes all root tool tags (<exec_cmd>, <write_file>, <uci_set>, <memory_save>, <download_url>)
 func executeAIToolBlocks(respText string, allowExec bool) ([]AIToolAction, []AICmdLog, []string, string) {
+	return executeAIToolBlocksForChat(respText, allowExec, "")
+}
+
+func executeAIToolBlocksForChat(respText string, allowExec bool, telegramChatID string) ([]AIToolAction, []AICmdLog, []string, string) {
 	var allToolEvents []AIToolAction
 	var allCmdLogs []AICmdLog
 	var cmdOutputs []string
@@ -594,7 +588,7 @@ func executeAIToolBlocks(respText string, allowExec bool) ([]AIToolAction, []AIC
 	for _, m := range dlMatches {
 		u := strings.TrimSpace(m[1])
 		if u != "" {
-			job, dup, err := enqueueEspJob(u, "ai_agent", "", false)
+			job, dup, err := enqueueEspJob(u, "ai_agent", telegramChatID, false)
 			outMsg := ""
 			if err != nil {
 				outMsg = "Lỗi thêm URL tải xuống: " + err.Error()
@@ -880,9 +874,18 @@ func processTelegramAIChat(text, chatID string) string {
 	cfg := loadAIConfig()
 	activeSessID, _ := getActiveSessionMessages(cfg.ActiveSessionID)
 
-	// Direct root shell command via Telegram (!cmd or /exec cmd)
-	if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "/exec ") {
-		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, "!"), "/exec "))
+	// Direct root shell command via Telegram (!cmd, /exec cmd, /sh cmd)
+	if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "/exec ") || strings.HasPrefix(trimmed, "/sh ") {
+		cmdStr := trimmed
+		switch {
+		case strings.HasPrefix(cmdStr, "!"):
+			cmdStr = strings.TrimPrefix(cmdStr, "!")
+		case strings.HasPrefix(cmdStr, "/exec "):
+			cmdStr = strings.TrimPrefix(cmdStr, "/exec ")
+		case strings.HasPrefix(cmdStr, "/sh "):
+			cmdStr = strings.TrimPrefix(cmdStr, "/sh ")
+		}
+		cmdStr = strings.TrimSpace(cmdStr)
 		appendMessageToSession(activeSessID, AIChatMessage{
 			Role:      "user",
 			Content:   "📱 [Telegram] " + trimmed,
@@ -961,7 +964,7 @@ func processTelegramAIChat(text, chatID string) string {
 			finalReply = "❌ Lỗi kết nối AI API: " + err.Error()
 			break
 		}
-		evts, logs, outputs, cleaned := executeAIToolBlocks(respText, cfg.AutoExecute)
+		evts, logs, outputs, cleaned := executeAIToolBlocksForChat(respText, cfg.AutoExecute, chatID)
 		allToolEvents = append(allToolEvents, evts...)
 		allCmdLogs = append(allCmdLogs, logs...)
 		finalReply = cleaned

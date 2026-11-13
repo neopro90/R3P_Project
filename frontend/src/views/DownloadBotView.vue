@@ -26,6 +26,18 @@ interface DownloadFileItem {
   category: string
 }
 
+interface TelegramLogItem {
+  id: string
+  updateId: number
+  chatId: string
+  url: string
+  decision: string
+  reason: string
+  jobId: string
+  jobStatus: string
+  receivedAt: string
+}
+
 const jobs = ref<DownloadJob[]>([])
 const downloadedFiles = ref<DownloadFileItem[]>([])
 const activeTab = ref<'all' | 'running' | 'completed' | 'failed'>('all')
@@ -41,7 +53,9 @@ const notice = ref<string | null>(null)
 
 const showDebugPanel = ref(false)
 const runningDebug = ref(false)
+const testingTelegram = ref(false)
 const debugResult = ref<any>(null)
+const telegramLogs = ref<TelegramLogItem[]>([])
 const debugNotice = ref<string | null>(null)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -194,13 +208,63 @@ async function retryJob(job: DownloadJob) {
   }
 }
 
+async function fetchTelegramLogs() {
+  try {
+    const res = await fetch('/api/local/telegram/log').then(r => r.json())
+    if (Array.isArray(res?.entries)) {
+      telegramLogs.value = res.entries
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function clearTelegramLogs() {
+  try {
+    await fetch('/api/local/log/delete-all', { method: 'DELETE' })
+    telegramLogs.value = []
+    debugNotice.value = 'Đã xoá nhật ký phân tích Telegram.'
+    setTimeout(() => { debugNotice.value = null }, 3000)
+  } catch (err: any) {
+    debugNotice.value = `Lỗi xoá log: ${err?.message || err}`
+  }
+}
+
+async function sendTelegramTest() {
+  testingTelegram.value = true
+  debugNotice.value = 'Đang gửi tin nhắn thử tới Telegram...'
+  try {
+    const res = await fetch('/api/local/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then(r => r.json())
+    if (res?.sent) {
+      debugNotice.value = `✅ Đã gửi tin thử thành công tới Chat ID ${res.chatId}!`
+    } else {
+      debugNotice.value = `❌ Lỗi gửi Telegram: ${res?.error || 'Không rõ nguyên nhân'}`
+    }
+    await runDiagnostic(false)
+  } catch (err: any) {
+    debugNotice.value = `❌ Lỗi kết nối Telegram: ${err?.message || err}`
+  } finally {
+    testingTelegram.value = false
+    setTimeout(() => { debugNotice.value = null }, 5000)
+  }
+}
+
 async function runDiagnostic(autoFix = false) {
   runningDebug.value = true
-  debugNotice.value = autoFix ? 'Đang tự động đồng bộ và sửa cấu hình hệ thống…' : 'Đang kiểm tra kết nối IP, Port và Thư mục…'
+  debugNotice.value = autoFix ? 'Đang tự động đồng bộ và sửa cấu hình hệ thống…' : 'Đang kiểm tra kết nối IP, Telegram, Port và Thư mục…'
   try {
     const method = autoFix ? 'POST' : 'GET'
     const res = await fetch('/api/local/debug-sync', { method }).then(r => r.json())
     debugResult.value = res
+    if (Array.isArray(res?.telegram_logs)) {
+      telegramLogs.value = res.telegram_logs
+    } else {
+      await fetchTelegramLogs()
+    }
     debugNotice.value = res?.message || 'Kiểm tra hoàn tất!'
     if (autoFix) {
       await fetchJobs()
@@ -216,9 +280,36 @@ async function runDiagnostic(autoFix = false) {
 
 function toggleDebugPanel() {
   showDebugPanel.value = !showDebugPanel.value
-  if (showDebugPanel.value && !debugResult.value) {
+  if (showDebugPanel.value) {
     void runDiagnostic(false)
   }
+}
+
+function telegramStatusBadge(res: any): string {
+  const st = res?.telegram_polling_state
+  if (st === 'polling') return 'badge-green'
+  if (st === 'conflict' || st === 'auth_error' || st === 'error') return 'badge-red'
+  if (st === 'disabled' || st === 'unconfigured') return 'badge-orange'
+  return 'badge-blue'
+}
+
+function telegramStatusLabel(res: any): string {
+  const st = res?.telegram_polling_state
+  if (st === 'polling') return 'ĐANG POLLING'
+  if (st === 'conflict') return 'XUNG ĐỘT 409'
+  if (st === 'auth_error') return 'SAI TOKEN'
+  if (st === 'error') return 'LỖI KẾT NỐI'
+  if (st === 'disabled') return 'ĐÃ TẮT'
+  if (st === 'unconfigured') return 'CHƯA CẤU HÌNH'
+  return 'ĐANG KHỞI TẠO'
+}
+
+function logDecisionClass(decision: string): string {
+  if (decision === 'ACCEPTED') return 'badge-green'
+  if (decision === 'AI_AGENT') return 'badge-blue'
+  if (decision === 'HELP') return 'badge-purple'
+  if (decision === 'DUPLICATE') return 'badge-orange'
+  return 'badge-red'
 }
 
 function formatBytes(bytes: number): string {
@@ -318,6 +409,14 @@ onUnmounted(() => {
         <div class="flex items-center gap-2">
           <button
             type="button"
+            class="btn-secondary text-xs py-1 px-2.5"
+            :disabled="testingTelegram"
+            @click="sendTelegramTest"
+          >
+            <span>📨</span> {{ testingTelegram ? 'Đang gửi...' : 'Gửi Tin Thử Telegram' }}
+          </button>
+          <button
+            type="button"
             class="btn-primary text-xs py-1 px-2.5"
             :disabled="runningDebug"
             @click="runDiagnostic(true)"
@@ -338,6 +437,15 @@ onUnmounted(() => {
       <div v-if="debugNotice" class="p-2 rounded bg-sky-500/20 border border-sky-400/40 text-sky-200 text-xs flex items-center gap-2">
         <span class="animate-spin text-sm" v-if="runningDebug">⚙</span>
         <span>{{ debugNotice }}</span>
+      </div>
+
+      <!-- Telegram Error Banner -->
+      <div
+        v-if="debugResult?.telegram_last_error"
+        class="p-2.5 rounded-lg bg-red-500/15 border border-red-500/40 text-red-200 text-xs space-y-1"
+      >
+        <div class="font-bold text-red-300">⚠️ Lỗi nhận tin nhắn Telegram ({{ telegramStatusLabel(debugResult) }}):</div>
+        <div class="mono break-all text-[11px]">{{ debugResult.telegram_last_error }}</div>
       </div>
 
       <!-- 4 Diagnostic Cards -->
@@ -361,7 +469,7 @@ onUnmounted(() => {
             </span>
           </div>
           <div class="text-gray-300 truncate mono text-[12px] font-medium">{{ debugResult?.output_dir || '/mnt/sda1/esp32-downloads' }}</div>
-          <div class="text-gray-300">Trống: <span class="mono text-emerald-400 font-bold">{{ debugResult?.storage?.freeGb || '234' }} GB</span> (USB 3.0 ext4)</div>
+          <div class="text-gray-300">Trống: <span class="mono text-emerald-400 font-bold">{{ debugResult?.storage?.freeGb || '0' }} GB</span></div>
         </div>
 
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
@@ -371,17 +479,73 @@ onUnmounted(() => {
               {{ debugResult?.yt_dlp_version ? 'SẴN SÀNG' : 'CHƯA TÌM THẤY' }}
             </span>
           </div>
-          <div class="text-gray-300">Phiên bản: <span class="mono text-emerald-300 font-bold">{{ debugResult?.yt_dlp_version || '2026.10.21' }}</span></div>
+          <div class="text-gray-300">Phiên bản: <span class="mono text-emerald-300 font-bold">{{ debugResult?.yt_dlp_version || 'N/A' }}</span></div>
           <div class="text-gray-300">Đường dẫn: <span class="mono text-gray-200">/usr/bin/yt-dlp</span></div>
         </div>
 
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
           <div class="flex items-center justify-between font-bold text-gray-100">
             <span>🤖 Telegram & Tự Động</span>
-            <span class="badge badge-green">TRỰC TUYẾN</span>
+            <span class="badge" :class="telegramStatusBadge(debugResult)">
+              {{ telegramStatusLabel(debugResult) }}
+            </span>
           </div>
-          <div class="text-gray-300">Telegram Bot: <span class="mono text-emerald-400 font-bold">{{ debugResult?.telegram_token_set ? 'Đã Cấu Hình Token' : 'Chưa Nhập' }}</span></div>
-          <div class="text-gray-300">Chat ID: <span class="mono text-gray-100 font-bold">{{ debugResult?.telegram_chat_id || '2041840936' }}</span></div>
+          <div class="text-gray-300 truncate">
+            Bot:
+            <span class="mono text-emerald-400 font-bold">
+              {{ debugResult?.telegram_token_set ? ((debugResult?.telegram_bot_username ? '@' + debugResult.telegram_bot_username + ' ' : '') + '(****' + (debugResult?.telegram_token_last4 || '') + ')') : 'Chưa Nhập' }}
+            </span>
+          </div>
+          <div class="text-gray-300 truncate">Chat ID: <span class="mono text-gray-100 font-bold">{{ debugResult?.telegram_chat_id || 'Chưa Cấu Hình' }}</span></div>
+          <div class="text-[11px] text-gray-400 mono truncate">
+            Offset: {{ debugResult?.telegram_update_offset || 0 }} · Webhook: {{ debugResult?.telegram_webhook_url ? 'Có (Sẽ tự xoá)' : 'Trống' }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Telegram Routing Log Table -->
+      <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-sky-300 text-xs">
+            🧭 Nhật Ký Phân Tích Tin Nhắn Telegram (Chỉ URL → Downloader · Tin Thường → AI)
+          </span>
+          <button
+            v-if="telegramLogs.length > 0"
+            type="button"
+            class="text-[11px] text-gray-400 hover:text-red-300 cursor-pointer"
+            @click="clearTelegramLogs"
+          >
+            🗑️ Xoá Nhật Ký
+          </button>
+        </div>
+        <div v-if="telegramLogs.length === 0" class="text-[11.5px] text-gray-400 py-2">
+          Chưa có sự kiện phân tích tin nhắn Telegram nào từ lúc khởi động.
+        </div>
+        <div v-else class="overflow-x-auto max-h-48 overflow-y-auto">
+          <table class="w-full text-left text-[11.5px] border-collapse">
+            <thead class="text-gray-400 border-b border-white/10">
+              <tr>
+                <th class="py-1 pr-2">Thời Gian</th>
+                <th class="py-1 pr-2">Chat</th>
+                <th class="py-1 pr-2">Định Tuyến</th>
+                <th class="py-1 pr-2">Nội Dung / URL</th>
+                <th class="py-1 pr-2">Chi Tiết</th>
+                <th class="py-1">Trạng Thái</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5 text-gray-200">
+              <tr v-for="item in telegramLogs" :key="item.id">
+                <td class="py-1 pr-2 mono text-gray-400 whitespace-nowrap">{{ item.receivedAt }}</td>
+                <td class="py-1 pr-2 mono whitespace-nowrap">{{ item.chatId }}</td>
+                <td class="py-1 pr-2 whitespace-nowrap">
+                  <span class="badge text-[10px]" :class="logDecisionClass(item.decision)">{{ item.decision }}</span>
+                </td>
+                <td class="py-1 pr-2 max-w-[220px] truncate mono text-sky-300" :title="item.url">{{ item.url }}</td>
+                <td class="py-1 pr-2 text-gray-300">{{ item.reason }}</td>
+                <td class="py-1 mono text-emerald-300 whitespace-nowrap">{{ item.jobStatus }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -687,15 +851,20 @@ onUnmounted(() => {
     <div class="pro-card p-4 bg-gradient-to-r from-blue-950/20 to-sky-950/20 border border-sky-500/20 space-y-2.5">
       <div class="flex items-center gap-2 text-sky-400 font-bold text-sm">
         <span>✈️</span>
-        <span>Tính Năng Tự Động Tải Siêu Tiện Lợi Qua Telegram Bot</span>
+        <span>Tự Động Phân Tích & Điều Hướng Tin Nhắn Telegram (Downloader + Root AI)</span>
       </div>
       <p class="text-xs text-gray-300 leading-relaxed font-medium">
-        Bạn không cần phải mở giao diện web này mỗi khi muốn tải video. Chỉ cần mở ứng dụng <strong>Telegram</strong> trên điện thoại và gửi trực tiếp liên kết bất kỳ (TikTok, YouTube, Facebook, Reels, Shorts...) vào Bot. Router R3P sẽ tự động nhận diện URL, kích hoạt <code>yt-dlp</code> tốc độ cao và lưu file an toàn vào ổ cứng USB 3.0!
+        Mở <strong>Telegram</strong> và nhắn cho Bot bất cứ lúc nào: nếu tin nhắn <strong>chỉ chứa URL</strong> (TikTok, YouTube, Facebook, Reels, Shorts...), hệ thống tự chuyển cho module <code>yt-dlp</code> tải về ổ cứng USB; nếu là <strong>tin nhắn thông thường</strong>, câu hỏi (kể cả có nhắc link) hoặc lệnh <code>!&lt;lệnh&gt;</code>, hệ thống tự chuyển cho <strong>Trợ Lý AI Root R3P</strong> xử lý và phản hồi!
       </p>
       <div class="flex flex-wrap items-center gap-4 text-xs text-gray-400 pt-1 mono">
-        <div>Bot Token: <span class="text-emerald-400 font-bold">9246238020:AAHuEx...</span></div>
-        <div>Chat ID Cấp Quyền: <span class="text-gray-200 font-bold">2041840936</span></div>
-        <div>Thư mục đích: <span class="text-purple-300 font-bold">/mnt/sda1/esp32-downloads</span></div>
+        <div>
+          Bot Token:
+          <span class="text-emerald-400 font-bold">
+            {{ debugResult?.telegram_token_set ? ((debugResult?.telegram_bot_username ? '@' + debugResult.telegram_bot_username + ' · ' : '') + '****' + (debugResult?.telegram_token_last4 || '')) : 'Chưa cấu hình' }}
+          </span>
+        </div>
+        <div>Chat ID Cấp Quyền: <span class="text-gray-200 font-bold">{{ debugResult?.telegram_chat_id || 'Chưa cấu hình' }}</span></div>
+        <div>Thư mục đích: <span class="text-purple-300 font-bold">{{ outputDir }}</span></div>
       </div>
     </div>
   </div>
