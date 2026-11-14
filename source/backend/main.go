@@ -32,16 +32,16 @@ import (
 	"time"
 )
 
-var Version = "v1.1.26"
+var Version = "v1.1.27"
 
-// RevisionStr can be overridden via -ldflags="-X main.RevisionStr=26"
-var RevisionStr = "26"
+// RevisionStr can be overridden via -ldflags="-X main.RevisionStr=27"
+var RevisionStr = "27"
 
 func currentRevision() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(RevisionStr)); err == nil && n > 0 {
 		return n
 	}
-	return 26
+	return 27
 }
 
 // BuildDate is injected at compile time via -ldflags="-X main.BuildDate=..."
