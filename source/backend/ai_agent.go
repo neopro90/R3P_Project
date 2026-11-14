@@ -219,11 +219,46 @@ var (
 	aiMemories      []AIMemoryEntry
 )
 
+var (
+	aiTelemetryMu      sync.Mutex
+	aiTelemetryCache   aiTelemetrySnapshot
+	aiTelemetryCacheAt time.Time
+
+	aiModelCooldownMu    sync.Mutex
+	aiModelCooldownUntil = map[string]time.Time{}
+)
+
+type aiTelemetrySnapshot struct {
+	osDesc      string
+	dfOut       string
+	freeOut     string
+	ipOut       string
+	routeOut    string
+	sysOut      string
+	netOut      string
+	wifiOut     string
+	wifiSummary string
+	netStatus   InternetStatus
+	dbSummary   SettingsDBSummary
+	adblockInfo string
+}
+
+func invalidateAITelemetryCache() {
+	aiTelemetryMu.Lock()
+	aiTelemetryCacheAt = time.Time{}
+	aiTelemetryCache = aiTelemetrySnapshot{}
+	aiTelemetryMu.Unlock()
+}
+
 func resetAIMemoryCaches() {
 	aiMu.Lock()
 	aiSessions = nil
 	aiMemories = nil
 	aiMu.Unlock()
+	invalidateAITelemetryCache()
+	aiModelCooldownMu.Lock()
+	aiModelCooldownUntil = map[string]time.Time{}
+	aiModelCooldownMu.Unlock()
 }
 
 const currentSystemBlueprintRev = "v1.1.26-r3p-os-v2"
@@ -493,7 +528,7 @@ func loadAIMemoriesLocked() []AIMemoryEntry {
 
 func saveAIMemoriesLocked() {
 	if len(aiMemories) > 100 {
-		aiMemories = aiMemories[len(aiMemories)-100:]
+		aiMemories = aiMemories[:100]
 	}
 	_ = settingsDBSaveJSON(bucketCollections, "ai_memory", aiMemoryFile, 0600, aiMemories)
 }
@@ -582,6 +617,35 @@ func getActiveSessionMessages(sessionID string) (string, []AIChatMessage) {
 	return aiSessions[0].ID, filterOutBareURLMessages(aiSessions[0].Messages)
 }
 
+func truncateSessionText(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "\n...(trimmed)"
+}
+
+func cloneAndTrimMessageForStorage(msg AIChatMessage) AIChatMessage {
+	const maxStoredOutputChars = 1200
+	stored := msg
+	if msg.ToolEvents != nil {
+		evts := make([]AIToolAction, len(msg.ToolEvents))
+		for i, e := range msg.ToolEvents {
+			e.Output = truncateSessionText(e.Output, maxStoredOutputChars)
+			evts[i] = e
+		}
+		stored.ToolEvents = evts
+	}
+	if msg.Commands != nil {
+		cmds := make([]AICmdLog, len(msg.Commands))
+		for i, c := range msg.Commands {
+			c.Output = truncateSessionText(c.Output, maxStoredOutputChars)
+			cmds[i] = c
+		}
+		stored.Commands = cmds
+	}
+	return stored
+}
+
 func appendMessageToSession(sessionID string, msg AIChatMessage) []AIChatMessage {
 	if msg.Role == "user" && isBareURLMessage(msg.Content) {
 		_, msgs := getActiveSessionMessages(sessionID)
@@ -604,7 +668,16 @@ func appendMessageToSession(sessionID string, msg AIChatMessage) []AIChatMessage
 	if idx == -1 {
 		idx = 0
 	}
-	aiSessions[idx].Messages = append(aiSessions[idx].Messages, msg)
+	storedMsg := cloneAndTrimMessageForStorage(msg)
+	aiSessions[idx].Messages = append(aiSessions[idx].Messages, storedMsg)
+	// Prune verbose command/tool logs from older history messages to limit r3p.db flash growth.
+	const keepDetailedTail = 30
+	if n := len(aiSessions[idx].Messages); n > keepDetailedTail {
+		for i := 0; i < n-keepDetailedTail; i++ {
+			aiSessions[idx].Messages[i].Commands = nil
+			aiSessions[idx].Messages[i].ToolEvents = nil
+		}
+	}
 	aiSessions[idx].UpdatedAt = time.Now().Format("2006-01-02 15:04")
 	// Auto-title new session from first user message
 	if msg.Role == "user" && (strings.HasPrefix(aiSessions[idx].Title, "Phiên Mới") || aiSessions[idx].Title == "New Session") {
@@ -739,8 +812,7 @@ func readOSReleaseSummary() string {
 	return "OpenWrt R3P OS"
 }
 
-func buildSystemArchitecturePrompt(extra string) string {
-	blueprint := ensureSystemBlueprintFile()
+func captureAITelemetrySnapshot() aiTelemetrySnapshot {
 	osDesc := readOSReleaseSummary()
 	dfOut, _ := runCmd(2, "df", "-h")
 	freeOut, _ := runCmd(2, "free", "-m")
@@ -749,77 +821,138 @@ func buildSystemArchitecturePrompt(extra string) string {
 	sysRaw, _ := runCmd(2, "uci", "show", "system")
 	netRaw, _ := runCmd(2, "uci", "show", "network")
 	wifiRaw, _ := runCmd(2, "uci", "show", "wireless")
-	sysOut := redactSensitiveLines(sysRaw)
-	netOut := redactSensitiveLines(netRaw)
-	wifiOut := redactSensitiveLines(wifiRaw)
-	wifiSummary := formatWirelessSummaryForPrompt(wifiRaw)
-	netStatus := getInternetStatusSnapshot()
-	dbSummary := getSettingsDBSummary()
 
 	adblockInfo := "không có /tmp/dnsmasq.d/r3p-adblock.conf"
 	if st, err := os.Stat("/tmp/dnsmasq.d/r3p-adblock.conf"); err == nil {
 		adblockInfo = fmt.Sprintf("/tmp/dnsmasq.d/r3p-adblock.conf (%d bytes)", st.Size())
 	}
 
+	return aiTelemetrySnapshot{
+		osDesc:      osDesc,
+		dfOut:       dfOut,
+		freeOut:     freeOut,
+		ipOut:       ipOut,
+		routeOut:    routeOut,
+		sysOut:      redactSensitiveLines(sysRaw),
+		netOut:      redactSensitiveLines(netRaw),
+		wifiOut:     redactSensitiveLines(wifiRaw),
+		wifiSummary: formatWirelessSummaryForPrompt(wifiRaw),
+		netStatus:   getInternetStatusSnapshot(),
+		dbSummary:   getSettingsDBSummary(),
+		adblockInfo: adblockInfo,
+	}
+}
+
+func getAITelemetrySnapshot() aiTelemetrySnapshot {
+	const telemetryTTL = 20 * time.Second
+	aiTelemetryMu.Lock()
+	if !aiTelemetryCacheAt.IsZero() && time.Since(aiTelemetryCacheAt) < telemetryTTL {
+		snap := aiTelemetryCache
+		aiTelemetryMu.Unlock()
+		return snap
+	}
+	aiTelemetryMu.Unlock()
+
+	snap := captureAITelemetrySnapshot()
+	aiTelemetryMu.Lock()
+	aiTelemetryCache = snap
+	aiTelemetryCacheAt = time.Now()
+	aiTelemetryMu.Unlock()
+	return snap
+}
+
+func needsFullUCIContext(query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return true
+	}
+	keywords := []string{
+		"uci", "wifi", "wi-fi", "ssid", "wireless", "2.4", "5g", "radio",
+		"mạng", "mang", "network", "wan", "lan", "wwan", "wisp", "repeater",
+		"dhcp", "dns", "firewall", "fw4", "cấu hình", "cau hinh", "config",
+		"đổi", "doi", "sửa", "sua", "bật", "bat", "tắt", "tat", "enable", "disable",
+		"ip", "route", "ssh", "dropbear", "system", "hostname", "adblock",
+		"port", "forward", "nat", "bridge", "vlan", "password", "key", "mật khẩu", "mat khau",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(q, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSystemArchitecturePrompt(extra string) string {
+	return buildSystemArchitecturePromptForQuery(extra, "uci wireless network system")
+}
+
+func buildSystemArchitecturePromptForQuery(extra, userQuery string) string {
+	blueprint := ensureSystemBlueprintFile()
+	snap := getAITelemetrySnapshot()
+
 	mems := loadAIMemories()
+	const maxPromptMemories = 20
 	var memLines []string
-	for _, m := range mems {
+	limit := len(mems)
+	if limit > maxPromptMemories {
+		limit = maxPromptMemories
+	}
+	for _, m := range mems[:limit] {
 		memLines = append(memLines, fmt.Sprintf("- [%s] (%s): %s", m.Category, m.CreatedAt, m.Content))
+	}
+	if len(mems) > maxPromptMemories {
+		memLines = append(memLines, fmt.Sprintf("- ...(và %d ghi nhớ cũ hơn trong r3p.db)", len(mems)-maxPromptMemories))
 	}
 	memBlock := "Chưa có ghi nhớ nào."
 	if len(memLines) > 0 {
 		memBlock = strings.Join(memLines, "\n")
 	}
 
-	return fmt.Sprintf(`Bạn là Root System AI Administrator nhúng trực tiếp trong R3P Home Server OS (Xiaomi Mi Router 3 Pro - mir3p).
-Bạn có TOÀN QUYỀN ROOT để kiểm tra, cấu hình, sửa file, chỉnh UCI, quản lý mạng/Wi-Fi/AdBlock/Download và ghi nhớ thông tin hệ thống.
+	uciSection := "- Cấu hình UCI chi tiết (system/network/wireless): đã rút gọn để tiết kiệm token; dùng `<exec_cmd>uci show <package></exec_cmd>` nếu cần xem toàn bộ."
+	if needsFullUCIContext(userQuery) {
+		uciSection = fmt.Sprintf(`- Cấu hình Hệ thống (uci show system):
+%s
+- Cấu hình Mạng (uci show network, đã che secret):
+%s
+- Cấu hình Wi-Fi chi tiết (uci show wireless, đã che key):
+%s`, snap.sysOut, snap.netOut, snap.wifiOut)
+	}
 
-=== TÀI LIỆU KIẾN TRÚC HỆ THỐNG (SYSTEM BLUEPRINT) ===
+	return fmt.Sprintf(`Bạn là Root System AI Administrator nhúng trực tiếp trong R3P Home Server OS (Xiaomi Mi Router 3 Pro - mir3p, quyền root).
+
+=== SYSTEM BLUEPRINT ===
 %s
 
-=== BỘ NHỚ DÀI HẠN CỦA AI (r3p.db -> collections/ai_memory) ===
+=== BỘ NHỚ DÀI HẠN (r3p.db -> collections/ai_memory) ===
 %s
 
-=== TRẠNG THÁI HỆ THỐNG THỜI GIAN THỰC (LIVE TELEMETRY) ===
+=== TELEMETRY HIỆN TẠI ===
 - Firmware / OS: %s (Rev %s) | %s
 - Embedded DB: %s (initialized=%v, keys=%d, size=%d bytes)
 - AdBlock Runtime: %s
 - Internet: Online=%v | Mode=%s | Interface=%s | Latency=%.1fms | External IP=%s (%s)
 - RAM (free -m):
 %s
-- Dung lượng ổ đĩa (df -h):
+- Ổ đĩa (df -h):
 %s
-- Địa chỉ IP các cổng mạng (ip -br addr):
+- IP các cổng (ip -br addr):
 %s
-- Bảng định tuyến (ip route):
+- Định tuyến (ip route):
 %s
 - Tóm tắt Wi-Fi đã giải mã:
 %s
-- Cấu hình Hệ thống (uci show system):
-%s
-- Cấu hình Mạng (uci show network, đã che secret):
-%s
-- Cấu hình Wi-Fi chi tiết (uci show wireless, đã che key):
 %s
 
-=== HƯỚNG DẪN SỬ DỤNG CÔNG CỤ ROOT (TOOL DIRECTIVES) ===
-Khi người dùng yêu cầu kiểm tra, cài đặt, chỉnh sửa hệ thống, lưu ghi nhớ, hoặc tải video:
-1. Thực thi lệnh Shell BusyBox ash với quyền root:
-   <exec_cmd>lệnh shell tại đây</exec_cmd>
-2. Ghi hoặc cập nhật file cấu hình / script trên hệ thống:
-   <write_file path="/đường/dẫn/file">nội dung file</write_file>
-3. Thay đổi cấu hình OpenWrt UCI (KHÔNG bọc thêm nháy đơn '...' quanh giá trị; hệ thống tự commit, xác minh lại bằng uci get và tự reload service):
-   <uci_set>
-   wireless.default_radio0.ssid=TenMoi
-   </uci_set>
-4. Ghi nhớ thông tin/quy tắc/cài đặt mới vào bộ nhớ dài hạn (r3p.db -> collections/ai_memory):
-   <memory_save>nội dung cần ghi nhớ lâu dài</memory_save>
-5. Đẩy URL vào hàng đợi tải xuống R3P Downloader:
-   <download_url>https://...</download_url>
+=== THẺ CÔNG CỤ ROOT ===
+- Shell: <exec_cmd>lệnh</exec_cmd> | Ghi file: <write_file path="/đường/dẫn">nội dung</write_file>
+- Sửa UCI (KHÔNG bọc nháy '...' quanh giá trị; tự commit, verify bằng uci get & reload service):
+  <uci_set>
+  wireless.default_radio0.ssid=TenMoi
+  </uci_set>
+- Nhớ vào r3p.db -> collections/ai_memory: <memory_save>nội dung</memory_save> | Tải URL: <download_url>https://...</download_url>
+QUY TẮC: Chỉ báo "Đã cập nhật/sửa xong" khi kết quả thực thi không có Errors và giá trị verified/đầu ra khớp đúng yêu cầu.
 
-QUY TẮC BẮT BUỘC: Không bao giờ khẳng định "Đã cập nhật/sửa xong" nếu đầu ra thực thi công cụ có Errors hoặc giá trị verified chưa khớp đúng yêu cầu.
-
-%s`, blueprint, memBlock, Version, RevisionStr, osDesc, dbSummary.Path, dbSummary.Initialized, dbSummary.TotalKeys, dbSummary.SizeBytes, adblockInfo, netStatus.Online, netStatus.WanMode, netStatus.WanIface, netStatus.LatencyMs, netStatus.ExternalIP, netStatus.ISP, freeOut, dfOut, ipOut, routeOut, wifiSummary, sysOut, netOut, wifiOut, extra)
+%s`, blueprint, memBlock, Version, RevisionStr, snap.osDesc, snap.dbSummary.Path, snap.dbSummary.Initialized, snap.dbSummary.TotalKeys, snap.dbSummary.SizeBytes, snap.adblockInfo, snap.netStatus.Online, snap.netStatus.WanMode, snap.netStatus.WanIface, snap.netStatus.LatencyMs, snap.netStatus.ExternalIP, snap.netStatus.ISP, snap.freeOut, snap.dfOut, snap.ipOut, snap.routeOut, snap.wifiSummary, uciSection, extra)
 }
 
 type uciSetDirective struct {
@@ -968,6 +1101,33 @@ func executeAIToolBlocksForChat(respText string, allowExec bool, telegramChatID 
 				continue
 			}
 			t0 := time.Now()
+			if guardErr := validateAIWriteFilePath(targetPath); guardErr != nil {
+				durMs := time.Since(t0).Milliseconds()
+				errMsg := "Lỗi bảo vệ file " + targetPath + ": " + guardErr.Error()
+				allToolEvents = append(allToolEvents, AIToolAction{
+					Tool:    "write_file",
+					Command: "write " + targetPath,
+					Output:  errMsg,
+					Success: false,
+				})
+				allCmdLogs = append(allCmdLogs, AICmdLog{
+					Command:    "write_file " + targetPath,
+					Output:     errMsg,
+					ExitCode:   1,
+					DurationMs: durMs,
+				})
+				cmdOutputs = append(cmdOutputs, fmt.Sprintf("[WRITE_FILE %s]\n%s", targetPath, errMsg))
+				continue
+			}
+			cleanSlash := filepath.ToSlash(filepath.Clean(targetPath))
+			if strings.HasPrefix(cleanSlash, "/etc/config/") {
+				if pkgName := strings.TrimPrefix(cleanSlash, "/etc/config/"); pkgName != "" && !strings.Contains(pkgName, "/") {
+					if orig, rErr := os.ReadFile(targetPath); rErr == nil {
+						_ = os.MkdirAll("/etc/r3p/backups", 0700)
+						_ = os.WriteFile("/etc/r3p/backups/"+pkgName+".ai.bak", orig, 0600)
+					}
+				}
+			}
 			_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
 			perm := os.FileMode(0644)
 			if strings.HasSuffix(targetPath, ".sh") || strings.HasPrefix(targetPath, "/etc/init.d/") || strings.HasPrefix(targetPath, "/etc/hotplug.d/") {
@@ -1162,6 +1322,10 @@ func executeAIToolBlocksForChat(respText string, allowExec bool, telegramChatID 
 		}
 	}
 
+	if len(allCmdLogs) > 0 {
+		invalidateAITelemetryCache()
+	}
+
 	cleaned := execCmdRegex.ReplaceAllString(respText, "")
 	cleaned = writeFileRegex.ReplaceAllString(cleaned, "")
 	cleaned = uciSetRegex.ReplaceAllString(cleaned, "")
@@ -1170,6 +1334,84 @@ func executeAIToolBlocksForChat(respText string, allowExec bool, telegramChatID 
 	cleaned = strings.TrimSpace(cleaned)
 
 	return allToolEvents, allCmdLogs, cmdOutputs, cleaned
+}
+
+func validateAIWriteFilePath(raw string) error {
+	p := strings.TrimSpace(raw)
+	if p == "" || strings.ContainsRune(p, '\x00') {
+		return errors.New("đường dẫn file rỗng hoặc chứa ký tự không hợp lệ")
+	}
+	for _, seg := range strings.Split(strings.ReplaceAll(p, "\\", "/"), "/") {
+		if seg == ".." {
+			return fmt.Errorf("không cho phép '..' trong đường dẫn: %s", p)
+		}
+	}
+	slash := filepath.ToSlash(filepath.Clean(p))
+	protectedPrefixes := []string{
+		"/etc/r3p/r3p.db",
+		"/etc/r3p/api-token",
+		"/etc/r3p/aria2-rpc-token",
+		"/overlay/upper/etc/r3p/r3p.db",
+		"/overlay/upper/etc/r3p/api-token",
+		"/overlay/upper/etc/r3p/aria2-rpc-token",
+		"/etc/shadow",
+		"/etc/passwd",
+		"/etc/group",
+		"/usr/bin/r3p-api",
+	}
+	for _, pref := range protectedPrefixes {
+		if slash == pref || strings.HasPrefix(slash, pref+".") || strings.HasPrefix(slash, pref+"-") {
+			return fmt.Errorf("từ chối ghi đè file hệ thống lõi %s qua <write_file> (hãy dùng API, uci_set hoặc công cụ chuyên biệt)", slash)
+		}
+	}
+	return nil
+}
+
+func filterModelsByCooldown(models []string, now time.Time) []string {
+	aiModelCooldownMu.Lock()
+	defer aiModelCooldownMu.Unlock()
+	var ready []string
+	for _, m := range models {
+		until, ok := aiModelCooldownUntil[m]
+		if !ok || !now.Before(until) {
+			if ok {
+				delete(aiModelCooldownUntil, m)
+			}
+			ready = append(ready, m)
+		}
+	}
+	if len(ready) == 0 {
+		return models
+	}
+	return ready
+}
+
+func recordModelCooldown(model string, statusCode int, body string, now time.Time) {
+	var dur time.Duration
+	switch statusCode {
+	case http.StatusNotFound:
+		dur = time.Hour
+	case http.StatusServiceUnavailable:
+		dur = 90 * time.Second
+	case http.StatusTooManyRequests:
+		lower := strings.ToLower(body)
+		if strings.Contains(lower, "free_tier") || strings.Contains(lower, "per day") || strings.Contains(lower, "resource_exhausted") {
+			dur = 30 * time.Minute
+		} else {
+			dur = 5 * time.Minute
+		}
+	default:
+		return
+	}
+	aiModelCooldownMu.Lock()
+	aiModelCooldownUntil[model] = now.Add(dur)
+	aiModelCooldownMu.Unlock()
+}
+
+func clearModelCooldown(model string) {
+	aiModelCooldownMu.Lock()
+	delete(aiModelCooldownUntil, model)
+	aiModelCooldownMu.Unlock()
 }
 
 func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
@@ -1259,8 +1501,11 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		}
 	}
 
+	candidateOrder := filterModelsByCooldown(modelsToTry, time.Now())
+	preferredGot404 := false
+
 	var lastErr error
-	for _, tryModel := range modelsToTry {
+	for _, tryModel := range candidateOrder {
 		payload := map[string]interface{}{
 			"model":       tryModel,
 			"messages":    messages,
@@ -1284,7 +1529,10 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		if resp.StatusCode >= 300 {
 			lastErr = fmt.Errorf("API HTTP %d (%s): %s", resp.StatusCode, tryModel, redactAPIKey(string(respBytes)))
 			if resp.StatusCode == 404 || resp.StatusCode == 503 || resp.StatusCode == 429 {
-				// 429: Free Tier quota exceeded for model; continue to next fallback candidate
+				if tryModel == model && resp.StatusCode == 404 {
+					preferredGot404 = true
+				}
+				recordModelCooldown(tryModel, resp.StatusCode, string(respBytes), time.Now())
 				continue
 			}
 			return "", lastErr
@@ -1299,8 +1547,10 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
 			return "", fmt.Errorf("invalid API response: %s", redactAPIKey(string(respBytes)))
 		}
-		// If a fallback candidate succeeded, update system config so next calls use working model
-		if tryModel != model && strings.ToLower(cfg.Provider) == "gemini" {
+		clearModelCooldown(tryModel)
+		// Only persist fallback model permanently when the configured model itself returned 404;
+		// transient 429/503 rate limits rely on in-memory cooldown so user preference stays intact.
+		if preferredGot404 && tryModel != model && strings.ToLower(cfg.Provider) == "gemini" {
 			aiConfigUpdateMu.Lock()
 			latest := loadAIConfig()
 			latest.Model = tryModel
@@ -1397,7 +1647,7 @@ func processTelegramAIChat(text, chatID string) string {
 		return reply
 	}
 
-	sysPrompt := buildSystemArchitecturePrompt(cfg.SystemPromptExtra)
+	sysPrompt := buildSystemArchitecturePromptForQuery(cfg.SystemPromptExtra, trimmed)
 	llmMsgs := []map[string]string{
 		{"role": "system", "content": sysPrompt},
 	}
@@ -2071,7 +2321,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sysPrompt := buildSystemArchitecturePrompt(cfg.SystemPromptExtra)
+	sysPrompt := buildSystemArchitecturePromptForQuery(cfg.SystemPromptExtra, userMsg)
 	llmMsgs := []map[string]string{
 		{"role": "system", "content": sysPrompt},
 	}

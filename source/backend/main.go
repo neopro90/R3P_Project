@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -1778,13 +1779,148 @@ type spaHandler struct {
 	dir string
 }
 
+var gzipWriterPool = sync.Pool{
+	New: func() interface{} {
+		gw, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
+		return gw
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gw          *gzip.Writer
+	decided     bool
+	compress    bool
+	wroteHeader bool
+}
+
+func isCompressibleContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" {
+		return false
+	}
+	if semi := strings.IndexByte(ct, ';'); semi >= 0 {
+		ct = strings.TrimSpace(ct[:semi])
+	}
+	return strings.HasPrefix(ct, "text/") ||
+		ct == "application/json" ||
+		ct == "application/javascript" ||
+		ct == "application/xml" ||
+		ct == "image/svg+xml" ||
+		ct == "application/wasm"
+}
+
+func (g *gzipResponseWriter) decide(status int) {
+	if g.decided {
+		return
+	}
+	g.decided = true
+	if status < 200 || status == http.StatusNoContent || status == http.StatusNotModified || status == http.StatusPartialContent {
+		return
+	}
+	hdr := g.ResponseWriter.Header()
+	if hdr.Get("Content-Encoding") != "" {
+		return
+	}
+	if !isCompressibleContentType(hdr.Get("Content-Type")) {
+		return
+	}
+	hdr.Del("Content-Length")
+	hdr.Set("Content-Encoding", "gzip")
+	hdr.Add("Vary", "Accept-Encoding")
+	g.compress = true
+	gw := gzipWriterPool.Get().(*gzip.Writer)
+	gw.Reset(g.ResponseWriter)
+	g.gw = gw
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
+	g.decide(code)
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) Write(p []byte) (int, error) {
+	if !g.wroteHeader {
+		if g.ResponseWriter.Header().Get("Content-Type") == "" && len(p) > 0 {
+			g.ResponseWriter.Header().Set("Content-Type", http.DetectContentType(p))
+		}
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.compress && g.gw != nil {
+		return g.gw.Write(p)
+	}
+	return g.ResponseWriter.Write(p)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	if g.gw != nil {
+		_ = g.gw.Flush()
+	}
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (g *gzipResponseWriter) Unwrap() http.ResponseWriter {
+	return g.ResponseWriter
+}
+
+func (g *gzipResponseWriter) Close() {
+	if g.gw != nil {
+		_ = g.gw.Close()
+		g.gw.Reset(io.Discard)
+		gzipWriterPool.Put(g.gw)
+		g.gw = nil
+	}
+}
+
+func shouldSkipGzipPath(urlPath string) bool {
+	switch urlPath {
+	case "/api/v1/monitor/stream",
+		"/api/v1/nas/download",
+		"/api/v1/download/file",
+		"/api/v1/downloads/file",
+		"/api/v1/files/download",
+		"/api/v1/files/preview",
+		"/api/v1/system/backup",
+		"/api/v1/explorer/raw":
+		return true
+	default:
+		return false
+	}
+}
+
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead ||
+			r.Header.Get("Range") != "" ||
+			shouldSkipGzipPath(r.URL.Path) ||
+			!strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		grw := &gzipResponseWriter{ResponseWriter: w}
+		defer grw.Close()
+		next.ServeHTTP(grw, r)
+	})
+}
+
 func (s spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Clean the path and build absolute file path
-	urlPath := filepath.Clean("/" + r.URL.Path)
-	fullPath := filepath.Join(s.dir, urlPath)
+	// Clean the URL path using POSIX slash semantics across OSes before joining staticDir.
+	slashPath := path.Clean("/" + strings.TrimLeft(r.URL.Path, "/"))
+	fullPath := filepath.Join(s.dir, filepath.FromSlash(slashPath))
 
 	info, err := os.Stat(fullPath)
 	if err == nil && !info.IsDir() {
+		if strings.HasPrefix(slashPath, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else if slashPath == "/index.html" {
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
 		// File exists — serve it directly
 		http.ServeFile(w, r, fullPath)
 		return
@@ -1793,6 +1929,7 @@ func (s spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// SPA fallback — serve index.html
 	indexPath := filepath.Join(s.dir, "index.html")
 	if _, err := os.Stat(indexPath); err == nil {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		http.ServeFile(w, r, indexPath)
 		return
 	}
@@ -2061,7 +2198,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:           listenAddr,
-		Handler:        corsMiddleware(auth.middleware(mux)),
+		Handler:        corsMiddleware(auth.middleware(gzipMiddleware(mux))),
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second, // Streaming endpoints clear deadline via http.ResponseController
 		IdleTimeout:    120 * time.Second,

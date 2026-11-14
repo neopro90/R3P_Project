@@ -129,20 +129,20 @@ const defaultQuickCommands: Record<string, QuickCommandItem[]> = {
     { label: '⚡ Thông số tinh chỉnh USB Queue', cmd: '!cat /sys/block/sda/queue/read_ahead_kb; cat /sys/block/sda/queue/max_sectors_kb' },
   ],
   adblock: [
-    { label: '🛡️ Trạng thái AdBlock & Số domain', cmd: '!cat /etc/r3p/adblock.json | grep total_blocked; wc -l /tmp/r3p-adblock.hosts' },
-    { label: '🔍 Kiểm tra cổng DNS 53 listening', cmd: '!netstat -tlpn | grep 53' },
-    { label: '🚫 Thử phân giải tên miền quảng cáo', cmd: '!nslookup pagead2.googlesyndication.com 127.0.0.1' },
+    { label: '🛡️ Trạng thái AdBlock & Số domain', cmd: '!wc -l /tmp/dnsmasq.d/r3p-adblock.conf 2>/dev/null || echo \'Chưa có file AdBlock runtime\'; head -n 5 /tmp/dnsmasq.d/r3p-adblock.conf 2>/dev/null' },
+    { label: '🔍 Kiểm tra cổng DNS 53 listening', cmd: '!netstat -tlpn | grep :53' },
+    { label: '🚫 Thử phân giải tên miền quảng cáo', cmd: '!nslookup doubleclick.net 127.0.0.1' },
   ],
   download: [
-    { label: '⬇️ Phiên bản yt-dlp & aria2c', cmd: '!yt-dlp --version; aria2c --version | head -n 1' },
-    { label: '📂 Thư mục & File video đã tải', cmd: '!grep outputDirectory /etc/r3p/downloader.json 2>/dev/null; ls -lah /mnt/sda1/downloads 2>/dev/null || ls -lah /overlay/downloads' },
+    { label: '⬇️ Phiên bản yt-dlp & aria2c', cmd: '!yt-dlp --version 2>/dev/null; aria2c --version 2>/dev/null | head -n 1' },
+    { label: '📂 File trong thư mục tải xuống & r3p.db', cmd: '!ls -lh /etc/r3p/r3p.db; ls -lah /mnt/sda1/downloads 2>/dev/null || ls -lah /overlay/downloads 2>/dev/null' },
     { label: '🤖 Kiểm tra dịch vụ r3p-api (80/8443)', cmd: '!netstat -tlpn | grep r3p-api' },
   ],
   maintenance: [
     { label: '🧹 Giải phóng RAM (Drop Caches)', cmd: '!sync && echo 3 > /proc/sys/vm/drop_caches && free -m' },
-    { label: '🔄 Khởi động lại dịch vụ r3p-api', cmd: '!/etc/init.d/r3p-api restart' },
-    { label: '📶 Khởi động lại Wi-Fi subsystem', cmd: '!wifi reload' },
-    { label: '📦 Kiểm tra kho ứng dụng opkg', cmd: '!opkg list-installed | wc -l' },
+    { label: '🔥 Xem ruleset tường lửa fw4 (nftables)', cmd: '!nft list ruleset 2>/dev/null | head -n 30' },
+    { label: '📶 Khởi động lại Wi-Fi subsystem', cmd: '!wifi reload && wifi status | head -n 30' },
+    { label: '📦 Kiểm tra kho ứng dụng apk', cmd: '!apk info 2>/dev/null | wc -l' },
   ],
 }
 

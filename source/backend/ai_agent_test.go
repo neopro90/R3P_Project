@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateAIBaseURLSSRFGuards(t *testing.T) {
@@ -200,4 +202,104 @@ func TestFormatWirelessAndArchitecturePromptTruthfulness(t *testing.T) {
 	if !strings.Contains(prompt, "r3p.db -> collections/ai_memory") || !strings.Contains(prompt, "wireless.default_radio0.ssid=TenMoi") {
 		t.Fatalf("expected updated DB and unquoted <uci_set> instructions in system prompt")
 	}
+}
+
+func TestWriteFileGuardAndSessionPruning(t *testing.T) {
+	blocked := []string{"/etc/r3p/r3p.db", "/etc/r3p/api-token", "/etc/shadow", "/etc/config/../passwd", "/usr/bin/r3p-api"}
+	for _, p := range blocked {
+		if err := validateAIWriteFilePath(p); err == nil {
+			t.Errorf("expected validateAIWriteFilePath(%q) to reject protected path", p)
+		}
+	}
+	allowed := []string{"/tmp/test_r3p.sh", "/etc/config/wireless", "/etc/dnsmasq.conf"}
+	for _, p := range allowed {
+		if err := validateAIWriteFilePath(p); err != nil {
+			t.Errorf("expected validateAIWriteFilePath(%q) to pass, got %v", p, err)
+		}
+	}
+
+	evts, _, outs, _ := executeAIToolBlocks(`<write_file path="/etc/r3p/r3p.db">bad</write_file>`, true)
+	if len(evts) != 1 || evts[0].Success || len(outs) != 1 || !strings.Contains(outs[0], "từ chối") {
+		t.Fatalf("expected <write_file> targeting r3p.db to be blocked cleanly, got evts=%+v outs=%+v", evts, outs)
+	}
+
+	tmp := t.TempDir()
+	if err := initSettingsDBAt(filepath.Join(tmp, "r3p.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer closeSettingsDB()
+	resetAIMemoryCaches()
+
+	for i := 0; i < 105; i++ {
+		addAIMemoryEntry("fact", fmt.Sprintf("memory item %03d", i))
+	}
+	mems := loadAIMemories()
+	if len(mems) > 100 || mems[0].Content != "memory item 104" {
+		t.Fatalf("expected newest memory item 104 retained at index 0 within 100 limit, got len=%d top=%q", len(mems), mems[0].Content)
+	}
+
+	hugeOut := strings.Repeat("A", 2000)
+	for i := 0; i < 34; i++ {
+		appendMessageToSession("default", AIChatMessage{
+			Role:       "assistant",
+			Content:    fmt.Sprintf("turn %d", i),
+			Commands:   []AICmdLog{{Command: "cmd", Output: hugeOut}},
+			ToolEvents: []AIToolAction{{Tool: "exec_cmd", Command: "cmd", Output: hugeOut, Success: true}},
+		})
+	}
+	_, sessMsgs := getActiveSessionMessages("default")
+	if len(sessMsgs) < 34 {
+		t.Fatalf("expected at least 34 messages, got %d", len(sessMsgs))
+	}
+	last := sessMsgs[len(sessMsgs)-1]
+	if len(last.Commands) == 0 || len(last.Commands[0].Output) >= len(hugeOut) {
+		t.Fatalf("expected latest command output to be trimmed for storage, got len=%d", len(last.Commands[0].Output))
+	}
+	if len(sessMsgs[1].Commands) != 0 || len(sessMsgs[1].ToolEvents) != 0 {
+		t.Fatalf("expected old session message command blobs to be pruned")
+	}
+}
+
+func TestPromptTokenOptimizationAndModelCooldown(t *testing.T) {
+	if !needsFullUCIContext("đổi SSID wifi 2.4GHz") {
+		t.Fatal("expected Wi-Fi SSID query to include full UCI context")
+	}
+	if needsFullUCIContext("kiểm tra dung lượng RAM trống") {
+		t.Fatal("expected RAM query to omit verbose raw UCI dumps")
+	}
+
+	tmp := t.TempDir()
+	if err := initSettingsDBAt(filepath.Join(tmp, "r3p.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer closeSettingsDB()
+	resetAIMemoryCaches()
+
+	origBlueprintFile := aiBlueprintFile
+	aiBlueprintFile = filepath.Join(tmp, "SYSTEM_BLUEPRINT.md")
+	defer func() { aiBlueprintFile = origBlueprintFile }()
+
+	shortPrompt := buildSystemArchitecturePromptForQuery("", "kiểm tra dung lượng RAM trống")
+	fullPrompt := buildSystemArchitecturePromptForQuery("", "đổi wifi ssid")
+	if !strings.Contains(shortPrompt, "đã rút gọn để tiết kiệm token") {
+		t.Fatalf("expected compact telemetry hint for non-UCI query")
+	}
+	if strings.Contains(fullPrompt, "đã rút gọn để tiết kiệm token") {
+		t.Fatalf("expected full UCI telemetry section for Wi-Fi query")
+	}
+
+	now := time.Now()
+	models := []string{"gemini-3.1-flash-lite", "gemini-3-flash-preview"}
+	recordModelCooldown("gemini-3.1-flash-lite", http.StatusTooManyRequests, "RESOURCE_EXHAUSTED limit 20 per day", now)
+	filtered := filterModelsByCooldown(models, now.Add(time.Minute))
+	if len(filtered) != 1 || filtered[0] != "gemini-3-flash-preview" {
+		t.Fatalf("expected cooled-down model skipped, got %v", filtered)
+	}
+	recordModelCooldown("gemini-3-flash-preview", http.StatusServiceUnavailable, "overloaded", now)
+	allDown := filterModelsByCooldown(models, now.Add(10*time.Second))
+	if len(allDown) != 2 {
+		t.Fatalf("expected fallback to full candidate list when all models are in cooldown, got %v", allDown)
+	}
+	clearModelCooldown("gemini-3.1-flash-lite")
+	clearModelCooldown("gemini-3-flash-preview")
 }
