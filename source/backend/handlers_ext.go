@@ -227,13 +227,62 @@ func handleSystemNslookup(w http.ResponseWriter, r *http.Request) {
 
 // ─── 2. Wireless Management (UCI + iwinfo / iw) ───────────────────────────
 
+// unquoteUCIValue decodes OpenWrt `uci show` / shell-style quoted values
+// cleanly, turning `'Hello'`, `"Hello"`, `'abc'\''def'`, or `''\''Hello'\'''`
+// into the underlying string value.
+func unquoteUCIValue(raw string) string {
+	s := strings.TrimSpace(raw)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		inner := s[1 : len(s)-1]
+		var b strings.Builder
+		b.Grow(len(inner))
+		for i := 0; i < len(inner); i++ {
+			if inner[i] == '\\' && i+1 < len(inner) {
+				i++
+			}
+			b.WriteByte(inner[i])
+		}
+		return b.String()
+	}
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		var b strings.Builder
+		b.Grow(len(s))
+		inSingle := false
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if inSingle {
+				if c == '\'' {
+					inSingle = false
+				} else {
+					b.WriteByte(c)
+				}
+				continue
+			}
+			if c == '\'' {
+				inSingle = true
+				continue
+			}
+			if c == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+				continue
+			}
+			b.WriteByte(c)
+		}
+		if !inSingle {
+			return b.String()
+		}
+	}
+	return s
+}
+
 func parseUCIConfigMap(pkg string) map[string]string {
 	out, _ := runCmd(5, "uci", "-X", "show", pkg)
 	res := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
 		if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
 			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
+			v := unquoteUCIValue(parts[1])
 			res[k] = v
 		}
 	}

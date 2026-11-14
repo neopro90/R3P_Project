@@ -1182,7 +1182,7 @@ onMounted(async () => {
                 <span>Bản Thiết Kế Hệ Thống</span>
                 <span class="badge badge-blue text-[10px] font-mono">SYSTEM_BLUEPRINT.md</span>
               </h3>
-              <p class="text-[11.5px] text-gray-400 font-mono">Đường dẫn: /etc/r3p/SYSTEM_BLUEPRINT.md</p>
+              <p class="text-[11.5px] text-gray-400 font-mono">Đồng bộ: /etc/r3p/r3p.db (ai_blueprint) & /etc/r3p/SYSTEM_BLUEPRINT.md</p>
             </div>
           </div>
 

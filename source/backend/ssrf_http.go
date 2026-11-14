@@ -203,6 +203,9 @@ func redactSensitiveLines(raw string) string {
 			strings.Contains(lower, "option password ") ||
 			strings.Contains(lower, ".password=") ||
 			strings.Contains(lower, "option secret ") ||
+			strings.Contains(lower, ".secret=") ||
+			strings.Contains(lower, "private_key") ||
+			strings.Contains(lower, "preshared_key") ||
 			strings.Contains(lower, "api_key") ||
 			strings.Contains(lower, "bot_token") ||
 			strings.Contains(lower, "token=") {
