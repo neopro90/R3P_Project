@@ -77,30 +77,27 @@ func (m *NativeDownloadManager) init() {
 		m.settings.DefaultDir = "/tmp/downloads"
 	}
 
-	data, err := os.ReadFile(m.configFile)
-	if err == nil {
-		var saved struct {
-			Settings DownloadSettings      `json:"settings"`
-			Tasks    []*NativeDownloadTask `json:"tasks"`
+	var saved struct {
+		Settings DownloadSettings      `json:"settings"`
+		Tasks    []*NativeDownloadTask `json:"tasks"`
+	}
+	if settingsDBLoadJSON(bucketCollections, "downloads_state", m.configFile, &saved) {
+		if saved.Settings.DefaultDir != "" {
+			if strings.HasPrefix(saved.Settings.DefaultDir, "/overlay") {
+				if st, err := os.Stat("/mnt/sda1/downloads"); err == nil && st.IsDir() {
+					saved.Settings.DefaultDir = "/mnt/sda1/downloads"
+				} else {
+					saved.Settings.DefaultDir = "/tmp/downloads"
+				}
+			}
+			m.settings = saved.Settings
 		}
-		if json.Unmarshal(data, &saved) == nil {
-			if saved.Settings.DefaultDir != "" {
-				if strings.HasPrefix(saved.Settings.DefaultDir, "/overlay") {
-					if st, err := os.Stat("/mnt/sda1/downloads"); err == nil && st.IsDir() {
-						saved.Settings.DefaultDir = "/mnt/sda1/downloads"
-					} else {
-						saved.Settings.DefaultDir = "/tmp/downloads"
-					}
-				}
-				m.settings = saved.Settings
+		for _, t := range saved.Tasks {
+			if t.Status == "active" || t.Status == "waiting" {
+				t.Status = "paused"
+				t.DownloadSpeed = 0
 			}
-			for _, t := range saved.Tasks {
-				if t.Status == "active" || t.Status == "waiting" {
-					t.Status = "paused"
-					t.DownloadSpeed = 0
-				}
-				m.tasks[t.GID] = t
-			}
+			m.tasks[t.GID] = t
 		}
 	}
 }
@@ -114,9 +111,7 @@ func (m *NativeDownloadManager) saveLocked() {
 		"settings": m.settings,
 		"tasks":    list,
 	}
-	if b, err := json.MarshalIndent(payload, "", "  "); err == nil {
-		_ = os.WriteFile(m.configFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "downloads_state", m.configFile, 0600, payload)
 }
 
 func generateGID() string {
@@ -226,7 +221,14 @@ func (m *NativeDownloadManager) addTask(rawURL, dir string) (*NativeDownloadTask
 		defer cancel()
 		if ariaGID, err := queueAria2URL(ctx, rawURL, targetDir); err == nil {
 			m.mu.Lock()
-			task.GID = ariaGID
+			if existing, ok := m.tasks[gid]; ok && existing == task {
+				delete(m.tasks, gid)
+				task.GID = ariaGID
+				m.tasks[ariaGID] = task
+			} else {
+				task.GID = ariaGID
+				m.tasks[ariaGID] = task
+			}
 			task.Status = "active"
 			m.saveLocked()
 			m.mu.Unlock()
@@ -240,8 +242,44 @@ func (m *NativeDownloadManager) addTask(rawURL, dir string) (*NativeDownloadTask
 		return task, nil
 	}
 
-	go m.startWorker(gid)
+	go m.dispatchWaiting()
 	return task, nil
+}
+
+func (m *NativeDownloadManager) dispatchWaiting() {
+	var toStart []string
+	m.mu.Lock()
+	maxConc := m.settings.MaxConcurrent
+	if maxConc < 1 {
+		maxConc = 1
+	} else if maxConc > 4 {
+		maxConc = 4
+	}
+	var waiting []*NativeDownloadTask
+	active := 0
+	for _, t := range m.tasks {
+		if t.Status == "active" {
+			active++
+		} else if t.Status == "waiting" {
+			waiting = append(waiting, t)
+		}
+	}
+	sort.Slice(waiting, func(i, j int) bool {
+		return waiting[i].CreatedAt.Before(waiting[j].CreatedAt)
+	})
+	for _, t := range waiting {
+		if active >= maxConc {
+			break
+		}
+		t.Status = "active"
+		t.ErrorMsg = ""
+		toStart = append(toStart, t.GID)
+		active++
+	}
+	m.mu.Unlock()
+	for _, gid := range toStart {
+		go m.startWorker(gid)
+	}
 }
 
 func (m *NativeDownloadManager) startWorker(gid string) {
@@ -271,6 +309,7 @@ func (m *NativeDownloadManager) startWorker(gid string) {
 		}
 		m.saveLocked()
 		m.mu.Unlock()
+		go m.dispatchWaiting()
 	}()
 
 	var existingSize int64
@@ -288,7 +327,11 @@ func (m *NativeDownloadManager) startWorker(gid string) {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
 	}
 
-	client := &http.Client{Timeout: 0}
+	client := newPublicHTTPClient(publicClientOptions{
+		AllowHTTP:      true,
+		NoTotalTimeout: true,
+		DialTimeout:    8 * time.Second,
+	})
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -338,7 +381,9 @@ func (m *NativeDownloadManager) startWorker(gid string) {
 
 	buf := make([]byte, 32*1024)
 	lastTick := time.Now()
+	throttleStart := time.Now()
 	var bytesSinceTick int64
+	var bytesSinceThrottle int64
 	completed := existingSize
 
 	for {
@@ -356,6 +401,33 @@ func (m *NativeDownloadManager) startWorker(gid string) {
 			}
 			completed += int64(n)
 			bytesSinceTick += int64(n)
+
+			m.mu.Lock()
+			limitKBs := m.settings.SpeedLimitKBs
+			m.mu.Unlock()
+			if limitKBs > 0 {
+				bytesSinceThrottle += int64(n)
+				maxBytesPerSec := float64(limitKBs) * 1024.0
+				expected := time.Duration((float64(bytesSinceThrottle) / maxBytesPerSec) * float64(time.Second))
+				actual := time.Since(throttleStart)
+				if expected > actual {
+					sleepDur := expected - actual
+					if sleepDur > 2*time.Second {
+						sleepDur = 2 * time.Second
+					}
+					timer := time.NewTimer(sleepDur)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+				if time.Since(throttleStart) >= time.Second {
+					throttleStart = time.Now()
+					bytesSinceThrottle = 0
+				}
+			}
 
 			now := time.Now()
 			elapsed := now.Sub(lastTick).Seconds()
@@ -437,11 +509,15 @@ func (m *NativeDownloadManager) controlTask(gid, action string) error {
 			_ = os.Remove(task.FilePath)
 			task.CompletedLength = 0
 		}
+		task.Status = "waiting"
+		task.ErrorMsg = ""
+		m.saveLocked()
 		m.mu.Unlock()
-		go m.startWorker(gid)
+		go m.dispatchWaiting()
 		return nil
 
 	case "cancel", "remove":
+		wasComplete := task.Status == "complete"
 		if cancel, ok := m.cancels[gid]; ok {
 			cancel()
 			delete(m.cancels, gid)
@@ -450,7 +526,7 @@ func (m *NativeDownloadManager) controlTask(gid, action string) error {
 		delete(m.tasks, gid)
 		m.saveLocked()
 		m.mu.Unlock()
-		if action == "remove" || task.Status != "complete" {
+		if action == "remove" || !wasComplete {
 			_ = os.Remove(fp)
 		}
 		return nil
@@ -527,15 +603,20 @@ func handleDownloadsUnified(w http.ResponseWriter, r *http.Request) {
 		if body.DefaultDir != "" {
 			dlManager.settings.DefaultDir = sanitizeDownloadDir(body.DefaultDir)
 		}
-		if body.MaxConcurrent >= 1 && body.MaxConcurrent <= 10 {
-			dlManager.settings.MaxConcurrent = body.MaxConcurrent
+		if body.MaxConcurrent >= 1 {
+			maxConc := body.MaxConcurrent
+			if maxConc > 4 {
+				maxConc = 4
+			}
+			dlManager.settings.MaxConcurrent = maxConc
 		}
-		if body.SpeedLimitKBs >= 0 {
+		if body.SpeedLimitKBs >= 0 && body.SpeedLimitKBs <= 102400 {
 			dlManager.settings.SpeedLimitKBs = body.SpeedLimitKBs
 		}
 		dlManager.saveLocked()
 		settings := dlManager.settings
 		dlManager.mu.Unlock()
+		go dlManager.dispatchWaiting()
 		writeJSON(w, http.StatusOK, true, settings)
 
 	default:
@@ -547,6 +628,9 @@ func handleDownloadsUnified(w http.ResponseWriter, r *http.Request) {
 func handleDownloadsAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
 		return
 	}
 	var body struct {
@@ -571,6 +655,9 @@ func handleDownloadsAction(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/downloads/file?gid=...
 func handleDownloadsFile(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
 	gid := r.URL.Query().Get("gid")
 	dlManager.mu.Lock()
 	task, exists := dlManager.tasks[gid]
@@ -579,12 +666,25 @@ func handleDownloadsFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, false, "file not found")
 		return
 	}
-	linfo, lerr := os.Lstat(task.FilePath)
-	if lerr != nil || linfo.Mode()&os.ModeSymlink != 0 || linfo.IsDir() {
+	root, err := os.OpenRoot(filepath.Dir(task.FilePath))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, false, "file not found")
+		return
+	}
+	defer root.Close()
+	f, err := root.Open(filepath.Base(task.FilePath))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, false, "file not found")
+		return
+	}
+	defer f.Close()
+	linfo, lerr := f.Stat()
+	if lerr != nil || !linfo.Mode().IsRegular() || linfo.IsDir() {
 		writeJSON(w, http.StatusNotFound, false, "file not found")
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(task.FilePath)))
-	http.ServeFile(w, r, task.FilePath)
+	http.ServeContent(w, r, filepath.Base(task.FilePath), linfo.ModTime(), f)
 }

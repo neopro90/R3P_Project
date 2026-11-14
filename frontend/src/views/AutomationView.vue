@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface CronEntry {
   index: number
@@ -33,15 +36,21 @@ const telegramToken = ref('')
 const telegramChatId = ref('')
 const telegramEnabled = ref(true)
 const telegramConfigured = ref(false)
+const telegramMount = ref('')
+const telegramPath = ref('')
 const telegramTesting = ref(false)
 
 async function loadAutomation() {
   loading.value = true
   try {
-    const res = await apiRequest<{
-      jobs: CronEntry[]
-      telegram: { configured: boolean; enabled: boolean; chat_id?: string }
-    }>('/automation/cron')
+    const [res, tgRes, usbRes] = await Promise.all([
+      apiRequest<{
+        jobs: CronEntry[]
+        telegram: { configured: boolean; enabled: boolean; chat_id?: string }
+      }>('/automation/cron'),
+      apiRequest<{ configured?: boolean; enabled?: boolean; chat_id?: string; mount?: string; path?: string }>('/telegram').catch(() => null),
+      apiRequest<{ storage_devices?: Array<{ mounted?: boolean; mount_point?: string }> }>('/usb/status').catch(() => null),
+    ])
     if (res) {
       jobs.value = res.jobs || []
       if (res.telegram) {
@@ -50,6 +59,13 @@ async function loadAutomation() {
         if (res.telegram.chat_id) telegramChatId.value = res.telegram.chat_id
       }
     }
+    if (tgRes?.mount) {
+      telegramMount.value = tgRes.mount
+    } else if (!telegramMount.value) {
+      const mountedUsb = usbRes?.storage_devices?.find((d) => d.mounted && d.mount_point)
+      telegramMount.value = mountedUsb?.mount_point || '/tmp'
+    }
+    if (tgRes?.path) telegramPath.value = tgRes.path
   } catch (err: any) {
     showNotice('Error loading automation: ' + (err?.message || err), 5000)
   } finally {
@@ -120,8 +136,8 @@ async function saveTelegram() {
       body: JSON.stringify({
         bot_token: telegramToken.value.trim(),
         chat_id: telegramChatId.value.trim(),
-        mount: '/overlay',
-        path: 'downloads',
+        mount: telegramMount.value || '/tmp',
+        path: telegramPath.value || 'downloads',
         enabled: telegramEnabled.value,
       }),
     })
@@ -168,13 +184,13 @@ onMounted(() => {
     <!-- Automation Cron Jobs Table -->
     <div class="pro-card">
       <div class="pro-card-header">
-        <span class="pro-card-title">Scheduled Cron Jobs (/etc/crontabs/root)</span>
+        <span class="pro-card-title">{{ t('auto_cron_heading') }}</span>
         <div class="flex items-center gap-2">
           <button type="button" class="btn-secondary text-[11px] py-1 min-w-[92px] justify-center" :disabled="loading" @click="loadAutomation">
-            {{ loading ? 'Loading…' : 'Refresh ↻' }}
+            {{ loading ? t('btn_loading') : t('btn_refresh') }}
           </button>
           <button type="button" class="btn-primary text-[11px] py-1 min-w-[154px] justify-center" @click="showAddCron = !showAddCron">
-            {{ showAddCron ? 'Cancel' : '+ Add Scheduled Task' }}
+            {{ showAddCron ? t('btn_cancel') : t('auto_add_task') }}
           </button>
         </div>
       </div>
@@ -210,7 +226,7 @@ onMounted(() => {
             <tr v-if="!jobs.length">
               <td colspan="5" class="text-center text-gray-500 py-3">No cron jobs configured in /etc/crontabs/root</td>
             </tr>
-            <tr v-for="(c, idx) in jobs" :key="idx">
+            <tr v-for="c in jobs" :key="c.index">
               <td class="mono font-semibold text-sky-400">{{ c.schedule }}</td>
               <td class="mono text-gray-200 max-w-sm truncate" :title="c.command">{{ c.command }}</td>
               <td class="text-gray-400 max-w-[220px] truncate" :title="c.description">{{ c.description }}</td>
@@ -282,6 +298,10 @@ onMounted(() => {
               placeholder="e.g. 987654321 or -100123456789"
             />
           </div>
+          <label class="flex items-center gap-2 text-gray-300 cursor-pointer select-none pt-1">
+            <input v-model="telegramEnabled" type="checkbox" class="accent-sky-500" />
+            <span>Kích hoạt Telegram Bot Polling</span>
+          </label>
 
           <div class="flex justify-end gap-2 pt-1">
             <button

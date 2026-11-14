@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useSystemStore } from '@/stores/system'
 import { useNetworkStore } from '@/stores/network'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
 
 const system = useSystemStore()
 const network = useNetworkStore()
+const { t } = useUiPreferences()
 
 interface ServiceItem {
   name: string
@@ -51,11 +53,12 @@ interface AdblockStats {
 }
 
 const adStats = ref<AdblockStats>({
-  analyzed: 10,
-  trackers: 4,
-  video_ads: 2,
-  blocked: 6,
+  analyzed: 0,
+  trackers: 0,
+  video_ads: 0,
+  blocked: 0,
 })
+const adblockEnabled = ref(false)
 
 const idleTimeoutMins = ref(10)
 const settingStandby = ref(false)
@@ -64,7 +67,7 @@ const cpuTempItem = computed(() => {
   return system.temperatures.find(t => t.zone === 'soc') || {
     zone: 'soc',
     type: 'CPU / Bo Mạch (MT7621)',
-    temp_celsius: system.temp || 46.5,
+    temp_celsius: system.temp || 0,
     status: 'Bình Thường',
   }
 })
@@ -126,8 +129,11 @@ const clearLogs = async () => {
   try {
     await apiRequest('/logs', { method: 'DELETE' })
     recentLogs.value = []
+    actionNotice.value = 'Đã xóa bộ đệm nhật ký hệ thống!'
+    setTimeout(() => { actionNotice.value = null }, 3000)
   } catch (err: any) {
-    alert('Lỗi xóa nhật ký: ' + (err?.message || err))
+    actionNotice.value = 'Lỗi xóa nhật ký: ' + (err?.message || err)
+    setTimeout(() => { actionNotice.value = null }, 4000)
   } finally {
     clearingLogs.value = false
   }
@@ -172,9 +178,25 @@ const activeWanStats = computed(() => {
   return network.wanIface || network.interfaces.find((i) => i.name === 'br-lan')
 })
 
-const totalRxRate = computed(() => activeWanStats.value?.rxRate || 0)
+const totalRxRate = computed(() => activeWanStats.value?.rxRate || network.totalRxRate || 0)
 
-const totalTxRate = computed(() => activeWanStats.value?.txRate || 0)
+const totalTxRate = computed(() => activeWanStats.value?.txRate || network.totalTxRate || 0)
+
+const netChartMax = computed(() => Math.max(100, ...rxHistory.value, ...txHistory.value) * 1.15)
+
+function pushTelemetryPoint() {
+  const currentCpu = Math.round(system.cpu || 0)
+  cpuHistory.value.push(currentCpu)
+  if (cpuHistory.value.length > 24) cpuHistory.value.shift()
+
+  const currentRxKb = Math.round(totalRxRate.value / 1024)
+  rxHistory.value.push(currentRxKb)
+  if (rxHistory.value.length > 24) rxHistory.value.shift()
+
+  const currentTxKb = Math.round(totalTxRate.value / 1024)
+  txHistory.value.push(currentTxKb)
+  if (txHistory.value.length > 24) txHistory.value.shift()
+}
 
 function formatRate(bytesPerSec: number): string {
   if (!bytesPerSec || bytesPerSec < 1024) return `${Math.round(bytesPerSec || 0)} B/s`
@@ -214,12 +236,10 @@ function generateAreaPath(data: number[], maxVal = 100, width = 300, height = 70
 }
 
 async function refreshDashboard(silent = false) {
+  if (silent && document.hidden) return
   if (!silent) loading.value = true
   try {
-    await Promise.all([
-      system.refresh(),
-      network.refreshInterfaces(),
-      network.refreshClients(),
+    const tasks: Promise<unknown>[] = [
       apiRequest<{ services: ServiceItem[] }>('/services/all').then((r) => {
         if (r?.services) services.value = r.services.slice(0, 8)
       }),
@@ -232,23 +252,23 @@ async function refreshDashboard(silent = false) {
       apiRequest<{ lines: string[] }>('/logs').then((r) => {
         if (r?.lines) recentLogs.value = r.lines.slice(-12).reverse()
       }),
-      apiRequest<{ stats: AdblockStats }>('/adblock/streams').then((r) => {
+      apiRequest<{ stats: AdblockStats; enabled?: boolean }>('/adblock/streams').then((r) => {
         if (r?.stats) adStats.value = r.stats
+        if (typeof r?.enabled === 'boolean') adblockEnabled.value = r.enabled
+        else if ((r?.stats?.analyzed || 0) > 0 || (r?.stats?.blocked || 0) > 0) adblockEnabled.value = true
       }),
-    ])
-
-    // Push new telemetry points to sparklines
-    const currentCpu = Math.round(system.cpu || 0)
-    cpuHistory.value.push(currentCpu)
-    if (cpuHistory.value.length > 24) cpuHistory.value.shift()
-
-    const currentRxKb = Math.round(totalRxRate.value / 1024)
-    rxHistory.value.push(currentRxKb)
-    if (rxHistory.value.length > 24) rxHistory.value.shift()
-
-    const currentTxKb = Math.round(totalTxRate.value / 1024)
-    txHistory.value.push(currentTxKb)
-    if (txHistory.value.length > 24) txHistory.value.shift()
+    ]
+    if (!silent || !system.connected) {
+      tasks.unshift(
+        system.refresh(),
+        network.refreshInterfaces(),
+        network.refreshClients(),
+      )
+    }
+    await Promise.all(tasks)
+    if (cpuHistory.value.length === 0) {
+      pushTelemetryPoint()
+    }
   } catch (err) {
     console.warn('Dashboard refresh error:', err)
   } finally {
@@ -284,15 +304,30 @@ async function quickServiceRestart(name: string) {
   }
 }
 
+function handleVisibilityChange() {
+  if (!document.hidden) {
+    void refreshDashboard(true)
+  }
+}
+
+watch(
+  () => system.lastUpdate,
+  () => {
+    pushTelemetryPoint()
+  },
+)
+
 onMounted(() => {
   void refreshDashboard(false)
   void fetchIdleTimeout()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   pollTimer = setInterval(() => {
     void refreshDashboard(true)
-  }, 4000)
+  }, 20_000)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   if (pollTimer) clearInterval(pollTimer)
 })
 </script>
@@ -315,16 +350,16 @@ onUnmounted(() => {
         <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
         <span class="font-bold text-gray-100 truncate">{{ system.hostname || 'R3P-Router' }}</span>
         <span class="text-gray-500 shrink-0">·</span>
-        <span class="mono text-sky-400 font-semibold truncate">MediaTek MT7621AT @ 880MHz</span>
+        <span class="mono text-sky-400 font-semibold truncate">{{ system.hardware || 'MT7621' }}</span>
         <span class="text-gray-500 hidden sm:inline shrink-0">·</span>
         <span class="text-purple-300 mono font-semibold hidden sm:inline shrink-0">Linux {{ system.kernel || '—' }}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <button type="button" class="btn-secondary text-[12px] py-1 px-3" @click="flushCache">
-          🧹 Giải Phóng Cache
+          {{ t('dash_flush_cache') }}
         </button>
         <button type="button" class="btn-primary text-[12px] py-1 px-3.5 min-w-[116px]" :disabled="loading" @click="refreshDashboard(false)">
-          {{ loading ? 'Đang đồng bộ…' : 'Đồng Bộ ↻' }}
+          {{ loading ? t('btn_syncing') : t('btn_sync') }}
         </button>
       </div>
     </div>
@@ -335,9 +370,9 @@ onUnmounted(() => {
       <div class="pro-card p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-[13.5px] mb-1">
           <div class="flex items-center gap-1.5">
-            <span class="text-sky-400 font-bold">⚡ Tải CPU</span>
+            <span class="text-sky-400 font-bold">{{ t('dash_cpu_load') }}</span>
             <span class="badge badge-blue text-[10.5px] mono font-bold">
-              🌡️ {{ cpuTempItem.temp_celsius.toFixed(1) }}°C
+              🌡️ {{ cpuTempItem.temp_celsius > 0 ? `${cpuTempItem.temp_celsius.toFixed(1)}°C` : '—' }}
             </span>
           </div>
           <span class="mono font-extrabold text-sky-300 text-[16px]">{{ (system.cpu || 0).toFixed(1) }}%</span>
@@ -366,14 +401,14 @@ onUnmounted(() => {
 
         <div class="flex items-center justify-between text-[12px] text-gray-300 mono pt-1 border-t border-white/5 font-medium">
           <span>Load: {{ system.loadAvg[0] !== undefined ? system.loadAvg[0].toFixed(2) : '0.00' }}</span>
-          <span class="text-emerald-400 font-bold">Nhiệt CPU: {{ cpuTempItem.temp_celsius.toFixed(1) }}°C</span>
+          <span class="text-emerald-400 font-bold">CPU: {{ cpuTempItem.temp_celsius > 0 ? `${cpuTempItem.temp_celsius.toFixed(1)}°C` : '—' }}</span>
         </div>
       </div>
 
       <!-- 2. Bandwidth Traffic In/Out Dual-Area Chart -->
       <div class="pro-card p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-[13.5px] mb-1">
-          <span class="font-bold text-emerald-400">🌐 Băng Thông Mạng (Live)</span>
+          <span class="font-bold text-emerald-400">{{ t('dash_bandwidth') }}</span>
           <span class="badge badge-blue text-[10.5px]">REALTIME</span>
         </div>
 
@@ -386,16 +421,16 @@ onUnmounted(() => {
                 <stop offset="100%" stop-color="#34d399" stop-opacity="0.0" />
               </linearGradient>
             </defs>
-            <path :d="generateAreaPath(rxHistory, 150, 300, 70)" fill="url(#rxGrad)" />
+            <path :d="generateAreaPath(rxHistory, netChartMax, 300, 70)" fill="url(#rxGrad)" />
             <polyline
-              :points="generatePoints(rxHistory, 150, 300, 70)"
+              :points="generatePoints(rxHistory, netChartMax, 300, 70)"
               fill="none"
               stroke="#34d399"
               stroke-width="2"
               stroke-linecap="round"
             />
             <polyline
-              :points="generatePoints(txHistory, 150, 300, 70)"
+              :points="generatePoints(txHistory, netChartMax, 300, 70)"
               fill="none"
               stroke="#38bdf8"
               stroke-width="1.5"
@@ -413,7 +448,7 @@ onUnmounted(() => {
       <!-- 3. Memory RAM Ring Donut Gauge -->
       <div class="pro-card p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-[13.5px] mb-1">
-          <span class="font-bold text-amber-300">🧠 Bộ Nhớ RAM (512MB)</span>
+          <span class="font-bold text-amber-300">{{ t('dash_ram') }} ({{ (system.ramPhysical || system.ramTotal) ? `${system.ramPhysical || system.ramTotal} MB` : '—' }})</span>
           <span class="mono font-bold text-amber-400 text-[14px]">{{ (system.ram || 0).toFixed(0) }}%</span>
         </div>
 
@@ -448,11 +483,13 @@ onUnmounted(() => {
             </div>
             <div class="flex justify-between text-gray-300">
               <span class="font-medium">Khả dụng:</span>
-              <span class="mono text-emerald-400 font-bold">{{ ((system.ramTotal || 512) - (system.ramUsed || 0)).toFixed(0) }} MB</span>
+              <span class="mono text-emerald-400 font-bold">{{ system.ramTotal ? `${Math.max(0, system.ramTotal - (system.ramUsed || 0)).toFixed(0)} MB` : '—' }}</span>
             </div>
             <div class="flex justify-between text-gray-400 text-[11.5px]">
-              <span>Tổng RAM:</span>
-              <span class="mono font-semibold">512 MB DDR3</span>
+              <span>Vật lý / HĐH:</span>
+              <span class="mono font-semibold" :title="system.ramReserved > 0 ? `Kernel & DMA giữ lại ${system.ramReserved} MB` : ''">
+                {{ system.ramTotal ? (system.ramReserved > 0 ? `${system.ramPhysical} MB (${system.ramTotal} MB OS)` : `${system.ramTotal} MB`) : '—' }}
+              </span>
             </div>
           </div>
         </div>
@@ -462,11 +499,11 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 4. Storage & Partitions Gauge (NAND + USB 500GB) Each with its own Circular Donut Ring -->
+      <!-- 4. Storage & Partitions Gauge -->
       <div class="pro-card p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-[13.5px] mb-1">
-          <span class="font-bold text-purple-300">💾 Lưu Trữ & Phân Vùng</span>
-          <RouterLink to="/nas" class="text-[12px] text-sky-400 hover:underline font-semibold">Chi tiết →</RouterLink>
+          <span class="font-bold text-purple-300">{{ t('dash_storage') }}</span>
+          <RouterLink to="/nas" class="text-[12px] text-sky-400 hover:underline font-semibold">→</RouterLink>
         </div>
 
         <div class="grid grid-cols-2 gap-2.5 my-1">
@@ -495,8 +532,8 @@ onUnmounted(() => {
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
               <div class="font-bold text-[13px] text-gray-100 truncate">NAND (/overlay)</div>
-              <div class="text-purple-300 font-bold text-[12px] truncate">{{ overlayVol ? formatMB(overlayVol.avail_kb) : '22.4 MB' }} trống</div>
-              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '180 MB' }}</div>
+              <div class="text-purple-300 font-bold text-[12px] truncate">{{ overlayVol ? `${formatMB(overlayVol.avail_kb)} trống` : '—' }}</div>
+              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ overlayVol ? formatMB(overlayVol.used_kb) : '—' }}</div>
             </div>
           </div>
 
@@ -525,16 +562,16 @@ onUnmounted(() => {
             </div>
             <div class="min-w-0 flex-1 space-y-0.5">
               <div class="font-bold text-[13px] text-gray-100 flex items-center justify-between">
-                <span class="truncate">USB NVMe</span>
+                <span class="truncate">USB Storage</span>
                 <span
                   class="text-[10.5px] mono font-bold px-1.5 py-0.5 rounded"
                   :class="diskTempItem?.disk_state === 'standby' ? 'bg-purple-900/40 text-purple-300 border border-purple-500/30' : (diskTempItem?.temp_celsius && diskTempItem.temp_celsius >= 65 ? 'bg-rose-900/40 text-rose-300' : 'bg-emerald-900/40 text-emerald-300 border border-emerald-500/30')"
                 >
-                  {{ diskTempItem?.disk_state === 'standby' ? '💤 Sleep' : (diskTempItem?.temp_celsius ? `${diskTempItem.temp_celsius.toFixed(0)}°C` : '53°C') }}
+                  {{ diskTempItem?.disk_state === 'standby' ? '💤 Sleep' : (diskTempItem?.temp_celsius ? `${diskTempItem.temp_celsius.toFixed(0)}°C` : '—') }}
                 </span>
               </div>
-              <div class="text-emerald-300 font-bold text-[12px] truncate">{{ usbHddVol ? formatMB(usbHddVol.avail_kb) : '234.7 GB' }} trống</div>
-              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '0.3 MB' }}</div>
+              <div class="text-emerald-300 font-bold text-[12px] truncate">{{ usbHddVol ? `${formatMB(usbHddVol.avail_kb)} trống` : 'Chưa gắn USB' }}</div>
+              <div class="text-gray-300 text-[11.5px] font-medium truncate">Dùng: {{ usbHddVol ? formatMB(usbHddVol.used_kb) : '—' }}</div>
             </div>
           </div>
         </div>
@@ -548,11 +585,11 @@ onUnmounted(() => {
               @click="triggerStandbyNow"
               title="Ngắt truy xuất cho SSD NVMe nghỉ ngay để hạ nhiệt"
             >
-              💤 {{ settingStandby ? 'Đang hạ nhiệt…' : 'Cho SSD Nghỉ' }}
+              💤 {{ settingStandby ? '…' : t('dash_standby_now') }}
             </button>
           </div>
           <div class="flex items-center gap-1 text-[10.5px]">
-            <span class="text-gray-400">Tự nghỉ:</span>
+            <span class="text-gray-400">{{ t('dash_auto_idle') }}</span>
             <select
               :value="idleTimeoutMins"
               class="bg-black/60 text-emerald-400 font-bold rounded px-1 py-0.5 border border-white/10 text-[10.5px] cursor-pointer"
@@ -622,7 +659,7 @@ onUnmounted(() => {
       <!-- Core Procd Services -->
       <div class="pro-card">
         <div class="pro-card-header">
-          <span class="pro-card-title">Core System Daemons (procd)</span>
+          <span class="pro-card-title">{{ t('dash_services') }}</span>
           <span class="text-[12px] text-gray-300 font-semibold">{{ services.length }} Monitored</span>
         </div>
 
@@ -642,6 +679,7 @@ onUnmounted(() => {
               </div>
             </div>
             <button
+              v-if="s.name !== 'r3p-api'"
               type="button"
               class="btn-secondary text-[12px] py-1 px-2.5 shrink-0 font-bold hover:text-white"
               title="Khởi động lại dịch vụ"
@@ -657,13 +695,15 @@ onUnmounted(() => {
       <div class="pro-card space-y-2.5">
         <div class="pro-card-header">
           <span class="pro-card-title">AdBlock Shield & SoC Info</span>
-          <RouterLink to="/adblock" class="text-[12px] text-sky-400 hover:underline font-semibold">AdBlock Tab →</RouterLink>
+          <RouterLink to="/adblock" class="text-[12px] text-sky-400 hover:underline font-semibold">AdBlock →</RouterLink>
         </div>
 
         <div class="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-bold text-[14px] text-emerald-300">🛡️ Lá Chắn DNS AdBlock</span>
-            <span class="badge badge-green text-[11px] font-bold">ACTIVE</span>
+            <span class="font-bold text-[14px] text-emerald-300">{{ t('dash_adblock_shield') }}</span>
+            <span class="badge text-[11px] font-bold" :class="adblockEnabled ? 'badge-green' : 'badge-gray'">
+              {{ adblockEnabled ? t('adblock_active') : t('adblock_disabled') }}
+            </span>
           </div>
 
           <!-- 4 Specific Stat Metrics with Counters -->
@@ -713,8 +753,8 @@ onUnmounted(() => {
       <!-- Connected DHCP Clients Table -->
       <div class="pro-card">
         <div class="pro-card-header">
-          <span class="pro-card-title">Active DHCP Clients ({{ network.clients.length }})</span>
-          <RouterLink to="/access" class="text-[12px] text-sky-400 hover:underline font-semibold">DHCP & Leases →</RouterLink>
+          <span class="pro-card-title">{{ t('dash_active_clients') }} ({{ network.clients.length }})</span>
+          <RouterLink to="/access" class="text-[12px] text-sky-400 hover:underline font-semibold">DHCP &amp; Leases →</RouterLink>
         </div>
 
         <div class="overflow-x-auto h-52">

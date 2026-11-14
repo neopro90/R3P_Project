@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface ServiceItem {
   name: string
@@ -47,6 +50,7 @@ const newRepoName = ref('')
 const newRepoUrl = ref('')
 const newRepoBranch = ref('main')
 const directInstallInput = ref('')
+const allowUntrusted = ref(false)
 
 const loading = ref(false)
 const searching = ref(false)
@@ -205,6 +209,7 @@ async function installPackage(pkgName: string, downloadUrl = '') {
       body: JSON.stringify({
         package: target,
         download_url: downloadUrl,
+        allow_untrusted: allowUntrusted.value,
       }),
     })
     terminalOutput.value = res.output || ''
@@ -291,9 +296,9 @@ onMounted(() => {
     <div class="pro-card border border-sky-500/25">
       <div class="pro-card-header flex-wrap">
         <div class="min-w-0">
-          <span class="pro-card-title text-sky-400">📦 Quản Lý Nguồn Ứng Dụng GitHub & OpenWrt Package Feeds</span>
+          <span class="pro-card-title text-sky-400">{{ t('apps_repo_heading') }}</span>
           <p class="text-[11px] text-gray-400 mt-0.5">
-            Thêm URL kho lưu trữ GitHub chứa ứng dụng OpenWrt (<code class="mono text-sky-300">https://github.com/owner/repo</code>) hoặc APK/OPKG Feed URL để tìm kiếm và cài đặt trực tiếp.
+            {{ t('apps_repo_sub') }}
           </p>
         </div>
         <button
@@ -397,18 +402,22 @@ onMounted(() => {
         <div>
           <span class="pro-card-title text-emerald-400">🔍 Tìm Kiếm & Cài Đặt Ứng Dụng OpenWrt / GitHub ({{ catalog.length }} kết quả)</span>
           <p class="text-[11px] text-gray-400 mt-0.5">
-            Tìm gói từ kho OpenWrt 25.12 (<code class="mono">mipsel_24kc</code>) & các GitHub Repo đã thêm, hoặc nhập tên gói / link file <code class="mono">.apk / .ipk / .sh</code> để cài đặt ngay.
+            Tìm gói từ kho OpenWrt (<code class="mono">mipsel_24kc</code>) &amp; các GitHub Repo đã thêm, hoặc nhập tên gói / link file <code class="mono">.apk / .ipk</code> để cài đặt an toàn.
           </p>
         </div>
 
         <!-- Direct package name or URL installer -->
-        <form class="flex items-center gap-1.5" @submit.prevent="handleDirectInstall">
+        <form class="flex flex-wrap items-center gap-2" @submit.prevent="handleDirectInstall">
           <input
             v-model="directInstallInput"
             type="text"
             class="pro-input w-72 mono text-xs"
-            placeholder="Nhập tên gói (VD: htop, iperf3) hoặc URL .apk/.ipk/.sh..."
+            placeholder="Nhập tên gói (VD: htop, iperf3) hoặc URL .apk/.ipk..."
           />
+          <label class="flex items-center gap-1.5 text-[11px] text-gray-300 cursor-pointer select-none" title="Chỉ bật khi cài gói tự biên dịch không chữ ký OpenWrt">
+            <input v-model="allowUntrusted" type="checkbox" class="accent-amber-500" />
+            <span>allow_untrusted</span>
+          </label>
           <button
             type="submit"
             class="btn-primary text-xs whitespace-nowrap"
@@ -485,7 +494,7 @@ onMounted(() => {
                 {{ pkgActionLoading === `install:${app.name}` ? 'Đang cài…' : '⬇ Cài Đặt' }}
               </button>
               <button
-                v-else
+                v-else-if="app.name !== 'r3p-api'"
                 type="button"
                 class="btn-danger text-[11.5px] font-bold py-1 px-3 min-w-[86px]"
                 :disabled="pkgActionLoading !== null"
@@ -493,6 +502,7 @@ onMounted(() => {
               >
                 {{ pkgActionLoading === `remove:${app.name}` ? 'Đang gỡ…' : '🗑 Gỡ Bỏ' }}
               </button>
+              <span v-else class="badge badge-blue text-[10px]">CORE PROTECTED</span>
             </div>
           </div>
         </div>
@@ -559,6 +569,7 @@ onMounted(() => {
                     {{ s.running ? 'Stop' : 'Start' }}
                   </button>
                   <button
+                    v-if="s.name !== 'r3p-api'"
                     type="button"
                     class="btn-primary text-[10px] py-0.5 px-2"
                     :disabled="actionLoading !== null"
@@ -567,6 +578,7 @@ onMounted(() => {
                     Restart
                   </button>
                   <button
+                    v-if="s.name !== 'r3p-api'"
                     type="button"
                     class="btn-secondary text-[10px] py-0.5 px-2 min-w-[82px]"
                     :disabled="actionLoading !== null"

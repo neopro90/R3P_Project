@@ -1,44 +1,38 @@
-# SYSTEM ARCHITECTURE SPECIFICATION — R3P HOME SERVER OS
+# SYSTEM ARCHITECTURE SPECIFICATION — R3P HOME SERVER OS (`v1.1.26`)
 
 ## 1. High-Level Architecture Overview
 
-R3P Home Server OS employs a decoupled **Modular Monolith** architecture designed specifically for the resource footprint of the Xiaomi Mi Router 3 Pro (MT7621AT SoC, 512MB RAM, 256MB SLC NAND).
+R3P Home Server OS employs a self-contained **Modular Monolith** designed specifically for the hardware envelope of the **Xiaomi Mi Router 3 Pro** (`MT7621AT` dual-core 880 MHz MIPS32 LE, 512 MB DDR3 RAM, 256 MB SLC NAND, USB 3.0).
 
 ```
 +-------------------------------------------------------------------------+
 |                              FRONTEND LAYER                             |
-|       Vue 3.4+ / TypeScript / Vite / Tailwind CSS / Glassmorphism       |
-|                  Responsive Web SPA & PWA (Desktop & Mobile)             |
+|    Vue 3.5 / TypeScript / Pinia / Tailwind CSS v4 / Hass Multi-Theme    |
+|     Native Fetch (apiRequest/apiFetchRaw) + EventSource SSE Client      |
 +-------------------------------------------------------------------------+
                                     |
-                                    | REST (JSON) & WebSocket (SSE / WS)
+                                    | HTTPS :8443 (JSON API & text/event-stream)
                                     v
 +-------------------------------------------------------------------------+
-|                              BACKEND LAYER                              |
-|                 r3p-api: Native Go Daemon (mipsle static)               |
+|                         BACKEND LAYER (r3p-api)                         |
+|         Single Static Go Binary (linux/mipsle softfloat, -s -w)         |
 |                                                                         |
 |  +-------------------------------------------------------------------+  |
-|  |                  API Gateway & Routing Engine                     |  |
+|  | TLS 1.2+ HTTP Server | Session Auth | Rate Limiter | Same-Host CORS|  |
 |  +-------------------------------------------------------------------+  |
-|  | Authentication | Authorization | Rate Limiting | Audit Logging    |  |
-|  +-------------------------------------------------------------------+  |
-|  |                          Core Services                            |  |
-|  |  [Dashboard] [Network] [Wireless] [Firewall] [Storage & NAS]      |  |
-|  |  [Downloads] [Automation] [Applications] [IoT] [Plugins] [System] |  |
+|  |                     Core Feature Modules                          |  |
+|  |  dashboard | network_config | network_speedtest | wireless        |  |
+|  |  firewall  | adblock        | ai_agent          | ddns            |  |
+|  |  r3p_downloader + aria2 + telegram | gdrive_sync | nas            |  |
+|  |  file_explorer | apps_pkg | automation | iot | plugins | ota      |  |
 |  +-------------------------------------------------------------------+  |
 +-------------------------------------------------------------------------+
                                     |
-                                    | System Adapter Layer
-                                    v
-+-------------------------------------------------------------------------+
-|                          SYSTEM ADAPTER LAYER                           |
-|       ubus-cli / UCI engine / netifd / procd / nftables / sysfs / procfs|
-+-------------------------------------------------------------------------+
-                                    |
+                                    | ubus / uci / netifd / procd / fw4 / procfs
                                     v
 +-------------------------------------------------------------------------+
 |                        OPENWRT EMBEDDED LINUX                           |
-|      OpenWrt 25.12.5 Base / Linux Kernel 6.12.94 / musl libc / MT7621   |
+|          OpenWrt 25.12.5 (ramips/mt7621) · Linux 6.12 · musl            |
 +-------------------------------------------------------------------------+
 ```
 
@@ -47,41 +41,24 @@ R3P Home Server OS employs a decoupled **Modular Monolith** architecture designe
 ## 2. Layer Definitions
 
 ### 2.1. Presentation Layer (Frontend SPA)
-- **Framework:** Vue 3 Composition API with `<script setup lang="ts">`.
-- **State Management:** Reactive stores using Pinia / Vue Reactivity.
-- **Styling:** Custom Glassmorphism design system (`#0d1117` base, frosted glass borders, CSS backdrop filters, responsive grid).
-- **Communication:** Axios HTTP client for REST APIs + Native WebSocket for live streaming telemetry.
-- **Footprint:** Production bundle compressed under 200 KB total; served directly by backend or lightweight uhttpd.
+- **Framework:** Vue 3.5 (`<script setup lang="ts">`) + Pinia stores (`auth`, `system`, `network`) + Vue Router.
+- **Theming & i18n:** Custom Hass-inspired themes (`hass-classic`, `hass-mushroom`, `hass-neon`), Dark/Light/System modes, 5 accent color palettes (`blue`, `teal`, `purple`, `green`, `orange`), and `vi`/`en`/`cn` localization in `useUiPreferences.ts`.
+- **Transport:** Lightweight native `fetch` wrapper (`api.ts`: `apiRequest` & `apiFetchRaw`) with automatic `r3p:unauthorized` session invalidation + visibility-aware polling + Server-Sent Events (`useSSE.ts` -> `/api/v1/monitor/stream`). Zero external Axios or WebSocket runtime bloat.
+- **Verification:** `vue-tsc -b` strict TypeScript checking + `vitest` unit test suite (`happy-dom`).
 
-### 2.2. Service & Gateway Layer (Go Modular Monolith)
-- **Runtime:** Native single static binary compiled for `mipsle` (`softfloat`).
-- **Memory Footprint:** Resident Set Size (RSS) under 18 MB.
-- **Concurrency Model:** Goroutines with bounded worker pools to prevent CPU starvation on MT7621.
-- **Core Modules:**
-  - `AuthService`: Constant-time secret verification, 8-hour session tokens, IP-based rate limiting.
-  - `MonitorService`: Zero-overhead `/proc` and `/sys` telemetry parser emitting 1-second system metrics.
-  - `NetworkService`: Bridged interface statistics, DHCP lease table, DNS resolver diagnostics.
-  - `WirelessService`: Dual-band MT7615 radio configuration via `iwinfo` and `uci`.
-  - `FirewallService`: Validated zone rules, port forwarder, and active connection tracking via `nftables`.
-  - `StorageService`: USB mass-storage hotplug detector, mount controller, and Samba / SFTP share manager.
-  - `DownloadService`: Aria2 JSON-RPC client bridge with download queue, speed limiter, and storage selector.
-  - `AutomationService`: Cron scheduler, webhook receiver, and Telegram alert dispatcher.
-  - `SystemService`: Firmware sysupgrade trigger, NTP sync, process supervisor, and reboot/shutdown handler.
-
-### 2.3. System Adapter Layer
-To guarantee system stability and prevent arbitrary command execution:
-1. **No direct shell execution from user input.**
-2. All operating system modifications pass through typed Go adapter methods.
-3. Every command is executed via `exec.CommandContext` with strict timeouts (max 5 seconds).
-4. Command arguments are passed as discrete token arrays, eliminating shell injection vectors.
-5. All configuration mutations invoke `uci commit` followed by targeted service reload (`procd`).
+### 2.2. Backend Daemon (`source/backend` -> `/usr/bin/r3p-api`)
+- **Target:** Cross-compiled statically (`GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 -trimpath -ldflags="-s -w"`).
+- **Network & Speedtest (`network_config.go`, `network_speedtest.go`):** Configures LAN/WAN/WWAN/USBWAN interfaces with subnet overlap prevention and runs real socket-bound (`SO_BINDTODEVICE`/local IP dial) multi-stream HTTP download/upload speedtests with TCP RTT/jitter measurement and concurrency locking (`409 Conflict` when busy).
+- **AdBlock & DNS (`adblock.go`):** Atomically generates `/tmp/dnsmasq.d/r3p-adblock.conf` from local builtins + SSRF-checked public sources, controls `dnsmasq` `force_dns` / upstream resolvers / SafeSearch, and classifies live DNS queries from `logread`.
+- **Downloader, Telegram & GDrive (`r3p_downloader.go`, `aria2.go`, `telegram.go`, `gdrive_sync.go`):** Fully local download queue powered by native HTTP/S, `yt-dlp`, and `aria2` JSON-RPC on `/mnt/sda1/downloads`, paired with Telegram long-polling message analyzer (routing pure URLs to Downloader and natural-language messages to AI) and background Google Drive sync with mutex-coalesced OAuth2 refresh.
+- **AI Assistant (`ai_agent.go`):** Multi-provider OpenAI-compatible + Gemini agent with Browser Bridge option, `r3p.db` persistence for config/memory/quick-commands, session history, URL pre-filtering, `/sh` / `!` root shell routing gated by `allow_exec`, and SSRF/DNS-rebinding-checked base URLs.
+- **Router Operations (`handlers_ext.go`, `apps_pkg.go`, `file_explorer.go`, `ddns.go`, `firmware_update.go`):** Covers MT7615 Wi-Fi + station management, `fw4`/UCI port forwards & traffic rules with snapshot rollback, NAS Samba4/FTP + USB 3.0 mount/format/benchmark, APK/IPK + GitHub App Manager, ICMP/TCP IoT & MQTT broker liveness probing, preset-allowlisted Plugins & strict 5-field Automation cron jobs, raw UCI editor with secret masking, `uci show` validation & `.bak` restore, sanitized backups, and verified OTA updates.
 
 ---
 
-## 3. Storage Hierarchy & Partition Policy
-
-| Storage Medium | Path | Persistence | Allocated Role |
-|---|---|---|---|
-| **NAND Flash (UBI)** | `/etc/`, `/root/` | Persistent | OS binaries, system configurations, TLS certificates |
-| **RAM (tmpfs)** | `/tmp/`, `/var/run/` | Volatile | Process PID files, ephemeral telemetry cache, DHCP leases |
-| **USB 3.0 External** | `/mnt/usb/` | Persistent | Download payloads, media files, SQLite persistent event database |
+## 3. Storage Hierarchy & Constraints
+| Medium | Mount / Path | Purpose |
+|---|---|---|
+| **SLC NAND (UBIFS)** | `/etc/r3p/r3p.db`, `/etc/config/`, `/www/`, `/usr/bin/r3p-api` | Embedded `bbolt` Settings DB (`0600`), UCI configs, SPA assets, Go binary |
+| **RAM (`tmpfs`)** | `/tmp/` | `/tmp/dnsmasq.d/r3p-adblock.conf`, runtime logs, staged OTA/restore uploads |
+| **USB 3.0 External** | `/mnt/sda1/` (ext4/exfat/vfat) | Downloaded media (`/mnt/sda1/downloads`), NAS shares, Google Drive local mirror |

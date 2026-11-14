@@ -22,15 +22,14 @@ The firmware init service creates a random 256-bit API token on first boot and s
 
 Cross-origin requests are allowed only when the request Origin and API Host have the same hostname. Wildcard CORS is not enabled.
 
-## Read-only USB file browser
+## Unified Settings DB & UI Preferences
 
-- `GET /api/v1/files?mount=<mount-point>&path=<relative-path>` lists a directory.
-- `GET /api/v1/files/download?mount=<mount-point>&path=<relative-path>` streams a regular file as an attachment.
-- `GET /api/v1/files/preview?mount=<mount-point>&path=<relative-path>` streams supported raster images inline for the Photo Library.
+- Firmware module configs, automation/AI collections, audit events, and web dashboard preferences (`/api/v1/ui/preferences`) are persisted atomically in `/etc/r3p/r3p.db` (`bbolt`, mode `0600`) with automatic legacy JSON migration and `/tmp`-safe backup/restore sanitization.
 
-All routes require the authenticated session. The mount point must match a currently mounted `/dev/sd*` or `/dev/mmcblk*` volume below `/mnt/` or `/media/`. Paths are relative to that mount, parent traversal and backslash separators are rejected, symlink entries are skipped from listings, and each directory response is capped at 500 entries. Preview is limited to JPEG, PNG, GIF, WebP, BMP, and AVIF; SVG/HTML are not served inline. File operations are read-only; there are no upload, overwrite, or delete routes.
+## Router File Explorer
 
-The browser dashboard layout, theme, and automation drafts are local browser preferences. Automation drafts are not sent to or executed by the router. Diagnostic endpoints expose fixed read-only checks; the API does not provide a general shell or arbitrary command endpoint.
+- `GET /api/v1/explorer/list`, `/explorer/read`, `/explorer/raw`, `POST /explorer/write`, `/explorer/create`, and `DELETE /explorer/delete` operate under Go `os.OpenRoot` (`/`), resolve ancestor symlinks via `filepath.EvalSymlinks`, cap directory listings at 500 entries, and block sensitive credential paths (`/etc/shadow`, `/etc/r3p/api-token`, `/etc/r3p/r3p.db`, `/etc/dropbear/`, etc.) plus dangerous OS root directories from modification/deletion.
+- `GET /api/v1/files`, `/files/download`, and `/files/preview` provide read-only mounted USB media browsing and raster image previews (SVG/HTML inline serving is blocked).
 
 ## Mini-server module status
 

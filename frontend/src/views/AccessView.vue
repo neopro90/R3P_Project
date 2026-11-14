@@ -2,8 +2,10 @@
 import { ref, onMounted, computed } from 'vue'
 import { apiRequest } from '@/services/api'
 import { useSystemStore } from '@/stores/system'
+import { useUiPreferences } from '@/composables/useUiPreferences'
 
 const system = useSystemStore()
+const { t } = useUiPreferences()
 const lanSubnetBadge = computed(() => (system.lanIp ? `${system.lanIp}/24` : 'LAN DHCP'))
 const defaultStaticPrefix = computed(() => {
   const parts = (system.lanIp || '').split('.')
@@ -18,7 +20,8 @@ interface StaticLease {
 }
 
 interface ActiveLease {
-  expires: number
+  expiry?: number
+  expires?: number
   mac: string
   ip: string
   hostname: string
@@ -190,18 +193,25 @@ async function forceUpdateDDNS() {
   updatingDdns.value = true
   ddnsConfig.value.domain = (ddnsConfig.value.domain || '').trim()
   ddnsConfig.value.token = (ddnsConfig.value.token || '').trim()
+  ddnsConfig.value.username = (ddnsConfig.value.username || '').trim()
+  ddnsConfig.value.custom_url = (ddnsConfig.value.custom_url || '').trim()
   notice.value = 'Đang gửi yêu cầu cập nhật IP tới máy chủ DDNS…'
   try {
-    // First save the trimmed values
-    await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns', {
+    // PUT /access/ddns already runs performDDNSUpdateLocked when enabled; only call /access/ddns/update separately if disabled
+    const saveRes = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns', {
       method: 'PUT',
       body: JSON.stringify(ddnsConfig.value),
     })
-    const res = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns/update', {
-      method: 'POST',
-    })
-    showToast(res?.message || 'Cập nhật DDNS thành công!', 4500)
-    if (res?.ddns) ddnsConfig.value = res.ddns
+    if (ddnsConfig.value.enabled) {
+      if (saveRes?.ddns) ddnsConfig.value = saveRes.ddns
+      showToast(saveRes?.message || 'Cập nhật DDNS thành công!', 4500)
+    } else {
+      const res = await apiRequest<{ message: string; ddns: DDNSConfigModel }>('/access/ddns/update', {
+        method: 'POST',
+      })
+      showToast(res?.message || 'Cập nhật DDNS thành công!', 4500)
+      if (res?.ddns) ddnsConfig.value = res.ddns
+    }
   } catch (err: any) {
     const rawErr = String(err?.message || err).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
     showToast('Cập nhật DDNS thất bại: ' + rawErr, 5000)
@@ -275,7 +285,8 @@ function pinActiveClient(client: ActiveLease) {
   }, 50)
 }
 
-function formatRemainingTime(expiresSec: number): string {
+function formatRemainingTime(expiresSec?: number): string {
+  if (!expiresSec || expiresSec <= 0) return '∞ / Đang hoạt động'
   const diff = expiresSec - nowUnix.value
   if (diff <= 0) return 'Hết hạn'
   const h = Math.floor(diff / 3600)
@@ -292,7 +303,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="p-4 space-y-4 max-w-7xl mx-auto">
+  <div class="h-full w-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
     <!-- Floating Non-Shifting Notice Toast Bar -->
     <div
       v-if="notice"
@@ -311,16 +322,16 @@ onMounted(() => {
       <form class="pro-card flex flex-col justify-between p-3.5" @submit.prevent="saveSSH">
         <div>
           <div class="pro-card-header pb-2 mb-2 border-b border-white/10">
-            <span class="pro-card-title">SSH Server (Dropbear)</span>
+            <span class="pro-card-title">{{ t('acc_ssh_title') }}</span>
             <span class="badge badge-blue">DROPBEAR</span>
           </div>
           <div class="space-y-2.5 text-[13px]">
             <div class="flex items-center justify-between">
-              <span class="text-gray-300 font-medium">Cổng Lắng Nghe (Port)</span>
+              <span class="text-gray-300 font-medium">{{ t('acc_ssh_port') }}</span>
               <input v-model="sshConfig.port" type="number" min="1" max="65535" class="pro-input w-24 mono text-right font-bold text-sky-400" />
             </div>
             <label class="flex items-center justify-between py-1 cursor-pointer">
-              <span class="text-gray-300 font-medium">Xác thực Mật khẩu</span>
+              <span class="text-gray-300 font-medium">{{ t('acc_ssh_pw_auth') }}</span>
               <input v-model="sshConfig.password_auth" type="checkbox" class="w-4 h-4 accent-sky-500" />
             </label>
             <label class="flex items-center justify-between py-1 cursor-pointer">
@@ -464,7 +475,12 @@ onMounted(() => {
             class="w-full pro-input mono text-gray-200"
             placeholder="Nhập Token lấy từ DuckDNS hoặc API Key"
           />
-          <p class="text-[11px] text-gray-400 mt-1">Lấy tại trang quản trị tài khoản DuckDNS hoặc nhà cung cấp DNS.</p>
+          <p class="text-[11px] text-gray-400 mt-1">
+            <span v-if="ddnsConfig.token.startsWith('••••')" class="text-emerald-400">
+              Token đã được ẩn bảo mật — giữ nguyên giá trị <code class="mono">••••</code> nếu không thay đổi.
+            </span>
+            <span v-else>Lấy tại trang quản trị tài khoản DuckDNS hoặc nhà cung cấp DNS.</span>
+          </p>
         </div>
       </div>
 
@@ -510,7 +526,7 @@ onMounted(() => {
         <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
           <span class="text-gray-400 shrink-0">Trạng thái gần nhất:</span>
           <span
-            class="font-bold mono truncate block max-w-[360px] lg:max-w-[500px]"
+            class="font-bold mono truncate block min-w-0"
             :class="ddnsConfig.last_status.includes('Thành công') || ddnsConfig.last_status.includes('OK') ? 'text-emerald-400' : 'text-amber-300'"
             :title="ddnsConfig.last_status"
           >
@@ -575,7 +591,7 @@ onMounted(() => {
               <td class="mono font-bold text-sky-400">{{ c.ip }}</td>
               <td class="mono text-gray-300 font-medium">{{ c.mac }}</td>
               <td class="text-gray-300">{{ c.oui_vendor || 'Generic' }}</td>
-              <td class="mono text-emerald-400 font-semibold">{{ formatRemainingTime(c.expires) }}</td>
+              <td class="mono text-emerald-400 font-semibold">{{ formatRemainingTime(c.expiry ?? c.expires) }}</td>
               <td class="text-right">
                 <button
                   type="button"

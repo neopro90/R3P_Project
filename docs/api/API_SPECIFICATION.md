@@ -1,117 +1,84 @@
-# API SPECIFICATION — R3P HOME SERVER OS
+# API SPECIFICATION — R3P HOME SERVER OS (`v1.1.26`)
 
 Base URL: `https://<router-ip>:8443/api/v1`
 
----
+Every JSON response wraps data in a uniform envelope:
+- Success: `{ "ok": true, "data": <payload> }`
+- Error: `{ "ok": false, "error": "<message>" }`
 
-## 1. Authentication Endpoints
-
-### 1.1. Check Session Status
-- **Route:** `GET /auth/session`
-- **Auth:** None (Cookie evaluated if present)
-- **Response:**
-  ```json
-  { "ok": true, "data": { "authenticated": true } }
-  ```
-
-### 1.2. Create Session (Login)
-- **Route:** `POST /auth/session`
-- **Auth:** None
-- **Body:**
-  ```json
-  { "token": "64_HEX_CHAR_TOKEN" }
-  ```
-- **Response:** `200 OK` + `Set-Cookie: r3p_session=...; HttpOnly; SameSite=Strict`
-
-### 1.3. Terminate Session (Logout)
-- **Route:** `DELETE /auth/session`
-- **Response:** `200 OK` + Cookie expired.
+All endpoints except `GET /health` and `/auth/session` require a valid `r3p_session` session cookie and same-host origin.
 
 ---
 
-## 2. System & Telemetry Endpoints
+## 1. Authentication & Telemetry
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/health` | Unauthenticated liveness status (`version`, `arch`, `os`, `uptime_seconds`) |
+| `GET` | `/auth/session` | Check active session status |
+| `POST` | `/auth/session` | Authenticate with `/etc/shadow` Linux password or 64-char API token (`r3p_session` cookie) |
+| `DELETE` | `/auth/session` | Revoke active session |
+| `GET` | `/monitor/stream` | SSE live telemetry stream (`text/event-stream`) |
+| `GET` | `/system` | System summary (`hostname`, `kernel`, `arch`, `version`, `hardware`, `lan_ip`, `timezone`, `internet`) |
+| `GET` | `/memory` | `/proc/meminfo` & `/proc/iomem` breakdown (`physical_total_kb`, `reserved_kb`, `total_kb`, `used_kb`, `used_percent`) |
 
-### 2.1. System Health
-- **Route:** `GET /health`
-- **Auth:** None
-- **Response:**
-  ```json
-  {
-    "ok": true,
-    "data": {
-      "status": "ok",
-      "version": "0.2.0-phase1",
-      "arch": "mipsle",
-      "os": "linux",
-      "uptime_seconds": 12450.2
-    }
-  }
-  ```
+## 2. Network, Speedtest, Wireless & Firewall
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/network` | Interface RX/TX byte counters and link status |
+| `GET` | `/network/details` | Kernel routing table, active `/etc/resolv.conf` resolvers, ARP neighbors |
+| `GET` | `/network/internet` | Live WAN reachability probe |
+| `GET \| PUT` | `/network/interfaces-config` | View/save LAN, WAN, WWAN, USBWAN & quick gateway/DNS (enforces subnet overlap check) |
+| `POST` | `/network/interfaces-config/action` | Bring interface `ifup` / `ifdown` or `reload` network stack |
+| `POST` | `/network/speedtest?interface=wan` | Bound multi-stream HTTP download/upload speedtest + TCP RTT/jitter (returns `409` if test already active) |
+| `GET \| PUT` | `/wireless` | Dual-band MT7615 radio configuration (`key` is masked on `GET`) |
+| `POST` | `/wireless/restart` | Reload wireless radios |
+| `GET` | `/wireless/scan` | Nearby SSID scan + client Wi-Fi management (`/wireless/client`, `/wireless/saved*`) |
+| `GET` | `/firewall` | Active UCI zones, NAT redirects, traffic rules & conntrack stats |
+| `POST \| PATCH \| DELETE` | `/firewall/redirect` | Manage NAT port-forwarding rules (IPv4 + port validation, auto-rollback on commit error) |
+| `POST \| PATCH \| DELETE` | `/firewall/rule` | Manage firewall traffic rules (`ACCEPT`/`DROP`/`REJECT`, `tcp`/`udp`/`all`) |
 
-### 2.2. Live Telemetry Stream (Server-Sent Events)
-- **Route:** `GET /monitor/stream`
-- **Auth:** Session Cookie
-- **Format:** `text/event-stream` (Emits JSON telemetry payload every 1,000 ms)
+## 3. AdBlock, Access, DDNS & AI Assistant
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/adblock` | AdBlock engine stats, DNS listening check, sources, whitelist & blacklist |
+| `PUT` | `/adblock/config` | Update `enabled`, `force_dns`, `block_mode`, `upstream_dns`, `safe_search`, `auto_update` |
+| `POST` | `/adblock/update` | Force refresh remote blocklists (SSRF checked) & reload `dnsmasq` |
+| `POST \| PATCH \| DELETE` | `/adblock/lists` | Add/toggle/remove custom blocklist URLs |
+| `POST \| DELETE` | `/adblock/domains` | Manage whitelist/blacklist entries & `/adblock/test` domain lookup |
+| `GET` | `/adblock/streams` | Live DNS stream inspector + `DELETE` stats reset |
+| `GET` | `/access` | Dropbear SSH, DHCP pool, active/static leases, masked DDNS state |
+| `PUT` | `/access/ssh` | Update SSH port & password/root login policy |
+| `PUT` | `/access/dhcp` | Configure `dnsmasq` LAN DHCP pool |
+| `POST \| DELETE` | `/access/static-lease` | Add/remove MAC-bound DHCP static leases |
+| `POST` | `/access/password` | Synchronize Linux `root` password |
+| `GET \| PUT` | `/access/ddns` | Configure DuckDNS/Cloudflare/No-IP/DynDNS/Custom DDNS + `POST /access/ddns/update` |
+| `GET \| PUT` | `/ai/config` | Configure LLM provider, base URL, model & execution toggles (`api_key` masked) |
+| `POST \| DELETE` | `/ai/chat` | Interactive chat, Browser Bridge continuation, bare-URL forwarding, `/sh ` commands & clear chat |
+| `GET \| POST \| PUT \| DELETE` | `/ai/sessions` | Manage chat sessions, `/ai/memory` notes, `/ai/blueprint`, `/ai/quick-commands` |
 
-### 2.3. System Hardware & Load
-- **Route:** `GET /system`
-- **Response:** CPU model, cores, frequency, load averages, memory distribution, board name.
+## 4. Downloads, Telegram, GDrive, NAS & Files
+| Method | Route | Description |
+|---|---|---|
+| `GET \| POST \| DELETE` | `/download/jobs` | Manage native `yt-dlp` / Aria2 download queue (`/download/jobs/{id}`, `/retry`) |
+| `GET \| POST` | `/download/files` | Browse USB download library & `GET /download/file?sub_path=...` authenticated download |
+| `GET \| PUT` | `/download/settings`, `/download/config` | Configure output directory, concurrency & quality preferences |
+| `GET \| PUT \| DELETE` | `/telegram`, `/download/telegram/*` | Configure Telegram bot polling, URL vs AI auto-router & logs |
+| `GET \| POST \| PUT` | `/nas/gdrive-sync` | Configure Google Drive sync mappings & OAuth credentials (`POST /nas/gdrive-sync/run`, `/refresh`, `/clear-log`) |
+| `GET` | `/usb/status`, `/nas/overview` | Disk partitions, temperatures & Samba4/FTP status (`POST /usb/mount`, `/usb/format`, `/usb/benchmark`) |
+| `GET \| POST \| PUT \| DELETE` | `/nas/services`, `/nas/shares`, `/nas/users` | Manage Samba4/FTP daemons, shared folders & UNIX/SMB accounts (`/nas/upload`, `/nas/download`, `/nas/mkdir`) |
+| `GET \| POST` | `/explorer/list`, `/explorer/read`, `/explorer/write`, `/explorer/create`, `/explorer/delete`, `/explorer/raw` | Sandboxed Router File Explorer (blocks secret configs, roots & symlinks) |
 
-### 2.4. Memory Metrics
-- **Route:** `GET /memory`
-- **Response:** RAM Total, Used, Free, Shared, Buffers, Cached.
-
----
-
-## 3. Network & Wireless Endpoints
-
-### 3.1. Network Interfaces
-- **Route:** `GET /network`
-- **Response:** Active interfaces, IP addresses, MACs, TX/RX bytes, link states.
-
-### 3.2. Connected Clients (DHCP Leases + ARP)
-- **Route:** `GET /clients`
-- **Response:** Array of connected client devices, hostname, IP, MAC, connection interface.
-
-### 3.3. Wireless Radio Status
-- **Route:** `GET /wireless`
-- **Response:** Radios (2.4GHz & 5GHz), SSIDs, encryption, channels, txpower, connected clients.
-
----
-
-## 4. Storage & NAS Endpoints
-
-### 4.1. Storage Devices
-- **Route:** `GET /storage`
-- **Response:** Block devices, mount points, filesystem types, used and available space.
-
-### 4.2. File Browser
-- **Route:** `GET /files?path=/mnt/usb/`
-- **Response:** Directory listings, file names, sizes, permissions, last modified dates.
-
----
-
-## 5. Download Bot Endpoints
-
-### 5.1. List Downloads
-- **Route:** `GET /downloads`
-- **Response:** Active, waiting, and completed Aria2 download jobs with speed and progress.
-
-### 5.2. Add Download URL
-- **Route:** `POST /downloads`
-- **Body:**
-  ```json
-  { "url": "https://example.com/file.zip", "destination": "/mnt/usb/downloads" }
-  ```
-- **Response:** `201 Created` with Aria2 GID.
-
----
-
-## 6. Automation & Notification Endpoints
-
-### 6.1. Telegram Configuration
-- **Route:** `GET /telegram` | `PUT /telegram` | `DELETE /telegram`
-- **PUT Body:**
-  ```json
-  { "bot_token": "...", "chat_id": "...", "notifications_enabled": true }
-  ```
+## 5. Applications, Automation, IoT, Plugins, UCI & OTA
+| Method | Route | Description |
+|---|---|---|
+| `GET \| POST` | `/services/all`, `/services/control` | Inspect procd services & control (`r3p-api` protected from stop/disable) |
+| `GET \| POST \| DELETE` | `/packages`, `/packages/repos`, `/packages/search`, `/packages/install`, `/packages/remove` | APK/IPK package manager & GitHub repo inspector |
+| `GET \| POST \| PATCH \| DELETE` | `/automation/cron` | Manage root crontab schedules + `POST /automation/run` |
+| `GET \| POST \| PUT \| DELETE` | `/iot`, `POST /iot/ping` | IoT LAN device & MQTT broker monitoring |
+| `GET \| POST` | `/plugins` | Preset-allowlisted system plugins (`ram_flush`, `lan_probe`, `nand_health`, `dns_reload`, etc.) |
+| `GET \| PUT` | `/config`, `GET /config/backups`, `POST /config/restore` | Direct UCI editor with `uci show` syntax validation, `.bak` backup & restore |
+| `GET` | `/system/backup` | Download sanitized `.tar.gz` config archive (includes sanitized `r3p.db` snapshot; add `?include_secrets=1` for full backup) |
+| `GET \| POST` | `/system/db` | Inspect embedded `/etc/r3p/r3p.db` bucket counts/size and run `sync` / `migrate` |
+| `GET \| PUT \| POST` | `/ui/preferences` | Persist UI theme, locale, layout, and dashboard state in `r3p.db` |
+| `POST` | `/system/restore`, `/system/settings`, `/system/drop-caches`, `/system/reboot` | Validated archive restore, hostname/timezone update & power controls |
+| `GET \| PUT \| POST` | `/system/firmware/status`, `/config`, `/github-check`, `/github-update`, `/upload`, `/apply` | GitHub/manual OTA updater with SHA-256, MIPSLE ELF32 & tar safety verification |

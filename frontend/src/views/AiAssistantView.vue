@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface AIConfig {
   provider: string
@@ -250,7 +253,7 @@ async function createNewSession() {
 
 async function deleteSession(id: string) {
   if (sessions.value.length <= 1) {
-    alert('Không thể xóa phiên duy nhất còn lại.')
+    errorMsg.value = 'Không thể xóa phiên duy nhất còn lại.'
     return
   }
   if (!confirm('Bạn có chắc chắn muốn xóa phiên trò chuyện này?')) return
@@ -562,13 +565,19 @@ async function sendMessage(textToSend?: string) {
           : []
         let prevCommands: AICmdLog[] = []
         let finalContHistory: AIChatMessage[] | null = null
+        let bridgeTurn = Number((res as any).bridge_turn ?? 1)
 
         for (let turn = 0; turn < 3; turn++) {
+          const bridgeKey = config.value.api_key.trim()
+          if (!bridgeKey) {
+            showConfig.value = true
+            throw new Error('Router đang mất kết nối WAN. Vui lòng nhập API Key vào ô API Key ở mục Cài đặt phía trên để dùng Browser Bridge (máy chủ không xuất key plaintext ra trình duyệt).')
+          }
           const bridgeResp = await fetch(res.bridge.endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${res.bridge.api_key}`,
+              Authorization: `Bearer ${bridgeKey}`,
             },
             body: JSON.stringify({
               model: res.bridge.model,
@@ -592,6 +601,7 @@ async function sendMessage(textToSend?: string) {
             memories?: AIMemoryEntry[]
             needs_browser_followup?: boolean
             followup_user_prompt?: string
+            bridge_turn?: number
             commands?: AICmdLog[]
           }>('/ai/chat', {
             method: 'POST',
@@ -600,10 +610,12 @@ async function sendMessage(textToSend?: string) {
               browser_reply: rawContent,
               execute: config.value.allow_exec,
               prev_commands: prevCommands,
+              bridge_turn: bridgeTurn,
             }),
           })
           if (contRes.memories) memories.value = contRes.memories
           if (contRes.needs_browser_followup && contRes.followup_user_prompt) {
+            bridgeTurn = Number(contRes.bridge_turn ?? (bridgeTurn + 1))
             prevCommands = contRes.commands || prevCommands
             bridgeMessages = [
               ...bridgeMessages,
@@ -643,11 +655,17 @@ function executeQuickCommand(cmd: string) {
   void sendMessage(cmd)
 }
 
-function clearChat() {
+async function clearChat() {
   if (!confirm('Bạn có muốn xóa sạch lịch sử trong phiên này?')) return
-  void apiRequest('/ai/chat', { method: 'DELETE' }).then(() => {
-    void loadState()
-  })
+  errorMsg.value = ''
+  try {
+    await apiRequest('/ai/chat', { method: 'DELETE' })
+    await loadState()
+    feedback.value = 'Đã xóa lịch sử trò chuyện trong phiên hiện tại.'
+    setTimeout(() => { feedback.value = '' }, 3000)
+  } catch (e) {
+    errorMsg.value = (e as Error).message
+  }
 }
 
 onMounted(async () => {
@@ -667,17 +685,17 @@ onMounted(async () => {
           <span class="text-lg">🤖</span>
           <div>
             <div class="flex items-center gap-2">
-              <span class="text-xs font-bold text-gray-200 uppercase tracking-wider">Cấu Hình API AI & Quyền Root</span>
+              <span class="text-xs font-bold text-gray-200 uppercase tracking-wider">{{ t('ai_config_heading') }}</span>
               <span
                 class="badge text-[9.5px]"
                 :class="config.has_api_key ? 'badge-green' : 'badge-orange'"
               >
-                {{ config.has_api_key ? 'ĐÃ NHÚNG API KEY' : 'CHƯA CÓ API KEY' }}
+                {{ config.has_api_key ? t('ai_key_ready') : t('ai_key_missing') }}
               </span>
               <span class="badge badge-blue text-[9.5px]">MODEL: {{ config.model }}</span>
             </div>
             <div class="text-[10.5px] text-gray-500 truncate hidden sm:block">
-              Hỗ trợ toàn quyền root, Multi-Session, Blueprint hệ thống, bộ nhớ dài hạn và bot Telegram.
+              {{ t('ai_subtitle') }}
             </div>
           </div>
         </div>
@@ -1045,7 +1063,7 @@ onMounted(async () => {
               Cửa Sổ Giao Tiếp & Terminal Root (root@R3P)
             </span>
             <span class="text-[12px] text-gray-400 mono hidden sm:inline">
-              Gõ !&lt;lệnh&gt; để thực thi shell trực tiếp
+              Gõ !&lt;lệnh&gt; hoặc /sh &lt;lệnh&gt; để thực thi shell trực tiếp
             </span>
           </div>
 

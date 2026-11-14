@@ -63,13 +63,20 @@ else
     fail "r3p-api is NOT running"
 fi
 
+# ---- API Health Check ----
 echo ""
 echo "--- API Health Check ---"
-if curl -sf http://127.0.0.1:8080/api/v1/health; then
+if (command -v curl >/dev/null 2>&1 && curl -kfsS https://127.0.0.1:8443/api/v1/health) || wget -qO- --no-check-certificate https://127.0.0.1:8443/api/v1/health 2>/dev/null; then
     echo ""
     ok "API health endpoint responding"
 else
     fail "API health endpoint NOT responding"
+fi
+
+if [ -f /etc/r3p/r3p.db ]; then
+    ok "/etc/r3p/r3p.db present"
+else
+    warn "/etc/r3p/r3p.db not initialized yet"
 fi
 
 echo ""

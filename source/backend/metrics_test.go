@@ -108,3 +108,23 @@ func TestMonitorStreamRejectsNonOpenWrtWithSingleJSONResponse(t *testing.T) {
 		t.Fatalf("response should report unavailable: %v", body)
 	}
 }
+
+func TestParseIOMemSystemRAMKB(t *testing.T) {
+	// Real Xiaomi Mi Router 3 Pro /proc/iomem layout: 448 MB + 64 MB = 512 MB DDR3 (524,288 kB)
+	r3pIOMem := `00000000-1bffffff : System RAM
+  00001000-008e2fff : Kernel code
+  008e3000-0098ffff : Kernel data
+1e000000-1e00ffff : 1e000000.sysctl sysctl@0
+20000000-23ffffff : System RAM
+`
+	if got := parseIOMemSystemRAMKB(r3pIOMem); got != 524288 {
+		t.Fatalf("parseIOMemSystemRAMKB(r3pIOMem) = %d kB, want 524288 kB (512 MB)", got)
+	}
+
+	unprivilegedZeroes := `00000000-00000000 : System RAM
+  00000000-00000000 : Kernel code
+`
+	if got := parseIOMemSystemRAMKB(unprivilegedZeroes); got != 0 {
+		t.Fatalf("parseIOMemSystemRAMKB(zeroes) = %d, want 0", got)
+	}
+}

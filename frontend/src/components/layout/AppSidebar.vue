@@ -101,7 +101,7 @@ function handleNavClick() {
         @click="handleNavClick"
       >
         <div v-if="!collapsed || isMobile" class="flex items-center gap-2.5">
-          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm tracking-wider shadow">
+          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center keep-white font-bold text-sm tracking-wider shadow">
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
             </svg>
@@ -114,7 +114,7 @@ function handleNavClick() {
           </div>
         </div>
         <div v-else class="w-full flex justify-center">
-          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center text-white font-bold text-sm">
+          <div class="w-8 h-8 rounded-lg bg-[#03a9f4] flex items-center justify-center keep-white font-bold text-sm">
             R
           </div>
         </div>
@@ -133,7 +133,7 @@ function handleNavClick() {
         v-else
         type="button"
         class="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition cursor-pointer"
-        :title="collapsed ? 'Expand' : 'Collapse'"
+        :title="collapsed ? prefs.t('expand_tooltip') : prefs.t('collapse_tooltip')"
         @click="emit('toggle')"
       >
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface PluginItem {
   id: string
@@ -24,16 +27,24 @@ function showNotice(msg: string, ms = 4000) {
   if (noticeTimer) clearTimeout(noticeTimer)
   noticeTimer = setTimeout(() => { notice.value = null }, ms)
 }
-const selectedOutput = ref<{ name: string; output: string } | null>(null)
+const selectedOutput = ref<{ id?: string; name: string; output: string; isError?: boolean } | null>(null)
 
-const pluginPresets = [
-  { id: 'ram_flush', label: 'Flush Memory Cache (drop_caches + free -m)' },
-  { id: 'lan_probe', label: 'Gateway & LAN ARP Probe (br-lan + ip neigh)' },
-  { id: 'nand_health', label: 'NAND UBI Wear Inspector (/sys/class/ubi/ubi0)' },
-  { id: 'dns_reload', label: 'Reload dnsmasq AdBlock Shield' },
-  { id: 'disk_usage', label: 'Storage & Partition Check (df -h)' },
-  { id: 'uptime_check', label: 'System Load & Uptime Check' },
-]
+const presetLabelMap: Record<string, string> = {
+  ram_flush: 'Flush Memory Cache (drop_caches + free -m)',
+  flush_ram_cache: 'Flush Linux Memory Cache (Preset)',
+  lan_probe: 'Gateway & LAN ARP Probe (br-lan + ip neigh)',
+  nand_health: 'NAND UBI Wear Inspector (/sys/class/ubi/ubi0)',
+  dns_reload: 'Reload dnsmasq AdBlock Shield',
+  reload_dnsmasq: 'Reload DNSmasq & DHCP Service',
+  disk_usage: 'Storage & Partition Check (df -h)',
+  uptime_check: 'System Load & Uptime Check',
+  listening_sockets: 'Inspect Listening Sockets (netstat -tulnp)',
+  ntp_sync: 'Synchronize System Clock (NTP)',
+}
+
+const pluginPresets = ref(
+  Object.entries(presetLabelMap).map(([id, label]) => ({ id, label }))
+)
 
 const showCreate = ref(false)
 const newPlugin = ref({ name: '', description: '', command: 'ram_flush' })
@@ -41,8 +52,17 @@ const newPlugin = ref({ name: '', description: '', command: 'ram_flush' })
 async function loadPlugins() {
   loading.value = true
   try {
-    const res = await apiRequest<{ plugins: PluginItem[] }>('/plugins')
+    const res = await apiRequest<{ plugins: PluginItem[]; available_presets?: string[] }>('/plugins')
     if (res?.plugins) plugins.value = res.plugins
+    if (Array.isArray(res?.available_presets) && res.available_presets.length > 0) {
+      pluginPresets.value = res.available_presets.map((id) => ({
+        id,
+        label: presetLabelMap[id] || id,
+      }))
+      if (!pluginPresets.value.some((p) => p.id === newPlugin.value.command)) {
+        newPlugin.value.command = pluginPresets.value[0]?.id || ''
+      }
+    }
   } catch (err: any) {
     showNotice('Error loading plugins: ' + (err?.message || err), 5000)
   } finally {
@@ -62,11 +82,24 @@ async function runPlugin(p: PluginItem) {
       plugins.value = res.plugins
       const updated = res.plugins.find((x) => x.id === p.id)
       if (updated) {
-        selectedOutput.value = { name: updated.name, output: updated.last_output || 'Completed with no output.' }
+        selectedOutput.value = {
+          id: updated.id,
+          name: updated.name,
+          output: updated.last_output || 'Completed with no output.',
+          isError: false,
+        }
       }
     }
     showNotice(`Plugin '${p.name}' executed successfully!`)
   } catch (err: any) {
+    await loadPlugins()
+    const updated = plugins.value.find((x) => x.id === p.id)
+    selectedOutput.value = {
+      id: p.id,
+      name: p.name,
+      output: updated?.last_output || String(err?.message || err),
+      isError: true,
+    }
     showNotice('Execution failed: ' + (err?.message || err), 5000)
   } finally {
     runningId.value = null
@@ -114,6 +147,9 @@ async function deletePlugin(id: string) {
       body: JSON.stringify({ action: 'delete', id }),
     })
     if (res?.plugins) plugins.value = res.plugins
+    if (selectedOutput.value?.id === id) {
+      selectedOutput.value = null
+    }
     showNotice('Plugin removed!')
   } catch (err: any) {
     showNotice('Delete error: ' + (err?.message || err), 5000)
@@ -138,13 +174,13 @@ onMounted(() => {
     <!-- Plugins Manager Card -->
     <div class="pro-card">
       <div class="pro-card-header">
-        <span class="pro-card-title">Installed Plugins & Extensions ({{ plugins.length }})</span>
+        <span class="pro-card-title">{{ t('plg_heading') }} ({{ plugins.length }})</span>
         <div class="flex items-center gap-2">
           <button type="button" class="btn-secondary text-[11px] py-1 min-w-[92px] justify-center" :disabled="loading" @click="loadPlugins">
-            {{ loading ? 'Loading…' : 'Refresh ↻' }}
+            {{ loading ? t('btn_loading') : t('btn_refresh') }}
           </button>
           <button type="button" class="btn-primary text-[11px] py-1 min-w-[162px] justify-center" @click="showCreate = !showCreate">
-            {{ showCreate ? 'Cancel' : '+ Create Custom Plugin' }}
+            {{ showCreate ? t('btn_cancel') : t('plg_create') }}
           </button>
         </div>
       </div>
@@ -220,10 +256,18 @@ onMounted(() => {
       <!-- Plugin Execution Output Drawer -->
       <div v-if="selectedOutput" class="mt-3 pt-2 border-t border-white/10">
         <div class="flex items-center justify-between text-[11px] text-gray-300 mb-1">
-          <span class="font-semibold">Output from: <code class="mono text-sky-400">{{ selectedOutput.name }}</code></span>
+          <span class="font-semibold">
+            Output from: <code class="mono text-sky-400">{{ selectedOutput.name }}</code>
+            <span v-if="selectedOutput.isError" class="ml-1.5 badge badge-red text-[10px]">Failed</span>
+          </span>
           <button type="button" class="text-gray-400 hover:text-white cursor-pointer" @click="selectedOutput = null">Close ×</button>
         </div>
-        <pre class="bg-black/60 border border-white/10 rounded p-2.5 mono text-[11px] text-emerald-300 max-h-48 overflow-y-auto whitespace-pre-wrap">{{ selectedOutput.output }}</pre>
+        <pre
+          :class="[
+            'bg-black/60 border border-white/10 rounded p-2.5 mono text-[11px] max-h-48 overflow-y-auto whitespace-pre-wrap',
+            selectedOutput.isError ? 'text-rose-300' : 'text-emerald-300',
+          ]"
+        >{{ selectedOutput.output }}</pre>
       </div>
     </div>
   </div>

@@ -75,11 +75,11 @@ else
 fi
 
 # 4. Check current router firmware
-CURRENT_VER=$(ssh "$ROUTER_USER@$ROUTER_IP" 'cat /etc/openwrt_release | grep DISTRIB_RELEASE' 2>/dev/null || "unknown")
+CURRENT_VER=$(ssh "$ROUTER_USER@$ROUTER_IP" 'cat /etc/openwrt_release | grep DISTRIB_RELEASE' 2>/dev/null || echo "unknown")
 log_info "Router current: $CURRENT_VER"
 
 # 5. Free space check on router
-FREE_TMP=$(ssh "$ROUTER_USER@$ROUTER_IP" 'df -k /tmp | tail -1 | awk '"'"'{print $4}'"'"'' 2>/dev/null || "0")
+FREE_TMP=$(ssh "$ROUTER_USER@$ROUTER_IP" 'df -k /tmp | tail -1 | awk '"'"'{print $4}'"'"'' 2>/dev/null || echo "0")
 FW_SIZE_KB=$(( $(stat -c%s "$SYSUPGRADE") / 1024 + 1 ))
 if [ "$FREE_TMP" -gt "$FW_SIZE_KB" ]; then
     log_info "Router /tmp free: ${FREE_TMP}KB — Firmware needs: ${FW_SIZE_KB}KB ✅"

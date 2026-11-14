@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { apiRequest } from '@/services/api'
+import { apiRequest, apiFetchRaw } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface DownloadJob {
   id: string
@@ -59,7 +62,9 @@ const debugResult = ref<any>(null)
 const telegramLogs = ref<TelegramLogItem[]>([])
 const debugNotice = ref<string | null>(null)
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let isUnmounted = false
+const downloadingFile = ref<string | null>(null)
 
 const filteredJobs = computed(() => {
   if (activeTab.value === 'all') return jobs.value
@@ -332,23 +337,77 @@ function statusLabel(st: string): string {
   return 'Lỗi'
 }
 
+async function downloadSavedFile(f: DownloadFileItem) {
+  downloadingFile.value = f.sub_path
+  try {
+    const resp = await apiFetchRaw(`/download/file?sub_path=${encodeURIComponent(f.sub_path)}`)
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`
+      try {
+        const j = await resp.json()
+        if (j?.error) msg = j.error
+      } catch {}
+      throw new Error(msg)
+    }
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = f.name || f.sub_path.split('/').pop() || 'download'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (err: any) {
+    notice.value = `Lỗi tải file: ${err?.message || err}`
+    setTimeout(() => { notice.value = null }, 4000)
+  } finally {
+    downloadingFile.value = null
+  }
+}
+
+function scheduleNextPoll() {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+  if (isUnmounted) return
+  const intervalMs = runningJobsCount.value > 0 ? 3000 : 12000
+  pollTimer = setTimeout(async () => {
+    if (!document.hidden) {
+      await fetchJobs()
+    }
+    scheduleNextPoll()
+  }, intervalMs)
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden && !isUnmounted) {
+    void fetchJobs().then(() => scheduleNextPoll())
+  }
+}
+
 onMounted(() => {
-  void fetchJobs()
+  isUnmounted = false
+  void fetchJobs().then(() => scheduleNextPoll())
   void fetchDownloadedFiles()
   void fetchDownloadSettings()
   void runDiagnostic(false)
-  pollTimer = setInterval(() => {
-    void fetchJobs()
-  }, 2500)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  isUnmounted = true
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 
 <template>
-  <div class="p-4 space-y-4 max-w-7xl mx-auto">
+  <div class="h-full w-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
     <!-- Floating Non-Shifting Notice Toast -->
     <div
       v-if="notice"
@@ -365,11 +424,11 @@ onUnmounted(() => {
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
         <div class="min-w-0">
           <h1 class="text-[16px] font-bold text-gray-100 flex items-center gap-2">
-            <span class="truncate">Trình Tải Video yt-dlp Trực Tiếp Trên R3P (Native Downloader)</span>
+            <span class="truncate">{{ t('dl_heading') }}</span>
             <span class="badge badge-green text-xs font-mono font-bold">NATIVE YT-DLP</span>
           </h1>
           <p class="text-xs text-gray-400 font-medium truncate">
-            R3P nhận link trực tiếp và giao cho yt-dlp tải về ổ cứng USB 3.0 (/mnt/sda1) · Tự động nhận link qua Telegram Bot & Web.
+            {{ t('dl_sub') }}
           </p>
         </div>
       </div>
@@ -538,7 +597,7 @@ onUnmounted(() => {
                 <td class="py-1 pr-2 whitespace-nowrap">
                   <span class="badge text-[10px]" :class="logDecisionClass(item.decision)">{{ item.decision }}</span>
                 </td>
-                <td class="py-1 pr-2 max-w-[220px] truncate mono text-sky-300" :title="item.url">{{ item.url }}</td>
+                <td class="py-1 pr-2 max-w-[260px] xl:max-w-lg truncate mono text-sky-300" :title="item.url">{{ item.url }}</td>
                 <td class="py-1 pr-2 text-gray-300">{{ item.reason }}</td>
                 <td class="py-1 mono text-emerald-300 whitespace-nowrap">{{ item.jobStatus }}</td>
               </tr>
@@ -665,7 +724,7 @@ onUnmounted(() => {
             </tr>
             <tr v-for="j in filteredJobs" :key="j.id">
               <td class="mono font-bold text-sky-400">#{{ j.id }}</td>
-              <td class="max-w-md">
+              <td class="max-w-md xl:max-w-3xl">
                 <div class="font-bold text-gray-100 truncate" :title="j.url">{{ j.url }}</div>
                 <div v-if="j.error" class="text-xs text-red-400 truncate mt-0.5" :title="j.error">
                   ⚠️ {{ j.error }}
@@ -815,7 +874,7 @@ onUnmounted(() => {
               <td class="font-bold text-gray-100">
                 <div class="flex items-center gap-1.5">
                   <span>{{ f.name.endsWith('.mp3') ? '🎵' : '🎬' }}</span>
-                  <span class="truncate max-w-sm" :title="f.name">{{ f.name }}</span>
+                  <span class="truncate max-w-sm xl:max-w-3xl" :title="f.name">{{ f.name }}</span>
                 </div>
                 <div class="text-[11px] text-gray-400 mono font-normal truncate mt-0.5">
                   📁 {{ f.sub_path }}
@@ -831,13 +890,14 @@ onUnmounted(() => {
                 {{ f.mod_time ? f.mod_time.slice(0, 19).replace('T', ' ') : '—' }}
               </td>
               <td class="text-right">
-                <a
-                  :href="`/api/v1/download/file?sub_path=${encodeURIComponent(f.sub_path)}`"
-                  download
+                <button
+                  type="button"
+                  :disabled="downloadingFile === f.sub_path"
                   class="btn-primary text-xs py-1 px-2.5 font-semibold inline-flex items-center gap-1"
+                  @click="downloadSavedFile(f)"
                 >
-                  ⬇️ Tải Về Máy
-                </a>
+                  {{ downloadingFile === f.sub_path ? '⏳ Đang tải…' : '⬇️ Tải Về Máy' }}
+                </button>
               </td>
             </tr>
           </tbody>

@@ -2,14 +2,17 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,7 +57,8 @@ const (
 var (
 	adblockMu       sync.Mutex
 	adblockCfgMu    sync.Mutex
-	adblockUpdating bool
+	adblockOpMu     sync.Mutex
+	adblockUpdating atomic.Bool
 )
 
 var builtinAdDomains = []string{
@@ -81,7 +85,7 @@ var builtinAdDomains = []string{
 	"fullstory.com", "rs.fullstory.com", "mixpanel.com", "api.mixpanel.com", "cdn.mxpnl.com",
 	"amplitude.com", "api.amplitude.com", "segment.io", "api.segment.io", "cdn.segment.com",
 	"braze.com", "sdk.iad-01.braze.com", "appsflyer.com", "t.appsflyer.com", "launches.appsflyer.com",
-	"adjust.com", "app.adjust.com", "branch.io", "api.branch.io", " api2.branch.io",
+	"adjust.com", "app.adjust.com", "branch.io", "api.branch.io", "api2.branch.io",
 	"unityads.unity3d.com", "auction.unityads.unity3d.com", "config.unityads.unity3d.com",
 	"applovin.com", "rt.applovin.com", "d.applovin.com", "ms.applovin.com",
 	"vungle.com", "ads.api.vungle.com", "chartboost.com", "live.chartboost.com",
@@ -198,14 +202,15 @@ func loadAdblockConfig() AdblockConfig {
 	adblockCfgMu.Lock()
 	defer adblockCfgMu.Unlock()
 	cfg := defaultAdblockConfig()
-	if b, err := os.ReadFile(adblockConfigFile); err == nil {
-		_ = json.Unmarshal(b, &cfg)
+	if settingsDBLoadJSON(bucketSettings, "adblock", adblockConfigFile, &cfg) {
+		if cfg.UpstreamDNS == nil {
+			cfg.UpstreamDNS = []string{}
+		}
+	} else if len(cfg.UpstreamDNS) == 0 {
+		cfg.UpstreamDNS = []string{"1.1.1.1", "8.8.8.8"}
 	}
 	if cfg.BlockMode != "zero_ip" && cfg.BlockMode != "nxdomain" {
 		cfg.BlockMode = "zero_ip"
-	}
-	if len(cfg.UpstreamDNS) == 0 {
-		cfg.UpstreamDNS = []string{"1.1.1.1", "8.8.8.8"}
 	}
 	if cfg.Whitelist == nil {
 		cfg.Whitelist = []string{}
@@ -222,10 +227,7 @@ func loadAdblockConfig() AdblockConfig {
 func saveAdblockConfig(cfg AdblockConfig) {
 	adblockCfgMu.Lock()
 	defer adblockCfgMu.Unlock()
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-		_ = os.WriteFile(adblockConfigFile, b, 0644)
-	}
+	_ = settingsDBSaveJSON(bucketSettings, "adblock", adblockConfigFile, 0644, cfg)
 }
 
 func normalizeDomain(raw string) string {
@@ -254,7 +256,7 @@ func normalizeDomain(raw string) string {
 	if s == "" || s == "localhost" || s == "localhost.localdomain" || s == "local" || s == "0.0.0.0" || s == "127.0.0.1" || s == "::1" {
 		return ""
 	}
-	if !strings.Contains(s, ".") || strings.ContainsAny(s, " *:/\\?&$'\"<>|") {
+	if !strings.Contains(s, ".") || strings.ContainsAny(s, " *:/\\?&$'\"<>|,=\r\n\t") || strings.Contains(s, "..") {
 		return ""
 	}
 	return s
@@ -262,9 +264,9 @@ func normalizeDomain(raw string) string {
 
 func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	adblockMu.Lock()
-	adblockUpdating = true
+	adblockUpdating.Store(true)
 	defer func() {
-		adblockUpdating = false
+		adblockUpdating.Store(false)
 		adblockMu.Unlock()
 	}()
 
@@ -272,6 +274,7 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	_ = os.MkdirAll(adblockPersistDir, 0755)
 
 	// 1. Configure Firewall Force-DNS redirect rule
+	firewallMu.Lock()
 	if cfg.Enabled && cfg.ForceDNS {
 		_, _ = runCmd(4, "uci", "set", "firewall.adblock_dns=redirect")
 		_, _ = runCmd(4, "uci", "set", "firewall.adblock_dns.name=R3P-AdBlock-Force-DNS")
@@ -286,12 +289,14 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		_, _ = runCmd(4, "uci", "delete", "firewall.adblock_dns")
 		_, _ = runCmd(4, "uci", "commit", "firewall")
 	}
+	firewallMu.Unlock()
 
 	if len(strings.Fields(strings.TrimSpace(cfg.UpdateSchedule))) != 5 {
 		cfg.UpdateSchedule = "0 3 * * *"
 	}
 
 	// 2. Remove legacy unauthenticated curl cron entries if present (auto-update runs in-process)
+	cronMu.Lock()
 	entries := loadRootCrontab()
 	var filteredCron []CronEntry
 	cronChanged := false
@@ -305,17 +310,24 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	if cronChanged {
 		saveRootCrontab(filteredCron)
 	}
+	cronMu.Unlock()
 
 	if !cfg.Enabled {
 		_ = os.Remove(adblockHostsFile)
 		_ = os.Remove(adblockDnsmasqCfg)
+		firewallMu.Lock()
 		_, _ = runCmd(4, "uci", "delete", "firewall.r3p_adblock_wan_dns")
 		_, _ = runCmd(4, "uci", "commit", "firewall")
+		firewallMu.Unlock()
+		dhcpMu.Lock()
 		_, _ = runCmd(5, "uci", "delete", "dhcp.@dnsmasq[0].addnhosts")
 		_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].localservice=1")
 		_, _ = runCmd(5, "uci", "commit", "dhcp")
+		dhcpMu.Unlock()
 		_, _ = runCmd(8, "/etc/init.d/dnsmasq", "restart")
 		_, _ = runCmd(8, "/etc/init.d/firewall", "reload")
+		cfg.TotalBlocked = 0
+		cfg.LastRebuild = time.Now().Format("2006-01-02 15:04:05")
 		saveAdblockConfig(*cfg)
 		return 0, nil
 	}
@@ -356,7 +368,10 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 			f.Close()
 		}
 	} else {
-		client := &http.Client{Timeout: 15 * time.Second}
+		client := newPublicHTTPClient(publicClientOptions{
+			Timeout:   15 * time.Second,
+			AllowHTTP: true,
+		})
 		for i := range cfg.Sources {
 			src := &cfg.Sources[i]
 			if !src.Enabled {
@@ -379,7 +394,10 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		}
 	}
 
-	// Sort and write /tmp/r3p-adblock.hosts
+	// Sort domains and write authoritative /tmp/dnsmasq.d/r3p-adblock.conf cleanly.
+	// Avoid duplicating /tmp/r3p-adblock.hosts or rewriting flash persistHosts on simple toggles.
+	_ = os.Remove(adblockHostsFile)
+	_ = os.Remove("/tmp/hosts/r3p-adblock")
 	allDomains := make([]string, 0, len(domainSet))
 	for d := range domainSet {
 		if !whiteMap[d] && !isDomainWhitelisted(d, cfg.Whitelist) {
@@ -388,17 +406,17 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	}
 	sort.Strings(allDomains)
 
-	var sb strings.Builder
-	sb.WriteString("# R3P Home Server OS — Generated AdBlock Hosts\n")
-	for _, d := range allDomains {
-		sb.WriteString("0.0.0.0 ")
-		sb.WriteString(d)
-		sb.WriteByte('\n')
-	}
-	hostsBytes := []byte(sb.String())
-	_ = os.WriteFile(adblockHostsFile, hostsBytes, 0644)
-	if downloadRemote || len(allDomains) > 0 {
-		_ = os.WriteFile(persistHosts, hostsBytes, 0644)
+	if downloadRemote {
+		if f, err := os.Create(persistHosts + ".tmp"); err == nil {
+			bw := bufio.NewWriterSize(f, 32*1024)
+			for _, d := range allDomains {
+				_, _ = bw.WriteString(d)
+				_ = bw.WriteByte('\n')
+			}
+			_ = bw.Flush()
+			_ = f.Close()
+			_ = os.Rename(persistHosts+".tmp", persistHosts)
+		}
 	}
 
 	// Write single authoritative dnsmasq config in /tmp/dnsmasq.d (no duplicate addn-hosts loading)
@@ -420,8 +438,9 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		dconf.WriteString("address=/strict.bing.com/204.79.197.220\n")
 	}
 	confBytes := []byte(dconf.String())
-	_ = os.WriteFile(adblockDnsmasqCfg, confBytes, 0644)
+	_ = atomicWriteFile(adblockDnsmasqCfg, confBytes, 0644)
 
+	dhcpMu.Lock()
 	_, _ = runCmd(4, "uci", "set", "dhcp.@dnsmasq[0].confdir=/tmp/dnsmasq.d")
 	_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].addnhosts")
 	if cfg.ExposeUpstreamDNS {
@@ -435,17 +454,21 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 	} else {
 		_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].logqueries")
 	}
-	if len(cfg.UpstreamDNS) > 0 {
-		_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].server")
-		for _, srv := range cfg.UpstreamDNS {
-			if netParseIP(strings.TrimSpace(srv)) {
-				_, _ = runCmd(4, "uci", "add_list", "dhcp.@dnsmasq[0].server="+strings.TrimSpace(srv))
-			}
+	var validUpstream []string
+	for _, srv := range cfg.UpstreamDNS {
+		if t := strings.TrimSpace(srv); netParseIP(t) {
+			validUpstream = append(validUpstream, t)
 		}
 	}
+	_, _ = runCmd(4, "uci", "delete", "dhcp.@dnsmasq[0].server")
+	for _, srv := range validUpstream {
+		_, _ = runCmd(4, "uci", "add_list", "dhcp.@dnsmasq[0].server="+srv)
+	}
 	_, _ = runCmd(5, "uci", "commit", "dhcp")
+	dhcpMu.Unlock()
 
 	// Only allow Port 53 from private RFC1918 WAN subnets when explicitly opted in (never 0.0.0.0/0 public WAN)
+	firewallMu.Lock()
 	if cfg.ExposeUpstreamDNS {
 		_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns=rule")
 		_, _ = runCmd(3, "uci", "set", "firewall.r3p_adblock_wan_dns.name=Allow-R3P-AdBlock-Private-DNS")
@@ -461,6 +484,7 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 		_, _ = runCmd(3, "uci", "delete", "firewall.r3p_adblock_wan_dns")
 	}
 	_, _ = runCmd(4, "uci", "commit", "firewall")
+	firewallMu.Unlock()
 
 	cfg.TotalBlocked = len(allDomains)
 	cfg.LastRebuild = time.Now().Format("2006-01-02 15:04:05")
@@ -476,8 +500,8 @@ func applyAdblockRuntime(cfg *AdblockConfig, downloadRemote bool) (int, error) {
 
 func fetchAdblockSourceDomains(client *http.Client, rawURL string) ([]string, error) {
 	u := strings.TrimSpace(rawURL)
-	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
-		return nil, fmt.Errorf("invalid url")
+	if err := validatePublicHTTPURL(context.Background(), u); err != nil {
+		return nil, fmt.Errorf("blocked URL: %w", err)
 	}
 	resp, err := client.Get(u)
 	if err != nil {
@@ -501,6 +525,19 @@ func fetchAdblockSourceDomains(client *http.Client, rawURL string) ([]string, er
 	return domains, nil
 }
 
+func parseAdblockScheduleHM(sched string) (int, int) {
+	fields := strings.Fields(strings.TrimSpace(sched))
+	if len(fields) < 2 {
+		return 0, 3
+	}
+	m, err1 := strconv.Atoi(fields[0])
+	h, err2 := strconv.Atoi(fields[1])
+	if err1 != nil || err2 != nil || m < 0 || m > 59 || h < 0 || h > 23 {
+		return 0, 3
+	}
+	return m, h
+}
+
 func initAdblockOnStartup() {
 	go func() {
 		time.Sleep(2 * time.Second)
@@ -508,15 +545,39 @@ func initAdblockOnStartup() {
 		if cfg.Enabled {
 			_, _ = applyAdblockRuntime(&cfg, false)
 		}
-		ticker := time.NewTicker(12 * time.Hour)
+		lastRunDay := ""
+		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
+		for now := range ticker.C {
 			c := loadAdblockConfig()
-			if c.Enabled && c.AutoUpdate {
+			if !c.Enabled || !c.AutoUpdate {
+				continue
+			}
+			schedMin, schedHour := parseAdblockScheduleHM(c.UpdateSchedule)
+			today := now.Format("2006-01-02")
+			if now.Hour() == schedHour && now.Minute() == schedMin && lastRunDay != today {
+				lastRunDay = today
 				_, _ = applyAdblockRuntime(&c, true)
 			}
 		}
 	}()
+}
+
+func countActiveAdblockConfDomains() int {
+	f, err := os.Open(adblockDnsmasqCfg)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	seen := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasSuffix(line, "/0.0.0.0") || (strings.HasPrefix(line, "server=/") && strings.HasSuffix(line, "/")) {
+			seen++
+		}
+	}
+	return seen
 }
 
 // GET /api/v1/adblock
@@ -526,23 +587,13 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := loadAdblockConfig()
 
-	// Check if dnsmasq is running & how many lines are in /tmp/r3p-adblock.hosts
-	activeLines := 0
-	if f, err := os.Open(adblockHostsFile); err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			if strings.HasPrefix(sc.Text(), "0.0.0.0 ") {
-				activeLines++
-			}
-		}
-		f.Close()
-	}
+	activeLines := countActiveAdblockConfDomains()
 	if activeLines > 0 {
 		cfg.TotalBlocked = activeLines
 	}
 
 	// Read recent DNS query / blocked logs from logread
-	logOut, _ := runCmd(4, "logread", "-e", "dnsmasq")
+	logOut, _ := runCmd(4, "logread", "-l", "180", "-e", "dnsmasq")
 	var recentLogs []string
 	blockedHits := 0
 	for _, line := range strings.Split(logOut, "\n") {
@@ -550,10 +601,11 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 		if t == "" {
 			continue
 		}
-		if strings.Contains(t, "0.0.0.0") || strings.Contains(t, adblockHostsFile) {
+		isBlock := strings.Contains(t, "0.0.0.0") || strings.Contains(t, " is ::") || strings.Contains(t, "NXDOMAIN") || strings.Contains(t, adblockDnsmasqCfg)
+		if isBlock {
 			blockedHits++
 		}
-		if strings.Contains(t, "query[") || strings.Contains(t, "0.0.0.0") || strings.Contains(t, "forwarded") || strings.Contains(t, "cached") {
+		if isBlock || strings.Contains(t, "query[") || strings.Contains(t, "forwarded") || strings.Contains(t, "cached") {
 			recentLogs = append(recentLogs, t)
 		}
 	}
@@ -612,11 +664,12 @@ func handleAdblockGet(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"config":        cfg,
-		"updating":      adblockUpdating,
+		"updating":      adblockUpdating.Load(),
 		"active_rules":  activeLines,
 		"blocked_hits":  blockedHits,
 		"recent_logs":   recentLogs,
-		"hosts_file":    adblockHostsFile,
+		"hosts_file":    adblockDnsmasqCfg,
+		"config_file":   adblockDnsmasqCfg,
 		"gateway_setup": gatewaySetup,
 	})
 }
@@ -646,6 +699,9 @@ func handleAdblockConfigPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	adblockOpMu.Lock()
+	defer adblockOpMu.Unlock()
+
 	cfg := loadAdblockConfig()
 	if body.Enabled != nil {
 		cfg.Enabled = *body.Enabled
@@ -671,8 +727,21 @@ func handleAdblockConfigPut(w http.ResponseWriter, r *http.Request) {
 	if body.QueryLogging != nil {
 		cfg.QueryLogging = *body.QueryLogging
 	}
-	if len(body.UpstreamDNS) > 0 {
-		cfg.UpstreamDNS = body.UpstreamDNS
+	if body.UpstreamDNS != nil {
+		var cleanDNS []string
+		for _, srv := range body.UpstreamDNS {
+			if t := strings.TrimSpace(srv); t != "" {
+				if !netParseIP(t) {
+					writeJSON(w, http.StatusBadRequest, false, "Địa chỉ DNS không hợp lệ: "+t)
+					return
+				}
+				cleanDNS = append(cleanDNS, t)
+			}
+		}
+		if cleanDNS == nil {
+			cleanDNS = []string{}
+		}
+		cfg.UpstreamDNS = cleanDNS
 	}
 
 	total, _ := applyAdblockRuntime(&cfg, false)
@@ -693,6 +762,9 @@ func handleAdblockUpdateNow(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	adblockOpMu.Lock()
+	defer adblockOpMu.Unlock()
+
 	cfg := loadAdblockConfig()
 	cfg.Enabled = true
 	total, err := applyAdblockRuntime(&cfg, true)
@@ -713,6 +785,9 @@ func handleAdblockLists(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	adblockOpMu.Lock()
+	defer adblockOpMu.Unlock()
+
 	cfg := loadAdblockConfig()
 
 	switch r.Method {
@@ -728,8 +803,12 @@ func handleAdblockLists(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSpace(body.Name)
 		u := strings.TrimSpace(body.URL)
-		if name == "" || (!strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://")) {
-			writeJSON(w, http.StatusBadRequest, false, "Vui lòng nhập Tên danh sách và URL hợp lệ (http/https)")
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, false, "Vui lòng nhập Tên danh sách chặn")
+			return
+		}
+		if err := validatePublicHTTPURL(r.Context(), u); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, "URL danh sách không hợp lệ hoặc trỏ tới IP nội bộ: "+err.Error())
 			return
 		}
 		cat := strings.TrimSpace(body.Category)
@@ -761,8 +840,10 @@ func handleAdblockLists(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
 		}
+		found := false
 		for i := range cfg.Sources {
 			if cfg.Sources[i].ID == body.ID {
+				found = true
 				cfg.Sources[i].Enabled = body.Enabled
 				if !body.Enabled {
 					cfg.Sources[i].Status = "Disabled"
@@ -771,16 +852,30 @@ func handleAdblockLists(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, false, "Không tìm thấy nguồn danh sách cần cập nhật")
+			return
+		}
 		saveAdblockConfig(cfg)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"config": cfg})
 
 	case http.MethodDelete:
-		id := r.URL.Query().Get("id")
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
 		var updated []AdblockSource
+		found := false
 		for _, s := range cfg.Sources {
 			if s.ID != id {
 				updated = append(updated, s)
+			} else {
+				found = true
 			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, false, "Không tìm thấy nguồn danh sách cần xóa")
+			return
+		}
+		if updated == nil {
+			updated = []AdblockSource{}
 		}
 		cfg.Sources = updated
 		saveAdblockConfig(cfg)
@@ -796,6 +891,9 @@ func handleAdblockDomains(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	adblockOpMu.Lock()
+	defer adblockOpMu.Unlock()
+
 	cfg := loadAdblockConfig()
 
 	switch r.Method {
@@ -858,12 +956,22 @@ func handleAdblockDomains(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		listType := r.URL.Query().Get("list_type")
 		domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
+		if domain == "" {
+			writeJSON(w, http.StatusBadRequest, false, "Thiếu tên miền cần xóa")
+			return
+		}
+		found := false
 		if listType == "whitelist" {
 			var next []string
 			for _, x := range cfg.Whitelist {
 				if x != domain {
 					next = append(next, x)
+				} else {
+					found = true
 				}
+			}
+			if next == nil {
+				next = []string{}
 			}
 			cfg.Whitelist = next
 		} else {
@@ -871,9 +979,18 @@ func handleAdblockDomains(w http.ResponseWriter, r *http.Request) {
 			for _, x := range cfg.Blacklist {
 				if x != domain {
 					next = append(next, x)
+				} else {
+					found = true
 				}
 			}
+			if next == nil {
+				next = []string{}
+			}
 			cfg.Blacklist = next
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, false, "Không tìm thấy tên miền trong danh sách")
+			return
 		}
 		total, _ := applyAdblockRuntime(&cfg, false)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -884,6 +1001,32 @@ func handleAdblockDomains(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
+}
+
+func isDomainInAdblockConf(path, domain string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Match exact domain or any parent suffix wildcard present in dnsmasq conf
+	candidates := []string{domain}
+	parts := strings.Split(domain, ".")
+	for i := 1; i+1 < len(parts); i++ {
+		candidates = append(candidates, strings.Join(parts[i:], "."))
+	}
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		for _, c := range candidates {
+			if strings.HasPrefix(line, "address=/"+c+"/") || line == "server=/"+c+"/" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // POST /api/v1/adblock/test
@@ -908,27 +1051,16 @@ func handleAdblockTestDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check in /tmp/r3p-adblock.hosts
-	inHosts := false
-	if f, err := os.Open(adblockHostsFile); err == nil {
-		target := "0.0.0.0 " + d
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			if strings.TrimSpace(sc.Text()) == target {
-				inHosts = true
-				break
-			}
-		}
-		f.Close()
-	}
-
+	inConf := isDomainInAdblockConf(adblockDnsmasqCfg, d)
 	out, _ := runCmd(5, "nslookup", d, "127.0.0.1")
-	blocked := inHosts || strings.Contains(out, "0.0.0.0") || strings.Contains(out, "NXDOMAIN")
+	blocked := inConf || strings.Contains(out, "0.0.0.0") || strings.Contains(out, "NXDOMAIN")
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"domain":      d,
 		"blocked":     blocked,
-		"in_hosts_db": inHosts,
+		"in_hosts_db": inConf,
+		"in_config":   inConf,
+		"config_file": adblockDnsmasqCfg,
 		"dns_output":  out,
 	})
 }
@@ -975,11 +1107,63 @@ var knownAdStreamSignatures = []struct {
 	{"telemetry.microsoft.com", "OS Telemetry", "Windows Diagnostics Stream"},
 }
 
+var adStreamSeenMu sync.Mutex
+var adStreamSeen = map[string]struct{}{}
+
+func syncAdblockStreamsFromLogs() {
+	logOut, err := runCmd(3, "logread", "-l", "120", "-e", "dnsmasq")
+	if err != nil || logOut == "" {
+		return
+	}
+	for _, rawLine := range strings.Split(logOut, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || (!strings.Contains(line, "query[") && !strings.Contains(line, "0.0.0.0") && !strings.Contains(line, "NXDOMAIN") && !strings.Contains(line, " is ::")) {
+			continue
+		}
+		adStreamSeenMu.Lock()
+		if _, dup := adStreamSeen[line]; dup {
+			adStreamSeenMu.Unlock()
+			continue
+		}
+		if len(adStreamSeen) > 256 {
+			adStreamSeen = map[string]struct{}{}
+		}
+		adStreamSeen[line] = struct{}{}
+		adStreamSeenMu.Unlock()
+
+		// Extract queried/blocked domain & client IP from dnsmasq syslog format:
+		// "dnsmasq[...]: query[A] doubleclick.net from 192.168.2.50" OR "config ads.youtube.com is 0.0.0.0"
+		fields := strings.Fields(line)
+		var domain, clientIP string
+		forcedBlock := strings.Contains(line, "0.0.0.0") || strings.Contains(line, "NXDOMAIN") || strings.Contains(line, " is ::")
+		for i, f := range fields {
+			if strings.HasPrefix(f, "query[") && i+1 < len(fields) {
+				domain = normalizeDomain(fields[i+1])
+			} else if f == "from" && i+1 < len(fields) {
+				clientIP = fields[i+1]
+			} else if (f == "config" || f == "cached" || f == "reply") && i+1 < len(fields) && domain == "" {
+				domain = normalizeDomain(fields[i+1])
+			}
+		}
+		if domain != "" {
+			if forcedBlock {
+				inspectDomainStreamWithBlock(domain, clientIP, true)
+			} else {
+				inspectDomainStreamWithBlock(domain, clientIP, false)
+			}
+		}
+	}
+}
+
 func inspectDomainStream(domain, clientIP string) AdStreamEvent {
+	return inspectDomainStreamWithBlock(domain, clientIP, false)
+}
+
+func inspectDomainStreamWithBlock(domain, clientIP string, dnsBlocked bool) AdStreamEvent {
 	domainLower := strings.ToLower(domain)
 	category := "Luồng Dữ Liệu Bình Thường"
 	pattern := "Standard DNS Resolution"
-	isAd := false
+	isAd := dnsBlocked
 
 	for _, sig := range knownAdStreamSignatures {
 		if strings.Contains(domainLower, sig.Keyword) {
@@ -988,6 +1172,10 @@ func inspectDomainStream(domain, clientIP string) AdStreamEvent {
 			isAd = true
 			break
 		}
+	}
+	if dnsBlocked && category == "Luồng Dữ Liệu Bình Thường" {
+		category = "DNS Rule Blocklist"
+		pattern = "Dnsmasq Filtered Query"
 	}
 
 	action := "ALLOWED"
@@ -1030,6 +1218,7 @@ func handleAdblockStreams(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		syncAdblockStreamsFromLogs()
 		adStreamsMu.Lock()
 		eventsCopy := append([]AdStreamEvent{}, adStreamsEvents...)
 		statsCopy := map[string]int{
@@ -1060,10 +1249,36 @@ func handleAdblockStreams(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "Tên miền không hợp lệ")
 			return
 		}
+		adblockOpMu.Lock()
 		cfg := loadAdblockConfig()
-		cfg.Blacklist = append(cfg.Blacklist, d)
+		// Remove from whitelist if manually blocking from live stream inspector
+		if len(cfg.Whitelist) > 0 {
+			var filteredWhite []string
+			for _, x := range cfg.Whitelist {
+				if normalizeDomain(x) != d {
+					filteredWhite = append(filteredWhite, x)
+				}
+			}
+			if filteredWhite == nil {
+				filteredWhite = []string{}
+			}
+			cfg.Whitelist = filteredWhite
+		}
+		exists := false
+		for _, x := range cfg.Blacklist {
+			if normalizeDomain(x) == d {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			cfg.Blacklist = append(cfg.Blacklist, d)
+		}
+		cfg.Enabled = true
 		_, _ = applyAdblockRuntime(&cfg, false)
-		evt := inspectDomainStream(d, "manual-block")
+		adblockOpMu.Unlock()
+
+		evt := inspectDomainStreamWithBlock(d, "manual-block", true)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"blocked": true,
 			"domain":  d,

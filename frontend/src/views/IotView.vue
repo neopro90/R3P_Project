@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface IoTDevice {
   id: string
@@ -30,6 +33,7 @@ const broker = ref<IoTBroker>({
   topic_prefix: 'r3p/home',
   enabled: true,
 })
+const brokerAlive = ref(false)
 const loading = ref(false)
 const probing = ref(false)
 const notice = ref<string | null>(null)
@@ -52,10 +56,11 @@ const newDev = ref({
 async function loadIoT() {
   loading.value = true
   try {
-    const res = await apiRequest<{ devices: IoTDevice[]; broker: IoTBroker }>('/iot')
+    const res = await apiRequest<{ devices: IoTDevice[]; broker: IoTBroker; broker_alive?: boolean }>('/iot')
     if (res) {
       devices.value = res.devices || []
       if (res.broker) broker.value = res.broker
+      brokerAlive.value = Boolean(res.broker_alive)
     }
   } catch (err: any) {
     showNotice('Error loading IoT: ' + (err?.message || err), 5000)
@@ -67,11 +72,12 @@ async function loadIoT() {
 async function addDevice() {
   if (!newDev.value.name || !newDev.value.ip) return
   try {
-    const res = await apiRequest<{ devices: IoTDevice[] }>('/iot', {
+    const res = await apiRequest<{ devices: IoTDevice[]; broker_alive?: boolean }>('/iot', {
       method: 'POST',
       body: JSON.stringify(newDev.value),
     })
     if (res?.devices) devices.value = res.devices
+    if (res?.broker_alive !== undefined) brokerAlive.value = Boolean(res.broker_alive)
     showAddDevice.value = false
     newDev.value = { name: '', ip: '192.168.2.', mac: '', protocol: 'MQTT / ICMP', topic: '' }
     showNotice('IoT device registered and probed!')
@@ -84,8 +90,9 @@ async function probeAllDevices() {
   probing.value = true
   showNotice('Probing all registered IoT endpoints via ICMP…', 10000)
   try {
-    const res = await apiRequest<{ devices: IoTDevice[] }>('/iot/ping', { method: 'POST' })
+    const res = await apiRequest<{ devices: IoTDevice[]; broker_alive?: boolean }>('/iot/ping', { method: 'POST' })
     if (res?.devices) devices.value = res.devices
+    if (res?.broker_alive !== undefined) brokerAlive.value = Boolean(res.broker_alive)
     showNotice('Reachability probe completed!')
   } catch (err: any) {
     showNotice('Probe failed: ' + (err?.message || err), 5000)
@@ -96,10 +103,11 @@ async function probeAllDevices() {
 
 async function deleteDevice(id: string) {
   try {
-    const res = await apiRequest<{ devices: IoTDevice[] }>(`/iot?id=${encodeURIComponent(id)}`, {
+    const res = await apiRequest<{ devices: IoTDevice[]; broker_alive?: boolean }>(`/iot?id=${encodeURIComponent(id)}`, {
       method: 'DELETE',
     })
     if (res?.devices) devices.value = res.devices
+    if (res?.broker_alive !== undefined) brokerAlive.value = Boolean(res.broker_alive)
     showNotice('Device removed from registry!')
   } catch (err: any) {
     showNotice('Delete failed: ' + (err?.message || err), 5000)
@@ -108,10 +116,12 @@ async function deleteDevice(id: string) {
 
 async function saveBroker() {
   try {
-    await apiRequest('/iot', {
+    const res = await apiRequest<{ broker?: IoTBroker; broker_alive?: boolean }>('/iot', {
       method: 'PUT',
       body: JSON.stringify(broker.value),
     })
+    if (res?.broker) broker.value = res.broker
+    if (res?.broker_alive !== undefined) brokerAlive.value = Boolean(res.broker_alive)
     showNotice('MQTT Bridge configuration saved!')
   } catch (err: any) {
     showNotice('Broker save error: ' + (err?.message || err), 5000)
@@ -136,12 +146,14 @@ onMounted(() => {
     <!-- Top Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">MQTT Bridge</div>
-        <div class="mono text-sm font-bold text-emerald-400 truncate">{{ broker.enabled ? 'ENABLED' : 'DISABLED' }}</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('iot_mqtt_bridge') }}</div>
+        <div class="mono text-sm font-bold truncate" :class="brokerAlive ? 'text-emerald-400' : (broker.enabled ? 'text-amber-400' : 'text-gray-400')">
+          {{ broker.enabled ? (brokerAlive ? 'ALIVE (TCP/Broker)' : 'CONFIGURED (NO BROKER)') : 'DISABLED' }}
+        </div>
         <div class="text-[10px] text-gray-500 truncate">{{ broker.host }}:{{ broker.port }}</div>
       </div>
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Topic Namespace</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('iot_topic_ns') }}</div>
         <div class="mono text-sm font-bold text-sky-400 truncate">{{ broker.topic_prefix }}/#</div>
         <div class="text-[10px] text-gray-500 truncate">Home Assistant / MQTT</div>
       </div>
@@ -173,7 +185,7 @@ onMounted(() => {
       </div>
 
       <!-- Add Device Form -->
-      <form v-if="showAddDevice" class="mb-3 p-2.5 rounded bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-5 gap-2 items-end" @submit.prevent="addDevice">
+      <form v-if="showAddDevice" class="mb-3 p-2.5 rounded bg-black/40 border border-sky-500/30 grid grid-cols-1 sm:grid-cols-6 gap-2 items-end" @submit.prevent="addDevice">
         <div>
           <label class="block text-[10px] text-gray-400 uppercase mb-1">Device Name</label>
           <input v-model="newDev.name" type="text" required class="w-full pro-input" placeholder="R3P-Sensor-01" />
@@ -181,6 +193,14 @@ onMounted(() => {
         <div>
           <label class="block text-[10px] text-gray-400 uppercase mb-1">IPv4 Address</label>
           <input v-model="newDev.ip" type="text" required class="w-full pro-input mono" placeholder="192.168.2.150" />
+        </div>
+        <div>
+          <label class="block text-[10px] text-gray-400 uppercase mb-1">Protocol</label>
+          <select v-model="newDev.protocol" class="w-full pro-input mono">
+            <option value="MQTT / ICMP">MQTT / ICMP</option>
+            <option value="HTTP / ICMP">HTTP / ICMP</option>
+            <option value="ICMP">ICMP Only</option>
+          </select>
         </div>
         <div>
           <label class="block text-[10px] text-gray-400 uppercase mb-1">MAC (Optional)</label>
@@ -200,6 +220,8 @@ onMounted(() => {
               <th>Device ID</th>
               <th>Name</th>
               <th>IPv4 Address</th>
+              <th>MAC Address</th>
+              <th>Protocol</th>
               <th>MQTT Topic / Endpoint</th>
               <th>Status</th>
               <th>Latency</th>
@@ -209,7 +231,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-if="!devices.length">
-              <td colspan="8" class="text-center text-gray-500 py-4">
+              <td colspan="10" class="text-center text-gray-500 py-4">
                 No IoT devices registered. Click "+ Register Device" to add an endpoint.
               </td>
             </tr>
@@ -217,6 +239,8 @@ onMounted(() => {
               <td class="mono font-semibold text-sky-400">{{ d.id }}</td>
               <td class="font-medium text-gray-200 max-w-[160px] truncate" :title="d.name">{{ d.name }}</td>
               <td class="mono text-gray-300">{{ d.ip }}</td>
+              <td class="mono text-gray-400">{{ d.mac || '—' }}</td>
+              <td><span class="badge badge-blue text-[10px] mono">{{ d.protocol || 'MQTT / ICMP' }}</span></td>
               <td class="mono text-purple-400 max-w-[180px] truncate" :title="d.topic">{{ d.topic }}</td>
               <td>
                 <span :class="d.online ? 'badge badge-green' : 'badge badge-red'">
@@ -240,16 +264,24 @@ onMounted(() => {
     <form class="pro-card" @submit.prevent="saveBroker">
       <div class="pro-card-header">
         <span class="pro-card-title">MQTT Broker / Home Assistant Bridge Settings</span>
+        <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none">
+          <input v-model="broker.enabled" type="checkbox" class="accent-sky-500" />
+          <span>Bridge Enabled</span>
+        </label>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end text-[12px]">
+      <div class="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end text-[12px]">
         <div>
           <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Broker Host / IP</label>
           <input v-model="broker.host" type="text" required class="w-full pro-input mono" />
         </div>
         <div>
           <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Broker Port</label>
-          <input v-model="broker.port" type="number" required class="w-full pro-input mono" />
+          <input v-model.number="broker.port" type="number" min="1" max="65535" required class="w-full pro-input mono" />
+        </div>
+        <div>
+          <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Broker Username</label>
+          <input v-model="broker.username" type="text" class="w-full pro-input mono" placeholder="optional" />
         </div>
         <div>
           <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Topic Prefix</label>

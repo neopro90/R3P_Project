@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface ExplorerEntry {
   name: string
@@ -109,7 +112,7 @@ function getFileIcon(entry: ExplorerEntry) {
   if (['.json', '.yaml', '.yml'].includes(ext)) return '📋'
   if (['.mp4', '.mkv', '.webm', '.avi'].includes(ext)) return '🎬'
   if (['.mp3', '.m4a', '.aac', '.flac'].includes(ext)) return '🎵'
-  if (['.jpg', '.jpeg', '.png', '.webp', '.svg'].includes(ext)) return '🖼️'
+  if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return '🖼️'
   if (['.tar', '.gz', '.zip', '.bin', '.ipk'].includes(ext)) return '📦'
   if (['.log', '.txt', '.md'].includes(ext)) return '📄'
   return '📝'
@@ -289,7 +292,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-7xl mx-auto p-2 sm:p-4">
+  <div class="h-full w-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
     <!-- Floating Toast Notifications (Never shift layout) -->
     <div v-if="errorMsg" class="r3p-toast r3p-toast-error">
       <div class="flex items-start justify-between gap-3">
@@ -307,7 +310,7 @@ onUnmounted(() => {
     <!-- Quick Location Shortcuts -->
     <div class="pro-card p-3">
       <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-        <span>⚡ Lối Tắt Thư Mục Hệ Thống & Lưu Trữ (Quick Roots)</span>
+        <span>{{ t('exp_quick_roots') }}</span>
       </div>
       <div class="flex items-center gap-1.5 flex-wrap">
         <button
@@ -485,7 +488,7 @@ onUnmounted(() => {
               <td class="py-2 px-4 text-base cursor-pointer" @click="openEntry(entry)">
                 {{ getFileIcon(entry) }}
               </td>
-              <td class="py-2 px-3 cursor-pointer max-w-[280px] sm:max-w-[420px]" @click="openEntry(entry)">
+              <td class="py-2 px-3 cursor-pointer max-w-[280px] sm:max-w-md lg:max-w-none" @click="openEntry(entry)">
                 <div class="font-medium text-gray-200 group-hover:text-sky-400 transition flex items-center gap-1.5 min-w-0">
                   <span class="truncate" :title="entry.name">{{ entry.name }}</span>
                   <span v-if="entry.is_dir" class="text-gray-500 text-[10px] shrink-0">/</span>
@@ -506,7 +509,7 @@ onUnmounted(() => {
                     v-if="!entry.is_dir && entry.is_image"
                     type="button"
                     class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 font-semibold text-[11px] cursor-pointer"
-                    title="Xem ảnh trực tiếp (JPG/PNG/WebP/GIF/SVG)"
+                    title="Xem ảnh trực tiếp (JPG/PNG/WebP/GIF)"
                     @click="openMediaPreview(entry)"
                   >
                     👁️ Xem
@@ -678,7 +681,7 @@ onUnmounted(() => {
               loading="lazy"
             />
             <div class="mt-2 text-[11px] text-gray-400 flex items-center justify-between w-full max-w-4xl px-2">
-              <span class="text-emerald-400">Trình duyệt giải mã trực tiếp (JPG / PNG / WebP / GIF / SVG)</span>
+              <span class="text-emerald-400">Trình duyệt giải mã trực tiếp (JPG / PNG / WebP / GIF)</span>
               <span class="text-gray-500 hidden sm:inline">Phím Esc để đóng</span>
             </div>
           </div>

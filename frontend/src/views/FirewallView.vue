@@ -1,6 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
+import { useSystemStore } from '@/stores/system'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const system = useSystemStore()
+const { t } = useUiPreferences()
+const defaultLanDest = computed(() => {
+  const parts = (system.lanIp || '').split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.100` : '192.168.1.100'
+})
 
 interface ZoneItem {
   id: string
@@ -53,7 +62,7 @@ function showNotice(msg: string, ms = 3500) {
 }
 
 const showAddRedirect = ref(false)
-const newRedir = ref({ name: '', proto: 'tcp', src_dport: '', dest_ip: '192.168.2.100', dest_port: '' })
+const newRedir = ref({ name: '', proto: 'tcp', src_dport: '', dest_ip: defaultLanDest.value, dest_port: '' })
 
 const showAddRule = ref(false)
 const newRule = ref({ name: '', src: 'wan', proto: 'tcp', dest_port: '', target: 'ACCEPT' })
@@ -77,6 +86,9 @@ async function loadFirewall() {
       conntrackCount.value = res.conntrack_count || 0
       conntrackMax.value = res.conntrack_max || 16384
     }
+    if (!newRedir.value.name && (newRedir.value.dest_ip === '192.168.1.100' || newRedir.value.dest_ip === '192.168.2.100')) {
+      newRedir.value.dest_ip = defaultLanDest.value
+    }
   } catch (err: any) {
     notice.value = 'Error loading firewall: ' + (err?.message || err)
   } finally {
@@ -92,7 +104,7 @@ async function addRedirect() {
       body: JSON.stringify(newRedir.value),
     })
     showAddRedirect.value = false
-    newRedir.value = { name: '', proto: 'tcp', src_dport: '', dest_ip: '192.168.2.100', dest_port: '' }
+    newRedir.value = { name: '', proto: 'tcp', src_dport: '', dest_ip: defaultLanDest.value, dest_port: '' }
     showNotice('Port forward added and fw4 reloaded!')
     await loadFirewall()
   } catch (err: any) {
@@ -172,22 +184,22 @@ onMounted(() => {
     <!-- Firewall Overview Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Firewall Engine</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_engine') }}</div>
         <div class="mono text-sm font-bold text-sky-400">nftables (fw4)</div>
         <div class="text-[10px] text-gray-500">Live UCI /etc/config/firewall</div>
       </div>
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">SYN Flood Guard</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_syn_flood') }}</div>
         <div class="mono text-sm font-bold text-emerald-400">{{ defaults.syn_flood === '1' ? 'ENABLED' : 'DISABLED' }}</div>
         <div class="text-[10px] text-gray-500">Default Input: {{ defaults.input || 'REJECT' }}</div>
       </div>
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Active Conntrack</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_conntrack') }}</div>
         <div class="mono text-sm font-bold text-purple-400">{{ conntrackCount }} / {{ conntrackMax }}</div>
         <div class="text-[10px] text-gray-500">nf_conntrack sessions</div>
       </div>
       <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">Rules & Redirects</div>
+        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_rules_redirects') }}</div>
         <div class="mono text-sm font-bold text-amber-400">{{ rules.length }} Rules · {{ redirects.length }} DNAT</div>
         <div class="text-[10px] text-gray-500">{{ zones.length }} Active Zones</div>
       </div>
@@ -260,16 +272,16 @@ onMounted(() => {
           </select>
         </div>
         <div>
-          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">WAN Port</label>
-          <input v-model="newRedir.src_dport" type="number" min="1" max="65535" required class="w-full pro-input mono" placeholder="8080" />
+          <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">WAN Port (Range)</label>
+          <input v-model="newRedir.src_dport" type="text" required class="w-full pro-input mono" placeholder="8080 hoặc 8000-8010" />
         </div>
         <div>
           <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">LAN Target IP</label>
-          <input v-model="newRedir.dest_ip" type="text" required class="w-full pro-input mono" placeholder="192.168.2.100" />
+          <input v-model="newRedir.dest_ip" type="text" required class="w-full pro-input mono" :placeholder="defaultLanDest" />
         </div>
         <div>
           <label class="block text-[12px] text-gray-300 font-semibold uppercase mb-1">LAN Port</label>
-          <input v-model="newRedir.dest_port" type="number" min="1" max="65535" class="w-full pro-input mono" placeholder="80" />
+          <input v-model="newRedir.dest_port" type="text" class="w-full pro-input mono" placeholder="80 hoặc 8000-8010" />
         </div>
         <button type="submit" class="btn-primary justify-center py-2 text-[12.5px] font-bold">Save DNAT</button>
       </form>
@@ -346,6 +358,7 @@ onMounted(() => {
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
             <option value="icmp">ICMP</option>
+            <option value="all">ALL (TCP+UDP+ICMP)</option>
           </select>
         </div>
         <div>

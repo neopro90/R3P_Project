@@ -39,7 +39,7 @@ If `mtd3` (Factory) or `mtd2` (Bdata) is ever corrupted:
 The verified backups are stored locally on the host machine:
 - `D:\R3P_Project\deployment\backup\factory.bin` (262,144 bytes, SHA256 verified)
 - `D:\R3P_Project\deployment\backup\bdata.bin` (262,144 bytes, SHA256 verified)
-- `D:\R3P_Project\deployment\backup\backup-config.tar.gz` (OpenWrt configuration archive)
+- Generate fresh sanitized configuration archives via `GET /api/v1/system/backup` (or store live `/etc/shadow` / Dropbear keys offline outside Git)
 
 Restoration command over SSH:
 ```sh

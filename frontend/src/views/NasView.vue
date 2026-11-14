@@ -2,6 +2,9 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
 import { copyToClipboard as copyText } from '@/composables/useClipboard'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface DiskVolume {
   device: string
@@ -71,10 +74,8 @@ interface BenchmarkResult {
 }
 
 interface SambaServiceState {
-  installed: boolean
   running: boolean
   enabled: boolean
-  version: string
   workgroup: string
   description: string
   interface: string
@@ -84,10 +85,8 @@ interface SambaServiceState {
 }
 
 interface FTPServiceState {
-  installed: boolean
   running: boolean
   enabled: boolean
-  version: string
   port: number
   root_dir: string
   write_enable: boolean
@@ -172,6 +171,10 @@ interface GDriveSyncConfig {
   client_id: string
   client_secret: string
   api_key: string
+  token_expires_at?: number
+  token_last_refreshed?: string
+  token_auth_mode?: string
+  last_refresh_error?: string
   interval_minutes: number
   direction: 'two_way' | 'upload_only' | 'download_only'
   last_sync_time: string
@@ -296,10 +299,8 @@ async function deleteNASUser(username: string) {
 const serverIp = ref(typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : '')
 
 const sambaService = ref<SambaServiceState>({
-  installed: false,
   running: false,
   enabled: true,
-  version: '',
   workgroup: 'WORKGROUP',
   description: 'R3P Home Server NAS',
   interface: 'lan',
@@ -309,10 +310,8 @@ const sambaService = ref<SambaServiceState>({
 })
 
 const ftpService = ref<FTPServiceState>({
-  installed: false,
   running: false,
   enabled: true,
-  version: '',
   port: 21,
   root_dir: '/mnt/sda1',
   write_enable: true,
@@ -753,7 +752,13 @@ async function refreshAccessTokenNow() {
   }
   refreshingToken.value = true
   try {
-    const res = await apiRequest<{ message: string; access_token: string }>('/nas/gdrive-sync/refresh', {
+    const res = await apiRequest<{
+      message: string
+      access_token: string
+      token_expires_at?: number
+      token_auth_mode?: string
+      token_last_refreshed?: string
+    }>('/nas/gdrive-sync/refresh', {
       method: 'POST',
       body: JSON.stringify({
         refresh_token: gdriveConfig.value.refresh_token,
@@ -763,11 +768,16 @@ async function refreshAccessTokenNow() {
     })
     if (res?.access_token) {
       gdriveConfig.value.access_token = res.access_token
+      gdriveConfig.value.last_refresh_error = ''
+      if (res.token_expires_at) gdriveConfig.value.token_expires_at = res.token_expires_at
+      if (res.token_auth_mode) gdriveConfig.value.token_auth_mode = res.token_auth_mode
+      if (res.token_last_refreshed) gdriveConfig.value.token_last_refreshed = res.token_last_refreshed
       showNotice(res.message || 'Đã cấp mới Access Token thành công!')
     }
   } catch (err: any) {
     showError('Lỗi làm mới Access Token: ' + (err?.message || err))
   } finally {
+    await fetchGDriveConfig()
     refreshingToken.value = false
   }
 }
@@ -778,10 +788,16 @@ function startGDrivePolling() {
     try {
       const res = await apiRequest<GDriveSyncConfig>('/nas/gdrive-sync')
       if (res) {
-        gdriveConfig.value = {
-          ...res,
-          last_log: res.last_log || [],
-        }
+        gdriveConfig.value.is_syncing = res.is_syncing
+        gdriveConfig.value.last_sync_time = res.last_sync_time
+        gdriveConfig.value.last_status = res.last_status
+        gdriveConfig.value.files_synced = res.files_synced
+        gdriveConfig.value.last_log = res.last_log || []
+        if (res.token_expires_at !== undefined) gdriveConfig.value.token_expires_at = res.token_expires_at
+        if (res.token_auth_mode !== undefined) gdriveConfig.value.token_auth_mode = res.token_auth_mode
+        if (res.token_last_refreshed !== undefined) gdriveConfig.value.token_last_refreshed = res.token_last_refreshed
+        if (res.last_refresh_error !== undefined) gdriveConfig.value.last_refresh_error = res.last_refresh_error
+        if (res.access_token) gdriveConfig.value.access_token = res.access_token
         if (!res.is_syncing) {
           clearInterval(gdrivePollTimer)
           gdrivePollTimer = null
@@ -845,7 +861,7 @@ onUnmounted(() => {
       <div class="pro-card-header flex-wrap">
         <div class="flex items-center gap-2 min-w-0">
           <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-          <span class="pro-card-title truncate">Cổng USB 3.0 SuperSpeed Dual-Role (Ổ Cứng Lưu Trữ + USB Tethering / 4G WAN)</span>
+          <span class="pro-card-title truncate">{{ t('nas_usb_heading') }}</span>
           <span class="badge badge-blue uppercase">MODE: {{ usbStatus.active_mode }}</span>
           <span v-if="usbStatus.hotplug_ready" class="badge badge-green">AUTO-HOTPLUG ACTIVE</span>
         </div>
@@ -1775,15 +1791,29 @@ onUnmounted(() => {
             <div class="space-y-3">
               <!-- Permanent Refresh Token Input -->
               <div>
-                <label class="block text-[11px] text-emerald-300 font-bold mb-1 flex items-center justify-between">
+                <label class="block text-[11px] text-emerald-300 font-bold mb-1 flex items-center justify-between gap-2 flex-wrap">
                   <div class="flex items-center gap-2">
-                    <span>2. Refresh Token (Mã Gia Hạn Vĩnh Viễn — Không Hết Hạn) ⭐</span>
+                    <span>2. Refresh Token (Mã Gia Hạn Tự Động)</span>
                     <span v-if="gdriveConfig.refresh_token" class="mono text-[10.5px] text-emerald-400 font-bold bg-emerald-950/70 border border-emerald-500/40 px-2 py-0.5 rounded shadow-sm">
                       Đuôi: ...{{ gdriveConfig.refresh_token.slice(-4) }}
                     </span>
                   </div>
-                  <span class="badge badge-green text-[9.5px]">KHUYÊN DÙNG</span>
+                  <span
+                    class="badge text-[9.5px]"
+                    :class="gdriveConfig.token_auth_mode === 'custom_oauth' ? 'badge-green' : 'badge-orange'"
+                  >
+                    {{ gdriveConfig.token_auth_mode === 'custom_oauth' ? 'CUSTOM OAUTH (VĨNH VIỄN)' : 'PLAYGROUND (TỐI ĐA 24H)' }}
+                  </span>
                 </label>
+                <div
+                  v-if="gdriveConfig.last_refresh_error"
+                  class="mb-2 p-2 rounded bg-rose-950/50 border border-rose-500/40 text-[11px] text-rose-200 leading-relaxed"
+                >
+                  ⚠️ <strong>Cảnh báo Refresh Token:</strong> {{ gdriveConfig.last_refresh_error }}
+                </div>
+                <div v-else-if="gdriveConfig.token_last_refreshed" class="mb-1.5 text-[10.5px] text-emerald-400/90 mono">
+                  ✓ Cấp mới gần nhất: {{ gdriveConfig.token_last_refreshed }}
+                </div>
                 <div class="flex gap-2">
                   <div class="relative flex-1">
                     <input
@@ -1865,7 +1895,7 @@ onUnmounted(() => {
                   @click="showAdvancedOAuth = !showAdvancedOAuth"
                 >
                   <span>{{ showAdvancedOAuth ? '▼ Ẩn cài đặt' : '▶ ⚙️ Cài đặt OAuth Client riêng (Client ID & Client Secret)' }}</span>
-                  <span class="text-[10px] text-gray-500 font-normal">(Mặc định đã tích hợp sẵn, chỉ cần điền nếu dùng GCP Project riêng)</span>
+                  <span class="text-[10px] text-amber-300/80 font-normal">(Bắt buộc nếu muốn token không bị Google Playground thu hồi sau 24 giờ)</span>
                 </button>
 
                 <div v-if="showAdvancedOAuth" class="mt-2 p-2.5 rounded-lg bg-black/50 border border-white/10 space-y-2">
@@ -1924,14 +1954,14 @@ onUnmounted(() => {
           <!-- Quick Token Helper Guide Card -->
           <div class="p-3 rounded-lg bg-sky-950/30 border border-sky-500/20 text-[11px] text-gray-300 space-y-1.5">
             <div class="font-bold text-sky-300 flex items-center gap-1.5 text-xs">
-              <span>💡 Hướng dẫn lấy Refresh Token vĩnh viễn (Chỉ cần làm 1 lần duy nhất):</span>
+              <span>💡 Hướng dẫn lấy Refresh Token bền vững (Không bị hết hạn sau 24 giờ):</span>
             </div>
             <p class="leading-relaxed">
               1. Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>.<br>
-              2. Tại mục <b>Step 1</b>: Tìm chọn <code class="text-amber-300">Drive API v3</code> &gt; tick chọn <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; Bấm <b>Authorize APIs</b> và đăng nhập tài khoản Google của bạn.<br>
-              3. Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b>.<br>
-              4. Bạn sẽ thấy 2 ô xuất hiện: Sao chép chuỗi trong ô <code class="text-emerald-300 font-bold">Refresh token</code> (thường bắt đầu bằng <code class="text-emerald-300">1//...</code>) và dán vào ô <b>số 2</b> ở trên.<br>
-              5. Bấm nút <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>. Từ nay router sẽ tự duy trì hoạt động vĩnh viễn!
+              2. <strong>Để dùng lâu dài (không hết hạn 24h):</strong> Bấm biểu tượng bánh răng <b>⚙️ (OAuth 2.0 configuration)</b> góc phải trên &rarr; tích <b>Use your own OAuth credentials</b> &rarr; nhập <b>OAuth Client ID</b> &amp; <b>Client Secret</b> từ Google Cloud Console (App ở trạng thái <i>In production</i>), đồng thời nhập cặp đó vào mục <b>"⚙️ Cài đặt OAuth Client riêng"</b> ở trên.<br>
+              3. Tại <b>Step 1</b>: Chọn <code class="text-amber-300">Drive API v3</code> &gt; tick <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; bấm <b>Authorize APIs</b>.<br>
+              4. Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b> &rarr; sao chép <code class="text-emerald-300 font-bold">Refresh token</code> (<code class="text-emerald-300">1//...</code>) dán vào ô <b>số 2</b> ở trên.<br>
+              5. Bấm <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>. Lưu ý: nếu bỏ trống Client ID/Secret và dùng Playground mặc định, Google sẽ tự thu hồi Refresh Token sau 24 giờ.
             </p>
           </div>
 

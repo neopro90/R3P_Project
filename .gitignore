@@ -23,6 +23,10 @@ build/artifacts/*.bin
 !R3P-Firmware-Sysupgrade.bin
 !R3P-Recovery-Initramfs.bin
 
+# Sensitive router dumps / config archives (must never be committed)
+backup/
+deployment/backup/*.tar.gz
+
 # Temporary / local files
 .tmp/
 tmp/

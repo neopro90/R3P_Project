@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
@@ -14,10 +14,13 @@ const route = useRoute()
 const auth = useAuthStore()
 const network = useNetworkStore()
 const system = useSystemStore()
-const collapsed = ref(false)
 const mobileSidebarOpen = ref(false)
 const stream = useSSE()
 const preferences = useUiPreferences()
+const collapsed = computed({
+  get: () => preferences.state.sidebarCollapsed,
+  set: (v: boolean) => preferences.setSidebarCollapsed(v),
+})
 const colorScheme = window.matchMedia('(prefers-color-scheme: light)')
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -35,20 +38,35 @@ watch(
 )
 
 async function loadOverview() {
+  if (document.hidden) return
   await Promise.all([system.refresh(), network.refreshInterfaces(), network.refreshClients()])
+}
+
+function stopOverviewTimer() {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden && auth.authenticated) {
+    void loadOverview()
+  }
 }
 
 watch(
   () => auth.authenticated,
   (authenticated) => {
+    stopOverviewTimer()
     if (authenticated) {
       stream.connect()
       void loadOverview()
-      refreshTimer = setInterval(() => void loadOverview(), 15_000)
+      void preferences.syncFromServer()
+      refreshTimer = setInterval(() => void loadOverview(), 20_000)
     } else {
+      preferences.setServerSync(false)
       stream.disconnect()
-      if (refreshTimer !== null) clearInterval(refreshTimer)
-      refreshTimer = null
     }
   },
 )
@@ -64,20 +82,22 @@ function handleSystemThemeChange() {
 onMounted(async () => {
   window.addEventListener('r3p:unauthorized', handleUnauthorized)
   colorScheme.addEventListener('change', handleSystemThemeChange)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   await auth.checkSession()
 })
 
 onUnmounted(() => {
   window.removeEventListener('r3p:unauthorized', handleUnauthorized)
   colorScheme.removeEventListener('change', handleSystemThemeChange)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   stream.disconnect()
-  if (refreshTimer !== null) clearInterval(refreshTimer)
+  stopOverviewTimer()
 })
 </script>
 
 <template>
   <main v-if="auth.checking" class="min-h-full flex items-center justify-center text-sm text-gray-400">
-    Checking router session…
+    {{ preferences.t('checking_session') }}
   </main>
   <LoginView v-else-if="!auth.authenticated" />
   <div v-else class="flex h-screen overflow-hidden relative">
@@ -124,7 +144,7 @@ onUnmounted(() => {
         :class="route.path === '/' ? 'text-sky-400 font-bold' : 'text-gray-400 hover:text-gray-200'"
       >
         <span class="text-base leading-none">📊</span>
-        <span class="text-[10px] tracking-tight mt-0.5">Tổng Quan</span>
+        <span class="text-[10px] tracking-tight mt-0.5">{{ preferences.t('mobile_overview') }}</span>
       </router-link>
       <router-link
         to="/ai"
@@ -132,7 +152,7 @@ onUnmounted(() => {
         :class="route.path === '/ai' ? 'text-sky-400 font-bold' : 'text-gray-400 hover:text-gray-200'"
       >
         <span class="text-base leading-none">🤖</span>
-        <span class="text-[10px] tracking-tight mt-0.5">Trợ Lý AI</span>
+        <span class="text-[10px] tracking-tight mt-0.5">{{ preferences.t('mobile_ai') }}</span>
       </router-link>
       <router-link
         to="/network"
@@ -140,7 +160,7 @@ onUnmounted(() => {
         :class="route.path === '/network' ? 'text-sky-400 font-bold' : 'text-gray-400 hover:text-gray-200'"
       >
         <span class="text-base leading-none">🌐</span>
-        <span class="text-[10px] tracking-tight mt-0.5">Mạng</span>
+        <span class="text-[10px] tracking-tight mt-0.5">{{ preferences.t('mobile_network') }}</span>
       </router-link>
       <router-link
         to="/downloads"
@@ -148,7 +168,7 @@ onUnmounted(() => {
         :class="route.path === '/downloads' ? 'text-sky-400 font-bold' : 'text-gray-400 hover:text-gray-200'"
       >
         <span class="text-base leading-none">⬇️</span>
-        <span class="text-[10px] tracking-tight mt-0.5">Download</span>
+        <span class="text-[10px] tracking-tight mt-0.5">{{ preferences.t('mobile_downloads') }}</span>
       </router-link>
       <button
         type="button"
@@ -156,7 +176,7 @@ onUnmounted(() => {
         @click="mobileSidebarOpen = true"
       >
         <span class="text-base leading-none">☰</span>
-        <span class="text-[10px] tracking-tight mt-0.5">Tất Cả Tab</span>
+        <span class="text-[10px] tracking-tight mt-0.5">{{ preferences.t('mobile_all_tabs') }}</span>
       </button>
     </nav>
   </div>

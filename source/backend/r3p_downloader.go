@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -224,12 +225,10 @@ func defaultDownloaderConfig() DownloaderConfig {
 	}
 }
 
-// loadOrMigrateDownloaderConfig loads /etc/r3p/downloader.json or migrates legacy config once without data loss.
+// loadOrMigrateDownloaderConfig loads downloader config from r3p.db or /etc/r3p/downloader.json / legacy config once without data loss.
 func loadOrMigrateDownloaderConfig(cfgPath string, legacyPaths []string) DownloaderConfig {
 	cfg := defaultDownloaderConfig()
-	if b, err := os.ReadFile(cfgPath); err == nil {
-		_ = json.Unmarshal(b, &cfg)
-	} else {
+	if !settingsDBLoadJSON(bucketSettings, "downloader", cfgPath, &cfg) {
 		migrated := false
 		for _, legacy := range legacyPaths {
 			if lb, lErr := os.ReadFile(legacy); lErr == nil {
@@ -243,10 +242,7 @@ func loadOrMigrateDownloaderConfig(cfgPath string, legacyPaths []string) Downloa
 			cfg.SchemaVersion = 3
 			cfg.SystemID = "r3p-local-downloader"
 			cfg.WorkerName = "R3P-Local-Downloader"
-			_ = os.MkdirAll(filepath.Dir(cfgPath), 0755)
-			if out, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
-				_ = os.WriteFile(cfgPath, out, 0600)
-			}
+			_ = settingsDBSaveJSON(bucketSettings, "downloader", cfgPath, 0600, cfg)
 		}
 	}
 
@@ -296,12 +292,11 @@ func initR3pDownloadRuntime() {
 
 	var loadedQueue []*DownloadJob
 	migratedQueue := false
-	if _, err := os.Stat(downloaderQueueFile); os.IsNotExist(err) {
-		migratedQueue = true
+	if !settingsDBLoadJSON(bucketCollections, "downloader_queue", downloaderQueueFile, &loadedQueue) {
+		migratedQueue = loadJSONWithMigration(downloaderQueueFile, []string{
+			filepath.Join(legacySdaDataDir, "runtime-queue.json"),
+		}, &loadedQueue)
 	}
-	loadJSONWithMigration(downloaderQueueFile, []string{
-		filepath.Join(legacySdaDataDir, "runtime-queue.json"),
-	}, &loadedQueue)
 	if loadedQueue == nil {
 		loadedQueue = []*DownloadJob{}
 	}
@@ -312,19 +307,18 @@ func initR3pDownloadRuntime() {
 	}
 	dlMu.Lock()
 	dlQueue = loadedQueue
-	if migratedQueue || len(dlQueue) > 0 {
+	if migratedQueue {
 		saveDownloaderQueue()
 	}
 	dlMu.Unlock()
 
 	var loadedSchedules []*ScheduledDownload
 	migratedSched := false
-	if _, err := os.Stat(downloaderSchedulesFile); os.IsNotExist(err) {
-		migratedSched = true
+	if !settingsDBLoadJSON(bucketCollections, "downloader_schedules", downloaderSchedulesFile, &loadedSchedules) {
+		migratedSched = loadJSONWithMigration(downloaderSchedulesFile, []string{
+			filepath.Join(legacySdaDataDir, "scheduled-downloads.json"),
+		}, &loadedSchedules)
 	}
-	loadJSONWithMigration(downloaderSchedulesFile, []string{
-		filepath.Join(legacySdaDataDir, "scheduled-downloads.json"),
-	}, &loadedSchedules)
 	if loadedSchedules == nil {
 		loadedSchedules = []*ScheduledDownload{}
 	}
@@ -399,7 +393,9 @@ func syncR3pDownloaderSettings() {
 	}
 	var tg tgFileModel
 	tgFileExists := false
-	if b, err := os.ReadFile(tgPath); err == nil {
+	if tgPath == "/etc/r3p/telegram.json" {
+		tgFileExists = settingsDBLoadJSON(bucketSettings, "telegram", tgPath, &tg)
+	} else if b, err := os.ReadFile(tgPath); err == nil {
 		if json.Unmarshal(b, &tg) == nil {
 			tgFileExists = true
 		}
@@ -471,7 +467,11 @@ func syncR3pDownloaderSettings() {
 	_ = os.MkdirAll(outDir, 0755)
 
 	if shouldWriteTelegramFile(tgFileExists, changedTgFile, syncTok) {
-		_ = writePrivateJSON(tgPath, tg)
+		if tgPath == "/etc/r3p/telegram.json" {
+			_ = settingsDBSaveJSON(bucketSettings, "telegram", tgPath, 0600, tg)
+		} else {
+			_ = writePrivateJSON(tgPath, tg)
+		}
 	}
 	telegramDownloader.syncFromDownloader(syncTok, syncChat, syncEn, mountTarget, pathTarget)
 }
@@ -495,9 +495,17 @@ func wakeUnifiedTelegramPoller(cancelActivePoll bool) {
 	}
 }
 
-func syncTelegramConfigToDownloader(botToken, chatID string, enabled bool) {
+func syncTelegramConfigToDownloader(botToken, chatID string, enabled bool, mount, subPath string) {
 	botToken = strings.TrimSpace(botToken)
 	chatID = strings.TrimSpace(chatID)
+	mount = strings.TrimSpace(mount)
+	subPath = strings.TrimSpace(subPath)
+	var dest string
+	if mount != "" || subPath != "" {
+		if validated, err := validateDownloadDestination(mount, subPath); err == nil && validated != "" {
+			dest = validated
+		}
+	}
 	dlMu.Lock()
 	tokenChanged := dlConfig.TelegramBotToken != botToken
 	changed := tokenChanged || dlConfig.TelegramAllowedChatId != chatID || dlConfig.TelegramEnabled != enabled
@@ -509,6 +517,10 @@ func syncTelegramConfigToDownloader(botToken, chatID string, enabled bool) {
 	}
 	dlConfig.TelegramAllowedChatId = chatID
 	dlConfig.TelegramEnabled = enabled
+	if dest != "" && dlConfig.OutputDirectory != dest {
+		dlConfig.OutputDirectory = dest
+		changed = true
+	}
 	if changed {
 		saveDownloaderConfig()
 	}
@@ -562,24 +574,15 @@ func truncateLogText(s string, maxRunes int) string {
 }
 
 func saveDownloaderConfig() {
-	_ = os.MkdirAll(filepath.Dir(downloaderConfigFile), 0755)
-	if b, err := json.MarshalIndent(dlConfig, "", "  "); err == nil {
-		_ = os.WriteFile(downloaderConfigFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketSettings, "downloader", downloaderConfigFile, 0600, dlConfig)
 }
 
 func saveDownloaderQueue() {
-	_ = os.MkdirAll(filepath.Dir(downloaderQueueFile), 0755)
-	if b, err := json.MarshalIndent(dlQueue, "", "  "); err == nil {
-		_ = os.WriteFile(downloaderQueueFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "downloader_queue", downloaderQueueFile, 0600, dlQueue)
 }
 
 func saveDownloaderSchedules() {
-	_ = os.MkdirAll(filepath.Dir(downloaderSchedulesFile), 0755)
-	if b, err := json.MarshalIndent(dlSchedules, "", "  "); err == nil {
-		_ = os.WriteFile(downloaderSchedulesFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "downloader_schedules", downloaderSchedulesFile, 0600, dlSchedules)
 }
 
 func isTerminalDownloadJob(status string) bool {
@@ -595,7 +598,7 @@ var (
 
 func getYtDlpVer() (string, string) {
 	cachedYtMu.Lock()
-	if time.Since(cachedYtTime) < 10*time.Minute && cachedYtVer != "" {
+	if !cachedYtTime.IsZero() && ((cachedYtVer != "" && time.Since(cachedYtTime) < 10*time.Minute) || (cachedYtErr != "" && time.Since(cachedYtTime) < 2*time.Minute)) {
 		v, e := cachedYtVer, cachedYtErr
 		cachedYtMu.Unlock()
 		return v, e
@@ -649,7 +652,7 @@ func checkTelegramToken(token string) map[string]interface{} {
 			"reachable":  false,
 			"tokenValid": nil,
 			"checkedAt":  checkedAt,
-			"message":    "Không tới được Telegram API: " + err.Error(),
+			"message":    "Không tới được Telegram API: " + sanitizeTelegramError(token, err),
 		}
 	}
 	defer resp.Body.Close()
@@ -662,10 +665,12 @@ func checkTelegramToken(token string) map[string]interface{} {
 			FirstName string `json:"first_name"`
 		} `json:"result"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&data)
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data)
 	if resp.StatusCode == 200 && data.OK && data.Result.IsBot {
 		dlMu.Lock()
-		dlBotUsername = data.Result.Username
+		if dlConfig.TelegramBotToken == "" || dlConfig.TelegramBotToken == token {
+			dlBotUsername = data.Result.Username
+		}
 		dlMu.Unlock()
 		return map[string]interface{}{
 			"configured":  true,
@@ -706,7 +711,7 @@ func getTelegramWebhookInfo(token string) (string, error) {
 	client := newTelegramHTTPClient(6 * time.Second)
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/getWebhookInfo")
 	if err != nil {
-		return "", err
+		return "", errors.New(sanitizeTelegramError(token, err))
 	}
 	defer resp.Body.Close()
 	var data struct {
@@ -743,7 +748,7 @@ func ensureTelegramWebhookDeleted(token string) error {
 	client := newTelegramHTTPClient(8 * time.Second)
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/deleteWebhook?drop_pending_updates=false")
 	if err != nil {
-		return err
+		return errors.New(sanitizeTelegramError(token, err))
 	}
 	defer resp.Body.Close()
 	var data struct {
@@ -796,7 +801,7 @@ func sendR3pTelegramMsg(chatID, text string) error {
 		b, _ := json.Marshal(payload)
 		resp, err := client.Post("https://api.telegram.org/bot"+tok+"/sendMessage", "application/json", bytes.NewReader(b))
 		if err != nil {
-			return err
+			return errors.New(sanitizeTelegramError(tok, err))
 		}
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
@@ -972,7 +977,13 @@ func startDownloadJob(job *DownloadJob) {
 	if outDir == "" || strings.Contains(outDir, ":") || strings.Contains(outDir, "\\") {
 		outDir = cfg.OutputDirectory
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	jobTimeoutMin := settings.JobTimeoutMinutes
+	if jobTimeoutMin <= 0 {
+		jobTimeoutMin = 30
+	} else if jobTimeoutMin > 180 {
+		jobTimeoutMin = 180
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(jobTimeoutMin)*time.Minute)
 	dlActiveCmds[job.ID] = cancel
 	job.RuntimeStatus = "RUNNING"
 	job.WorkerID = cfg.WorkerName
@@ -983,11 +994,17 @@ func startDownloadJob(job *DownloadJob) {
 	dlMu.Unlock()
 
 	go func() {
+		defer cancel()
 		defer func() {
 			dlMu.Lock()
 			delete(dlActiveCmds, job.ID)
 			dlMu.Unlock()
 		}()
+
+		if err := validatePublicDownloadHost(ctx, job.URL); err != nil {
+			finishDownloadJob(job, false, false, "", nil, "URL blocked before download: "+err.Error())
+			return
+		}
 
 		_ = os.MkdirAll(outDir, 0755)
 		subFolder := ""
@@ -1314,6 +1331,10 @@ func computeNextScheduleRunMs(s *ScheduledDownload, from time.Time) int64 {
 }
 
 func enqueueR3pJob(rawURL, source, chatID, quality string, force bool) (*DownloadJob, bool, error) {
+	return enqueueR3pJobWithDir(rawURL, source, chatID, quality, force, "")
+}
+
+func enqueueR3pJobWithDir(rawURL, source, chatID, quality string, force bool, customDir string) (*DownloadJob, bool, error) {
 	u := strings.TrimRight(strings.TrimSpace(rawURL), ".,;:!?)>\"'")
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return nil, false, fmt.Errorf("URL phải bắt đầu bằng http:// hoặc https://")
@@ -1323,6 +1344,13 @@ func enqueueR3pJob(rawURL, source, chatID, quality string, force bool) (*Downloa
 	}
 	dlMu.Lock()
 	defer dlMu.Unlock()
+
+	outDir := dlConfig.OutputDirectory
+	if strings.TrimSpace(customDir) != "" {
+		if cleanCustom, dirErr := validateDownloaderOutputDir(strings.TrimSpace(customDir)); dirErr == nil {
+			outDir = cleanCustom
+		}
+	}
 
 	if dlConfig.DownloadSettings.DuplicateUrlPolicy == "skip_pending" && !force {
 		for _, existing := range dlQueue {
@@ -1338,7 +1366,7 @@ func enqueueR3pJob(rawURL, source, chatID, quality string, force bool) (*Downloa
 		URL:             u,
 		Source:          source,
 		TelegramChatID:  chatID,
-		OutputDirectory: dlConfig.OutputDirectory,
+		OutputDirectory: outDir,
 		Quality:         strings.TrimSpace(quality),
 		CreatedAt:       nowStr,
 		ReceivedAt:      nowStr,
@@ -1376,6 +1404,8 @@ func downloadWorkerLoop() {
 		maxJobs := dlConfig.DownloadSettings.MaxConcurrentJobs
 		if maxJobs < 1 {
 			maxJobs = 1
+		} else if maxJobs > 4 {
+			maxJobs = 4
 		}
 		activeCount := len(dlActiveCmds)
 		var nextJob *DownloadJob
@@ -1401,9 +1431,26 @@ func downloadWorkerLoop() {
 				s.LastRunAt = now.UTC().Format(time.RFC3339)
 				s.LastRunStatus = "QUEUED"
 				saveDownloaderSchedules()
-				go func(schedURL string) {
-					_, _, _ = enqueueR3pJob(schedURL, "schedule", "", "", false)
-				}(s.URL)
+				schedID := s.ID
+				schedURL := s.URL
+				schedDir := s.OutputDirectory
+				go func(sid, su, sd string) {
+					job, _, qErr := enqueueR3pJobWithDir(su, "schedule", "", "", false, sd)
+					dlMu.Lock()
+					for _, item := range dlSchedules {
+						if item.ID == sid {
+							if qErr != nil {
+								item.LastRunStatus = "ERROR: " + qErr.Error()
+							} else if job != nil {
+								item.LastJobID = job.ID
+								item.LastRunStatus = "QUEUED"
+							}
+							saveDownloaderSchedules()
+							break
+						}
+					}
+					dlMu.Unlock()
+				}(schedID, schedURL, schedDir)
 			}
 		}
 		dlMu.Unlock()
@@ -1415,6 +1462,8 @@ func downloadWorkerLoop() {
 }
 
 var urlExtractRegex = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+var dlTgAISem = make(chan struct{}, 2)
 
 func waitTelegramPollBackoff(d time.Duration) {
 	timer := time.NewTimer(d)
@@ -1468,7 +1517,7 @@ func r3pTelegramPollerLoop() {
 		// Clear any legacy webhook once per active token so getUpdates works immediately.
 		if webhookClearedToken != tok {
 			if err := ensureTelegramWebhookDeleted(tok); err != nil {
-				log.Printf("Telegram webhook check warning: %v", err)
+				log.Printf("Telegram webhook check warning: %s", sanitizeTelegramError(tok, err))
 			} else {
 				webhookClearedToken = tok
 			}
@@ -1495,8 +1544,9 @@ func r3pTelegramPollerLoop() {
 			dlMu.Lock()
 			dlTgPollCancel = nil
 			dlMu.Unlock()
-			setTgPollState("error", reqErr.Error(), 0, true, false)
-			telegramDownloader.updatePollStatus(false, reqErr.Error())
+			safeErr := sanitizeTelegramError(tok, reqErr)
+			setTgPollState("error", safeErr, 0, true, false)
+			telegramDownloader.updatePollStatus(false, safeErr)
 			waitTelegramPollBackoff(5 * time.Second)
 			continue
 		}
@@ -1513,7 +1563,7 @@ func r3pTelegramPollerLoop() {
 			if wasCanceled {
 				continue
 			}
-			errMsg := err.Error()
+			errMsg := sanitizeTelegramError(tok, err)
 			setTgPollState("error", errMsg, 0, true, false)
 			telegramDownloader.updatePollStatus(false, errMsg)
 			waitTelegramPollBackoff(5 * time.Second)
@@ -1524,7 +1574,7 @@ func r3pTelegramPollerLoop() {
 		resp.Body.Close()
 		if readErr != nil {
 			client.CloseIdleConnections()
-			errMsg := readErr.Error()
+			errMsg := sanitizeTelegramError(tok, readErr)
 			setTgPollState("error", errMsg, 0, true, false)
 			telegramDownloader.updatePollStatus(false, errMsg)
 			waitTelegramPollBackoff(5 * time.Second)
@@ -1626,10 +1676,8 @@ func r3pTelegramPollerLoop() {
 
 			if allowedChat == "" || !isAllowedTelegramChat(allowedChat, chatStr) {
 				reason := "Chat ID chưa được cấp quyền: " + chatStr
-				msg := "⛔ Chat ID " + chatStr + " chưa được cấp quyền trong cài đặt."
 				if allowedChat == "" {
 					reason = "Chưa cấu hình Allowed Chat ID — từ chối mọi yêu cầu ngoài /id"
-					msg = "🔒 Bot chưa cấu hình Allowed Chat ID. Hãy gửi /id để lấy Chat ID và lưu vào trang Tải Xuống / Tự Động Hóa trên Router."
 				}
 				appendTelegramRouteLog(TelegramRouteLogEntry{
 					ID:        fmt.Sprintf("rej_%d_%d", upd.UpdateID, time.Now().UnixNano()%10000),
@@ -1640,7 +1688,6 @@ func r3pTelegramPollerLoop() {
 					Reason:    reason,
 					JobStatus: "BLOCKED",
 				})
-				_ = sendR3pTelegramMsg(chatStr, msg)
 				continue
 			}
 
@@ -1692,23 +1739,33 @@ func r3pTelegramPollerLoop() {
 					Reason:    "Phân tích: tin nhắn thường (" + analysis.Reason + ") -> Module AI",
 					JobStatus: "PROCESSING",
 				})
-				go func(lid, msgText, cid, reason string) {
-					sendR3pTelegramChatAction(cid, "typing")
-					aiReply := processTelegramAIChat(msgText, cid)
-					if strings.TrimSpace(aiReply) == "" {
-						updateTelegramRouteLogEntry(lid, "DONE", "AI hoàn tất (không có nội dung trả lời)", 0)
-						return
-					}
-					if sErr := sendR3pTelegramMsg(cid, aiReply); sErr != nil {
-						errText := "Gửi phản hồi AI thất bại: " + sErr.Error()
-						updateTelegramRouteLogEntry(lid, "SEND_ERROR", errText, 0)
-						dlMu.Lock()
-						dlTgLastErr = errText
-						dlMu.Unlock()
-					} else {
-						updateTelegramRouteLogEntry(lid, "REPLIED", "Phân tích: tin nhắn thường ("+reason+") -> Đã trả lời AI", 0)
-					}
-				}(logID, analysis.CleanText, chatStr, analysis.Reason)
+				select {
+				case dlTgAISem <- struct{}{}:
+					go func(lid, msgText, cid, reason string) {
+						defer func() { <-dlTgAISem }()
+						sendR3pTelegramChatAction(cid, "typing")
+						aiReply := processTelegramAIChat(msgText, cid)
+						if strings.TrimSpace(aiReply) == "" {
+							updateTelegramRouteLogEntry(lid, "DONE", "AI hoàn tất (không có nội dung trả lời)", 0)
+							return
+						}
+						if sErr := sendR3pTelegramMsg(cid, aiReply); sErr != nil {
+							dlMu.Lock()
+							botTok := dlConfig.TelegramBotToken
+							dlMu.Unlock()
+							errText := "Gửi phản hồi AI thất bại: " + sanitizeTelegramError(botTok, sErr)
+							updateTelegramRouteLogEntry(lid, "SEND_ERROR", errText, 0)
+							dlMu.Lock()
+							dlTgLastErr = errText
+							dlMu.Unlock()
+						} else {
+							updateTelegramRouteLogEntry(lid, "REPLIED", "Phân tích: tin nhắn thường ("+reason+") -> Đã trả lời AI", 0)
+						}
+					}(logID, analysis.CleanText, chatStr, analysis.Reason)
+				default:
+					updateTelegramRouteLogEntry(logID, "BUSY", "Hệ thống AI đang xử lý tối đa 2 yêu cầu song song, vui lòng thử lại sau.", 0)
+					_ = sendR3pTelegramMsg(chatStr, "⏳ AI đang bận xử lý yêu cầu trước đó, vui lòng gửi lại sau vài giây.")
+				}
 			}
 		}
 	}
@@ -1909,7 +1966,7 @@ func handleDownloadDebug(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(cfg.TelegramBotToken) != "" {
 		tgCheck = checkTelegramToken(cfg.TelegramBotToken)
 		if hURL, hErr := getTelegramWebhookInfo(cfg.TelegramBotToken); hErr != nil {
-			webhookErr = hErr.Error()
+			webhookErr = sanitizeTelegramError(cfg.TelegramBotToken, hErr)
 		} else {
 			webhookURL = hURL
 		}
@@ -2007,10 +2064,41 @@ func handleDownloadConfig(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(s.FilenameTemplate, "..") {
 				s.FilenameTemplate = strings.ReplaceAll(s.FilenameTemplate, "..", "")
 			}
+			if s.MaxConcurrentJobs < 1 {
+				s.MaxConcurrentJobs = 1
+			} else if s.MaxConcurrentJobs > 4 {
+				s.MaxConcurrentJobs = 4
+			}
+			if s.FragmentConcurrency < 1 {
+				s.FragmentConcurrency = 1
+			} else if s.FragmentConcurrency > 8 {
+				s.FragmentConcurrency = 8
+			}
+			if s.RetryLimit < 0 {
+				s.RetryLimit = 0
+			} else if s.RetryLimit > 10 {
+				s.RetryLimit = 10
+			}
+			if s.JobTimeoutMinutes < 1 {
+				s.JobTimeoutMinutes = 30
+			} else if s.JobTimeoutMinutes > 180 {
+				s.JobTimeoutMinutes = 180
+			}
+			if s.SocketTimeoutSeconds < 5 {
+				s.SocketTimeoutSeconds = 5
+			} else if s.SocketTimeoutSeconds > 120 {
+				s.SocketTimeoutSeconds = 120
+			}
 			dlConfig.DownloadSettings = s
 		}
-		if body.UrlRetentionDays != nil && *body.UrlRetentionDays > 0 {
-			dlConfig.UrlRetentionDays = *body.UrlRetentionDays
+		if body.UrlRetentionDays != nil {
+			ret := *body.UrlRetentionDays
+			if ret < 1 {
+				ret = 1
+			} else if ret > 365 {
+				ret = 365
+			}
+			dlConfig.UrlRetentionDays = ret
 		}
 		dlConfig.SettingsRevision++
 		saveDownloaderConfig()
@@ -2192,15 +2280,24 @@ func handleDownloadScheduleItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete && !strings.Contains(rest, "/") {
 		id := rest
 		dlMu.Lock()
+		found := false
 		var next []*ScheduledDownload
 		for _, s := range dlSchedules {
 			if s.ID != id {
 				next = append(next, s)
+			} else {
+				found = true
 			}
 		}
-		dlSchedules = next
-		saveDownloaderSchedules()
+		if found {
+			dlSchedules = next
+			saveDownloaderSchedules()
+		}
 		dlMu.Unlock()
+		if !found {
+			writeJSON(w, http.StatusNotFound, false, "Schedule not found")
+			return
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"deleted": true, "id": id})
 		return
 	}

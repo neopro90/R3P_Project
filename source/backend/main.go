@@ -31,10 +31,20 @@ import (
 	"time"
 )
 
-var Version = "v1.1.21"
+var Version = "v1.1.26"
+
+// RevisionStr can be overridden via -ldflags="-X main.RevisionStr=26"
+var RevisionStr = "26"
+
+func currentRevision() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(RevisionStr)); err == nil && n > 0 {
+		return n
+	}
+	return 26
+}
 
 // BuildDate is injected at compile time via -ldflags="-X main.BuildDate=..."
-var BuildDate = "2026-11-06"
+var BuildDate = "2026-11-14"
 
 var startTime = time.Now()
 
@@ -290,31 +300,42 @@ func computeNetRates(snap1, snap2 map[string]ifaceSnapshot, elapsedSec float64) 
 	return ifaces
 }
 
-func startMetricsSampler() {
+func startMetricsSampler(ctx context.Context) {
 	if _, err := os.Stat("/proc/stat"); err != nil {
 		return
 	}
+	go refreshDiskTempAndState()
 	go func() {
 		prevCPU := parseProcStatAll()
 		prevNet := parseNetDev()
 		prevTime := time.Now()
+		lastDiskPoll := time.Now()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			now := time.Now()
-			curCPU := parseProcStatAll()
-			curNet := parseNetDev()
-			elapsed := now.Sub(prevTime).Seconds()
-			cpuMap := computeCPUUsage(prevCPU, curCPU)
-			ifaceRates := computeNetRates(prevNet, curNet, elapsed)
-			metricsCache.mu.Lock()
-			metricsCache.cpu = cpuMap
-			metricsCache.ifaces = ifaceRates
-			metricsCache.updatedAt = now
-			metricsCache.mu.Unlock()
-			prevCPU = curCPU
-			prevNet = curNet
-			prevTime = now
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now()
+				curCPU := parseProcStatAll()
+				curNet := parseNetDev()
+				elapsed := now.Sub(prevTime).Seconds()
+				cpuMap := computeCPUUsage(prevCPU, curCPU)
+				ifaceRates := computeNetRates(prevNet, curNet, elapsed)
+				metricsCache.mu.Lock()
+				metricsCache.cpu = cpuMap
+				metricsCache.ifaces = ifaceRates
+				metricsCache.updatedAt = now
+				metricsCache.mu.Unlock()
+				prevCPU = curCPU
+				prevNet = curNet
+				prevTime = now
+				if now.Sub(lastDiskPoll) >= 30*time.Second {
+					lastDiskPoll = now
+					refreshDiskTempAndState()
+				}
+			}
 		}
 	}()
 }
@@ -355,6 +376,53 @@ func availableMemory(info map[string]uint64) uint64 {
 		return total
 	}
 	return available
+}
+
+var (
+	physicalRAMOnce sync.Once
+	physicalRAMKB   uint64
+)
+
+func parseIOMemSystemRAMKB(data string) uint64 {
+	var totalBytes uint64
+	for _, rawLine := range strings.Split(data, "\n") {
+		line := strings.TrimRight(rawLine, "\r\n")
+		if line == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		colonIdx := strings.Index(line, ":")
+		if colonIdx <= 0 {
+			continue
+		}
+		label := strings.TrimSpace(line[colonIdx+1:])
+		if label != "System RAM" {
+			continue
+		}
+		rng := strings.TrimSpace(line[:colonIdx])
+		dashIdx := strings.Index(rng, "-")
+		if dashIdx <= 0 {
+			continue
+		}
+		startAddr, err1 := strconv.ParseUint(strings.TrimSpace(rng[:dashIdx]), 16, 64)
+		endAddr, err2 := strconv.ParseUint(strings.TrimSpace(rng[dashIdx+1:]), 16, 64)
+		if err1 != nil || err2 != nil || endAddr <= startAddr {
+			continue
+		}
+		totalBytes += (endAddr - startAddr + 1)
+	}
+	return totalBytes / 1024
+}
+
+func readPhysicalRAMKB(memTotalKB uint64) uint64 {
+	physicalRAMOnce.Do(func() {
+		if b, err := os.ReadFile("/proc/iomem"); err == nil {
+			physicalRAMKB = parseIOMemSystemRAMKB(string(b))
+		}
+	})
+	if physicalRAMKB >= memTotalKB && memTotalKB > 0 {
+		return physicalRAMKB
+	}
+	return memTotalKB
 }
 
 func parseMemInfoData(data string) map[string]uint64 {
@@ -416,7 +484,7 @@ func interfaceType(name string) string {
 	switch {
 	case lower == "lo":
 		return "loopback"
-	case strings.Contains(lower, "wan") || strings.HasPrefix(lower, "pppoe"):
+	case lower == "usb0" || lower == "eth1" || lower == "eth0.2" || strings.Contains(lower, "wan") || strings.HasPrefix(lower, "pppoe"):
 		return "wan"
 	case strings.Contains(lower, "wlan") || strings.Contains(lower, "phy") || strings.Contains(lower, "ap"):
 		return "wlan"
@@ -467,7 +535,13 @@ func netRatesSnapshot() []map[string]interface{} {
 	metricsCache.mu.RLock()
 	if metricsCache.ifaces != nil && time.Since(metricsCache.updatedAt) < 8*time.Second {
 		cp := make([]map[string]interface{}, len(metricsCache.ifaces))
-		copy(cp, metricsCache.ifaces)
+		for i, item := range metricsCache.ifaces {
+			cloned := make(map[string]interface{}, len(item))
+			for k, v := range item {
+				cloned[k] = v
+			}
+			cp[i] = cloned
+		}
 		metricsCache.mu.RUnlock()
 		return cp
 	}
@@ -487,43 +561,103 @@ func runCmd(timeoutSec int, name string, args ...string) (string, error) {
 // ─── Thermal temperature & Disk Power Management ─────────────────────────
 
 var (
-	cachedDiskTemp float64
-	lastDiskCheck  time.Time
-	diskTempMu     sync.Mutex
+	cachedDiskTemp     float64
+	cachedDiskState    = "active"
+	lastDiskCheck      time.Time
+	diskTempRefreshing bool
+	diskTempMu         sync.Mutex
+
+	hardwareModelOnce sync.Once
+	cachedHWModel     string
+	openwrtRelOnce    sync.Once
+	cachedOpenwrtRel  map[string]string
+	lanIPMu           sync.Mutex
+	cachedLANIP       string
+	cachedLANIPAt     time.Time
 )
 
-func getDiskTempAndState() (float64, string) {
+func refreshDiskTempAndState() {
 	diskTempMu.Lock()
-	defer diskTempMu.Unlock()
+	if diskTempRefreshing {
+		diskTempMu.Unlock()
+		return
+	}
+	diskTempRefreshing = true
+	diskTempMu.Unlock()
 
-	state := "active"
+	defer func() {
+		diskTempMu.Lock()
+		diskTempRefreshing = false
+		lastDiskCheck = time.Now()
+		diskTempMu.Unlock()
+	}()
+
+	if _, err := os.Stat("/dev/sda"); err != nil {
+		diskTempMu.Lock()
+		cachedDiskState = "absent"
+		cachedDiskTemp = 0
+		diskTempMu.Unlock()
+		return
+	}
+
 	if out, err := runCmd(2, "hdparm", "-C", "/dev/sda"); err == nil {
 		if strings.Contains(out, "standby") {
-			state = "standby"
-			return cachedDiskTemp, state
+			diskTempMu.Lock()
+			cachedDiskState = "standby"
+			cachedDiskTemp = 0
+			diskTempMu.Unlock()
+			return
 		}
 	}
 
-	if time.Since(lastDiskCheck) > 15*time.Second || cachedDiskTemp == 0 {
-		lastDiskCheck = time.Now()
-		out, err := runCmd(3, "smartctl", "-a", "-d", "sntjmicron", "/dev/sda")
-		if err != nil || !strings.Contains(out, "Temperature") {
-			out, _ = runCmd(3, "smartctl", "-a", "/dev/sda")
-		}
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "Temperature:") {
-				f := strings.Fields(line)
-				if len(f) >= 2 {
-					if t, pErr := strconv.ParseFloat(f[1], 64); pErr == nil && t > 0 {
-						cachedDiskTemp = t
-						break
-					}
+	var parsedTemp float64
+	out, err := runCmd(3, "smartctl", "-a", "-d", "sntjmicron", "/dev/sda")
+	if err != nil || !strings.Contains(out, "Temperature") {
+		out, _ = runCmd(3, "smartctl", "-a", "/dev/sda")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Temperature:") {
+			f := strings.Fields(line)
+			if len(f) >= 2 {
+				if t, pErr := strconv.ParseFloat(f[1], 64); pErr == nil && t > 0 {
+					parsedTemp = t
+					break
 				}
 			}
 		}
 	}
-	return cachedDiskTemp, state
+
+	diskTempMu.Lock()
+	cachedDiskState = "active"
+	if parsedTemp > 0 {
+		cachedDiskTemp = parsedTemp
+	}
+	diskTempMu.Unlock()
+}
+
+func getDiskTempAndState() (float64, string) {
+	diskTempMu.Lock()
+	temp := cachedDiskTemp
+	state := cachedDiskState
+	needsInit := lastDiskCheck.IsZero() && !diskTempRefreshing
+	diskTempMu.Unlock()
+
+	if needsInit {
+		go refreshDiskTempAndState()
+	}
+	return temp, state
+}
+
+func thermalStatusLabels(tempC float64) (string, string) {
+	switch {
+	case tempC >= 80:
+		return "Quá Nóng", "critical"
+	case tempC >= 70:
+		return "Cảnh Báo Nóng", "warning"
+	default:
+		return "Bình Thường", "normal"
+	}
 }
 
 func readTemperatures() []map[string]interface{} {
@@ -544,25 +678,27 @@ func readTemperatures() []map[string]interface{} {
 			sum += t
 		}
 		avg := sum / float64(len(socTemps))
+		socStatus, socKey := thermalStatusLabels(avg)
 		temps = append(temps, map[string]interface{}{
 			"zone":         "soc",
 			"type":         "CPU / Bo Mạch (MT7621/MT7615)",
 			"temp_celsius": avg,
 			"temp_milli":   int64(avg * 1000),
-			"status":       "Bình Thường",
+			"status":       socStatus,
+			"status_key":   socKey,
 		})
 	}
 
 	// 2. Read USB 3.0 NVMe SSD Temperature (JMicron JMS583 / WD SN530)
 	diskTemp, diskState := getDiskTempAndState()
-	if diskTemp > 0 || diskState != "" {
-		st := "Bình Thường"
+	if diskTemp > 0 || (diskState != "" && diskState != "absent") {
+		st, stKey := "Bình Thường", "normal"
 		if diskTemp >= 70 {
-			st = "Quá Nóng"
+			st, stKey = "Quá Nóng", "critical"
 		} else if diskTemp >= 60 {
-			st = "Cảnh Báo Nóng"
+			st, stKey = "Cảnh Báo Nóng", "warning"
 		} else if diskState == "standby" {
-			st = "Đang Nghỉ (Sleep)"
+			st, stKey = "Đang Nghỉ (Sleep)", "standby"
 		}
 		temps = append(temps, map[string]interface{}{
 			"zone":         "usb_disk",
@@ -571,6 +707,7 @@ func readTemperatures() []map[string]interface{} {
 			"temp_milli":   int64(diskTemp * 1000),
 			"disk_state":   diskState,
 			"status":       st,
+			"status_key":   stKey,
 		})
 	}
 
@@ -580,11 +717,15 @@ func readTemperatures() []map[string]interface{} {
 		for _, z := range zones {
 			raw := strings.TrimSpace(readFile(z))
 			if millic, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				c := float64(millic) / 1000.0
+				st, stKey := thermalStatusLabels(c)
 				temps = append(temps, map[string]interface{}{
 					"zone":         filepath.Base(filepath.Dir(z)),
 					"type":         "Thermal Zone",
-					"temp_celsius": float64(millic) / 1000.0,
+					"temp_celsius": c,
 					"temp_milli":   millic,
+					"status":       st,
+					"status_key":   stKey,
 				})
 			}
 		}
@@ -640,17 +781,24 @@ func parseLoadAvg() loadAvg {
 // ─── OpenWrt release ──────────────────────────────────────────────────────
 
 func parseOpenwrtRelease() map[string]string {
-	info := map[string]string{}
-	for _, line := range strings.Split(readFile("/etc/openwrt_release"), "\n") {
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
+	openwrtRelOnce.Do(func() {
+		info := map[string]string{}
+		for _, line := range strings.Split(readFile("/etc/openwrt_release"), "\n") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			info[k] = v
 		}
-		k := strings.TrimSpace(parts[0])
-		v := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-		info[k] = v
+		cachedOpenwrtRel = info
+	})
+	cp := make(map[string]string, len(cachedOpenwrtRel))
+	for k, v := range cachedOpenwrtRel {
+		cp[k] = v
 	}
-	return info
+	return cp
 }
 
 // ─── Service scan via /proc ───────────────────────────────────────────────
@@ -901,7 +1049,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if origin := r.Header.Get("Origin"); origin != "" {
-				if !sameHostOrigin(origin, r.Host) {
+				if !sameOriginForRequest(origin, r) {
 					writeJSON(w, http.StatusForbidden, false, "origin not allowed")
 					return
 				}
@@ -917,26 +1065,39 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func detectHardwareModel() string {
-	if model := strings.TrimSpace(readFile("/tmp/sysinfo/model")); model != "" {
-		return model
-	}
-	return "Xiaomi Mi Router 3 Pro (MT7621)"
+	hardwareModelOnce.Do(func() {
+		if model := strings.TrimSpace(readFile("/tmp/sysinfo/model")); model != "" {
+			cachedHWModel = model
+		} else {
+			cachedHWModel = "Xiaomi Mi Router 3 Pro (MT7621)"
+		}
+	})
+	return cachedHWModel
 }
 
 func detectLANIP() string {
+	lanIPMu.Lock()
+	defer lanIPMu.Unlock()
+	if cachedLANIP != "" && time.Since(cachedLANIPAt) < 30*time.Second {
+		return cachedLANIP
+	}
 	if iface, err := net.InterfaceByName("br-lan"); err == nil {
 		if addrs, err := iface.Addrs(); err == nil {
 			for _, a := range addrs {
 				if ipnet, ok := a.(*net.IPNet); ok {
 					if v4 := ipnet.IP.To4(); v4 != nil && !v4.IsLoopback() {
-						return v4.String()
+						cachedLANIP = v4.String()
+						cachedLANIPAt = time.Now()
+						return cachedLANIP
 					}
 				}
 			}
 		}
 	}
 	if out, err := runCmd(2, "uci", "-q", "get", "network.lan.ipaddr"); err == nil && strings.TrimSpace(out) != "" {
-		return strings.TrimSpace(out)
+		cachedLANIP = strings.TrimSpace(out)
+		cachedLANIPAt = time.Now()
+		return cachedLANIP
 	}
 	return ""
 }
@@ -1007,6 +1168,7 @@ func handleSystem(w http.ResponseWriter, r *http.Request) {
 		"lan_ip":            detectLANIP(),
 		"firmware_version":  openwrt["DISTRIB_RELEASE"],
 		"openwrt":           openwrt,
+		"timezone":          strings.TrimSpace(readFile("/etc/TZ")),
 		"cpu_aggregate_pct": agg,
 		"cpu_cores":         cores,
 		"temperatures":      temps,
@@ -1041,19 +1203,23 @@ func handleMemory(w http.ResponseWriter, r *http.Request) {
 	if swapTotal > 0 {
 		swapPct = float64(swapUsed) / float64(swapTotal) * 100
 	}
+	physicalKB := readPhysicalRAMKB(total)
+	reservedKB := counterDelta(physicalKB, total)
 
 	writeJSON(w, 200, true, map[string]interface{}{
-		"total_kb":      total,
-		"used_kb":       used,
-		"free_kb":       free,
-		"available_kb":  avail,
-		"buffers_kb":    buffers,
-		"cached_kb":     cached,
-		"used_percent":  usedPct,
-		"swap_total_kb": swapTotal,
-		"swap_free_kb":  swapFree,
-		"swap_used_kb":  swapUsed,
-		"swap_used_pct": swapPct,
+		"total_kb":          total,
+		"physical_total_kb": physicalKB,
+		"reserved_kb":       reservedKB,
+		"used_kb":           used,
+		"free_kb":           free,
+		"available_kb":      avail,
+		"buffers_kb":        buffers,
+		"cached_kb":         cached,
+		"used_percent":      usedPct,
+		"swap_total_kb":     swapTotal,
+		"swap_free_kb":      swapFree,
+		"swap_used_kb":      swapUsed,
+		"swap_used_pct":     swapPct,
 	})
 }
 
@@ -1349,10 +1515,19 @@ func handleModules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	nas := serviceStatus("nas", "ksmbd.mountd", "/etc/init.d/ksmbd", "ksmbd process is running.")
-	if nas.Status != "active" && (processes["ksmbd"] || processes["ksmbd.mountd"]) {
+	nas := moduleStatus{ID: "nas", Status: "not-installed", Detail: "No active NAS file sharing service detected."}
+	if processes["smbd"] || processes["ksmbd.mountd"] || processes["ksmbd"] || processes["vsftpd"] {
 		nas.Status = "active"
-		nas.Detail = "ksmbd process is running."
+		nas.Detail = "NAS file sharing service (Samba/FTP) is running."
+	} else if _, err := os.Stat("/etc/init.d/samba4"); err == nil {
+		nas.Status = "installed"
+		nas.Detail = "Samba4 package is installed."
+	} else if _, err := os.Stat("/etc/init.d/ksmbd"); err == nil {
+		nas.Status = "installed"
+		nas.Detail = "ksmbd package is installed."
+	} else if _, err := os.Stat("/etc/init.d/vsftpd"); err == nil {
+		nas.Status = "installed"
+		nas.Detail = "vsftpd FTP service is installed."
 	}
 
 	mounts := make([]string, 0)
@@ -1373,12 +1548,37 @@ func handleModules(w http.ResponseWriter, r *http.Request) {
 	if telegramDownloader != nil {
 		status := telegramDownloader.statusSnapshot()
 		switch {
+		case status.Configured && !status.Enabled:
+			telegram.Status = "disabled"
+			telegram.Detail = "Telegram integration is configured but currently disabled."
 		case status.Connected:
 			telegram.Status = "active"
 			telegram.Detail = "Telegram Bot API polling is connected for the configured chat."
 		case status.Configured:
 			telegram.Status = "configured"
-			telegram.Detail = "Telegram settings are saved; polling or aria2 may be waiting."
+			if status.LastError != "" {
+				telegram.Detail = "Telegram polling retrying after error: " + status.LastError
+			} else {
+				telegram.Detail = "Telegram settings are saved; waiting for network or polling loop."
+			}
+		}
+	}
+
+	downloaderMod := moduleStatus{
+		ID:     "downloader",
+		Status: "active",
+		Detail: "R3P native Go downloader runtime is running locally.",
+	}
+	if _, err := exec.LookPath("yt-dlp"); err == nil {
+		downloaderMod.Detail = "R3P native downloader + yt-dlp engine active."
+	} else if processes["aria2c"] {
+		downloaderMod.Detail = "R3P native downloader + aria2c daemon active."
+	}
+
+	smbModule := serviceStatus("samba4", "smbd", "/etc/init.d/samba4", "Samba4 SMB file server is running.")
+	if smbModule.Status == "not-installed" {
+		if _, err := os.Stat("/etc/init.d/ksmbd"); err == nil {
+			smbModule = serviceStatus("ksmbd", "ksmbd.mountd", "/etc/init.d/ksmbd", "ksmbd SMB server is running.")
 		}
 	}
 
@@ -1387,9 +1587,9 @@ func handleModules(w http.ResponseWriter, r *http.Request) {
 		serviceStatus("dns", "dnsmasq", "/etc/init.d/dnsmasq", "dnsmasq process is running."),
 		adblock,
 		telegram,
-		serviceStatus("downloader", "aria2c", "/etc/init.d/r3p-aria2", "aria2 download service is running."),
+		downloaderMod,
 		nas,
-		serviceStatus("ksmbd", "ksmbd.mountd", "/etc/init.d/ksmbd", "ksmbd package is installed but its shares need separate configuration."),
+		smbModule,
 		{ID: "photos", Status: photoStatus, Detail: photoDetail},
 	}
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{"modules": modules})
@@ -1414,55 +1614,6 @@ func handleServices(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, true, map[string]interface{}{
 		"services": services,
-	})
-}
-
-// PATCH /api/v1/services/{name}  — body: {"action":"start"} or {"action":"stop"}
-func handleServiceToggle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPatch {
-		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
-		return
-	}
-	if !requireOpenWrt(w) {
-		return
-	}
-
-	// Extract service name from path: /api/v1/services/{name}
-	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/services/"), "/")
-	svcName := pathParts[0]
-	if svcName == "" {
-		writeJSON(w, http.StatusBadRequest, false, "missing service name")
-		return
-	}
-	if _, ok := allowedServices[svcName]; !ok {
-		writeJSON(w, http.StatusForbidden, false, "service not in whitelist")
-		return
-	}
-
-	var body struct {
-		Action string `json:"action"`
-	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1024))
-	if err := dec.Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, false, "invalid JSON body")
-		return
-	}
-	if body.Action != "start" && body.Action != "stop" &&
-		!(svcName == "adblock-fast" && (body.Action == "enable" || body.Action == "disable")) {
-		writeJSON(w, http.StatusBadRequest, false, "unsupported action for this service")
-		return
-	}
-
-	initScript := "/etc/init.d/" + svcName
-	out, err := runCmd(5, initScript, body.Action)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, false, fmt.Sprintf("exec error: %v — %s", err, out))
-		return
-	}
-	writeJSON(w, 200, true, map[string]interface{}{
-		"service": svcName,
-		"action":  body.Action,
-		"output":  out,
 	})
 }
 
@@ -1556,6 +1707,8 @@ func buildMonitorPayload() map[string]interface{} {
 		"wan_rx_bytes_per_second": wanRxRate,
 		"wan_tx_bytes_per_second": wanTxRate,
 		"mem_total_mb":            float64(total) / 1024,
+		"mem_physical_mb":         float64(readPhysicalRAMKB(total)) / 1024,
+		"mem_reserved_mb":         float64(counterDelta(readPhysicalRAMKB(total), total)) / 1024,
 		"mem_used_mb":             float64(counterDelta(total, avail)) / 1024,
 		"uptime_seconds":          up,
 		"load_avg":                []float64{load.Load1, load.Load5, load.Load15},
@@ -1590,6 +1743,7 @@ func handleMonitorStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	writeSample := func() {
 		data, err := json.Marshal(buildMonitorPayload())
@@ -1646,6 +1800,55 @@ func (s spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// PATCH /api/v1/services/{name}  — body: {"action":"start"} or {"action":"stop"}
+func handleServiceToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
+		return
+	}
+
+	// Extract service name from path: /api/v1/services/{name}
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/services/"), "/")
+	svcName := pathParts[0]
+	if svcName == "" {
+		writeJSON(w, http.StatusBadRequest, false, "missing service name")
+		return
+	}
+	if _, ok := allowedServices[svcName]; !ok {
+		writeJSON(w, http.StatusForbidden, false, "service not in whitelist")
+		return
+	}
+
+	var body struct {
+		Action string `json:"action"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1024))
+	if err := dec.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, false, "invalid JSON body")
+		return
+	}
+	if body.Action != "start" && body.Action != "stop" &&
+		!(svcName == "adblock-fast" && (body.Action == "enable" || body.Action == "disable")) {
+		writeJSON(w, http.StatusBadRequest, false, "unsupported action for this service")
+		return
+	}
+
+	initScript := "/etc/init.d/" + svcName
+	out, err := runCmd(5, initScript, body.Action)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, false, fmt.Sprintf("exec error: %v — %s", err, out))
+		return
+	}
+	writeJSON(w, 200, true, map[string]interface{}{
+		"service": svcName,
+		"action":  body.Action,
+		"output":  out,
+	})
+}
+
 // ─── Router: dispatch /api/v1/services with or without name segment ────────
 
 func servicesRouter(w http.ResponseWriter, r *http.Request) {
@@ -1682,17 +1885,22 @@ func main() {
 		log.Printf("API authentication is unavailable: %v", tokenErr)
 	}
 	auth := newAuthenticator(apiToken)
+	samplerCtx, samplerCancel := context.WithCancel(context.Background())
+	defer samplerCancel()
 	ensureUSBHotplugAndTuning()
-	startMetricsSampler()
+	startMetricsSampler(samplerCtx)
 	startInternetMonitor()
+	if err := initSettingsDB(); err != nil {
+		log.Printf("settings database init notice: %v", err)
+	}
 	initAdblockOnStartup()
 	_ = ensureSystemBlueprintFile()
 	dlManager.init()
-	initR3pDownloadRuntime()
-	initGDriveSync()
 	if err := telegramDownloader.load(); err != nil {
 		log.Printf("Telegram auto-download configuration was not loaded: %v", err)
 	}
+	initR3pDownloadRuntime()
+	initGDriveSync()
 
 	port := "80"
 	if p := os.Getenv("R3P_PORT"); p != "" {
@@ -1728,6 +1936,8 @@ func main() {
 	mux.HandleFunc("/api/v1/system/drop-caches", cors(handleSystemDropCaches, "POST"))
 	mux.HandleFunc("/api/v1/system/firmware/status", cors(handleFirmwareStatus, "GET"))
 	mux.HandleFunc("/api/v1/system/firmware/config", cors(handleFirmwareConfigPut, "PUT"))
+	mux.HandleFunc("/api/v1/system/db", cors(handleSystemDB, "GET", "POST"))
+	mux.HandleFunc("/api/v1/ui/preferences", cors(handleUIPreferences, "GET", "PUT", "POST"))
 	mux.HandleFunc("/api/v1/system/firmware/github-check", cors(handleFirmwareGitHubCheck, "GET"))
 	mux.HandleFunc("/api/v1/system/firmware/github-update", cors(handleFirmwareGitHubUpdate, "POST"))
 	mux.HandleFunc("/api/v1/system/firmware/upload", cors(handleFirmwareManualUpload, "POST"))
@@ -1822,8 +2032,7 @@ func main() {
 	mux.HandleFunc("/api/v1/downloads/file", cors(handleDownloadsFile, "GET"))
 	mux.HandleFunc("/api/v1/telegram", cors(handleTelegram, "GET", "PUT", "DELETE"))
 	mux.HandleFunc("/api/v1/telegram/test", cors(handleTelegramTest, "POST"))
-	mux.HandleFunc("/api/v1/services", servicesRouter)
-	mux.HandleFunc("/api/v1/services/", servicesRouter)
+	mux.HandleFunc("/api/v1/services", cors(handleServices, "GET"))
 	mux.HandleFunc("/api/v1/services/all", cors(handleServicesAll, "GET"))
 	mux.HandleFunc("/api/v1/services/control", cors(handleServicesControl, "POST"))
 	mux.HandleFunc("/api/v1/packages", cors(handlePackagesGet, "GET"))
@@ -1836,9 +2045,16 @@ func main() {
 	mux.HandleFunc("/api/v1/iot/ping", cors(handleIoTPing, "POST"))
 	mux.HandleFunc("/api/v1/plugins", cors(handlePlugins, "GET", "POST"))
 	mux.HandleFunc("/api/v1/config", cors(handleUCIConfig, "GET", "PUT"))
+	mux.HandleFunc("/api/v1/config/backups", cors(handleUCIConfigBackups, "GET"))
+	mux.HandleFunc("/api/v1/config/restore", cors(handleUCIConfigRestore, "POST"))
 	mux.HandleFunc("/api/v1/logs", cors(handleLogs, "GET", "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/system/logs/clear", cors(handleSystemLogsClear, "POST", "DELETE"))
 	mux.HandleFunc("/api/v1/monitor/stream", cors(handleMonitorStream, "GET"))
+
+	// Unmatched API paths must return structured JSON 404 rather than SPA index.html
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, false, "API endpoint not found: "+r.URL.Path)
+	})
 
 	// Static file server — catch-all; must be last
 	mux.Handle("/", spaHandler{dir: staticDir})
@@ -1847,7 +2063,7 @@ func main() {
 		Addr:           listenAddr,
 		Handler:        corsMiddleware(auth.middleware(mux)),
 		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   0, // SSE endpoint needs no write timeout
+		WriteTimeout:   30 * time.Second, // Streaming endpoints clear deadline via http.ResponseController
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
@@ -1878,19 +2094,43 @@ func main() {
 		}
 	}()
 
-	// Also listen on HTTP :80 when primary port is not 80 so http://192.168.2.1 works out-of-the-box
+	// Listen on HTTP :80 when primary port != 80: redirect to HTTPS when TLS is enabled
+	// (set R3P_ALLOW_HTTP=1 only if cleartext LAN mirror is explicitly desired).
 	var http80Srv *http.Server
 	if port != "80" {
+		var port80Handler http.Handler
+		if tlsCert != "" && os.Getenv("R3P_ALLOW_HTTP") != "1" {
+			port80Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host := r.Host
+				if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
+					host = h
+				}
+				if host == "" {
+					host = detectLANIP()
+					if host == "" {
+						host = "192.168.2.1"
+					}
+				}
+				target := "https://" + net.JoinHostPort(host, port) + r.URL.RequestURI()
+				if strings.HasPrefix(r.URL.Path, "/api/") {
+					http.Redirect(w, r, target, http.StatusPermanentRedirect)
+					return
+				}
+				http.Redirect(w, r, target, http.StatusFound)
+			})
+		} else {
+			port80Handler = corsMiddleware(auth.middleware(mux))
+		}
 		http80Srv = &http.Server{
 			Addr:           bind + ":80",
-			Handler:        corsMiddleware(auth.middleware(mux)),
+			Handler:        port80Handler,
 			ReadTimeout:    30 * time.Second,
-			WriteTimeout:   0,
+			WriteTimeout:   30 * time.Second,
 			IdleTimeout:    120 * time.Second,
 			MaxHeaderBytes: 1 << 20,
 		}
 		go func() {
-			log.Printf("R3P HTTP Web UI & API mirror starting on %s:80", bind)
+			log.Printf("R3P HTTP :80 listener starting on %s:80 (tls_redirect=%v)", bind, tlsCert != "" && os.Getenv("R3P_ALLOW_HTTP") != "1")
 			if err := http80Srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Printf("HTTP :80 listener notice: %v", err)
 			}
@@ -1899,6 +2139,7 @@ func main() {
 
 	<-stop
 	log.Println("shutting down...")
+	samplerCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if http80Srv != nil {
@@ -1908,5 +2149,6 @@ func main() {
 		log.Printf("shutdown error: %v", err)
 	}
 	wg.Wait()
+	_ = closeSettingsDB()
 	log.Println("stopped.")
 }

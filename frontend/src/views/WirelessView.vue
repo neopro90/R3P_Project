@@ -2,8 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
 import { useSystemStore } from '@/stores/system'
+import { useUiPreferences } from '@/composables/useUiPreferences'
 
 const systemStore = useSystemStore()
+const { t } = useUiPreferences()
 const scanBandFilter = ref<'ALL' | '5GHz' | '2.4GHz'>('ALL')
 
 interface RadioInfo {
@@ -28,6 +30,7 @@ interface WirelessStation {
   iface: string
   band: string
   signal: string
+  rx_rate?: string
   tx_rate: string
 }
 
@@ -163,6 +166,8 @@ const savingDevice = ref<string | null>(null)
 const restarting = ref(false)
 const notice = ref<string | null>(null)
 const editingRadio = ref<string | null>(null)
+const showClientKey = ref(false)
+const showApKey = ref(false)
 
 function showNotice(msg: string, ms = 4000) {
   notice.value = msg
@@ -346,14 +351,14 @@ onMounted(() => {
     <!-- Top Wireless Action Bar -->
     <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0d1322] border border-white/10 rounded px-3 py-1.5">
       <div class="flex items-center gap-2 text-[11.5px] min-w-0">
-        <span class="font-semibold text-gray-200 truncate">MediaTek MT7615N Dual-Band 4x4 MU-MIMO (AP Broadcast + WWAN Client Repeater)</span>
+        <span class="font-semibold text-gray-200 truncate">{{ t('wifi_banner') }}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <button type="button" class="btn-secondary text-[11px] py-1 min-w-[118px]" :disabled="loading" @click="loadWireless">
-          {{ loading ? 'Refreshing…' : 'Refresh Status ↻' }}
+          {{ loading ? t('btn_loading') : t('btn_refresh') }}
         </button>
         <button type="button" class="btn-primary text-[11px] py-1 min-w-[132px]" :disabled="restarting" @click="restartWifi">
-          {{ restarting ? 'Reloading Wi-Fi…' : 'Reload All Radios' }}
+          {{ restarting ? t('wifi_reloading') : t('wifi_reload') }}
         </button>
       </div>
     </div>
@@ -477,7 +482,12 @@ onMounted(() => {
           </div>
           <div v-if="clientForm.encryption !== 'none'">
             <label class="block text-[10px] text-gray-400 uppercase mb-1">Mật Khẩu Wi-Fi Gốc</label>
-            <input v-model="clientForm.key" type="text" class="w-full pro-input mono" placeholder="Nhập mật khẩu Wi-Fi…" />
+            <div class="flex items-center gap-1.5">
+              <input v-model="clientForm.key" :type="showClientKey ? 'text' : 'password'" class="w-full pro-input mono" placeholder="Nhập mật khẩu Wi-Fi…" />
+              <button type="button" class="btn-secondary text-[10.5px] py-1.5 px-2 shrink-0" @click="showClientKey = !showClientKey">
+                {{ showClientKey ? 'Ẩn' : 'Hiện' }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -739,8 +749,13 @@ onMounted(() => {
               </select>
             </div>
             <div v-if="r.encryption !== 'none'">
-              <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Wi-Fi Password (min 8 chars)</label>
-              <input v-model="r.key" type="text" minlength="8" class="w-full pro-input mono" placeholder="Enter WPA key" />
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1">Wi-Fi Password (min 8 chars · giữ •••• để giữ nguyên)</label>
+              <div class="flex items-center gap-1.5">
+                <input v-model="r.key" :type="showApKey ? 'text' : 'password'" minlength="4" class="w-full pro-input mono" placeholder="Nhập mật khẩu mới hoặc giữ nguyên" />
+                <button type="button" class="btn-secondary text-[10.5px] py-1.5 px-2 shrink-0" @click="showApKey = !showApKey">
+                  {{ showApKey ? 'Ẩn' : 'Hiện' }}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -786,7 +801,7 @@ onMounted(() => {
               <td class="mono text-gray-400">{{ c.mac }}</td>
               <td><span class="badge badge-blue text-[10px] mono">{{ c.iface }} ({{ c.band }})</span></td>
               <td class="mono text-emerald-400">{{ c.signal }}</td>
-              <td class="mono text-gray-300">{{ c.tx_rate }}</td>
+              <td class="mono text-gray-300">↑ {{ c.tx_rate || '—' }} <span v-if="c.rx_rate" class="text-sky-400">· ↓ {{ c.rx_rate }}</span></td>
             </tr>
           </tbody>
         </table>

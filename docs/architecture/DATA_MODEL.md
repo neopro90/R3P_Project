@@ -1,105 +1,98 @@
-# DATA MODEL SPECIFICATION — R3P HOME SERVER OS
+# DATA MODEL SPECIFICATION — R3P HOME SERVER OS (`v1.1.26`)
 
-## 1. Storage & State Strategy
+## 1. Storage & Persistence Model
 
-The R3P Home Server OS data model separates **ephemeral runtime metrics** (stored in memory) from **system configurations** (persisted in UCI/NAND) and **application data** (stored in SQLite on external USB storage).
+R3P Home Server OS stores live telemetry strictly in memory (parsed from Linux `/proc` and `/sys`, including `/proc/iomem` physical DDR3 bounds), OpenWrt system configuration in `/etc/config/*` via UCI with `/etc/r3p/backups/*.bak` snapshots, all firmware module settings, collections, and UI preferences in an ACID embedded `bbolt` database at `/etc/r3p/r3p.db` (`0600`, auto-migrating legacy `/etc/r3p/*.json` files on startup), and bulk user media on USB 3.0 storage (`/mnt/sda1/`).
 
 ---
 
-## 2. Core Entities
+## 2. Core Data Entities
 
-### 2.1. System Telemetry (`TelemetryRecord`)
+### 2.1. SSE Live Telemetry Payload (`/api/v1/monitor/stream`)
 ```json
 {
-  "timestamp": 1794056230,
-  "cpu": {
-    "usage_percent": 12.4,
-    "load_avg": [0.15, 0.22, 0.18],
-    "temp_celsius": 48.5
-  },
-  "memory": {
-    "total_bytes": 536870912,
-    "used_bytes": 115343360,
-    "free_bytes": 421527552,
-    "cached_bytes": 62914560,
-    "buffers_bytes": 14680064
-  },
-  "storage": [
-    {
-      "mount": "/",
-      "filesystem": "ubifs",
-      "total_bytes": 220200960,
-      "used_bytes": 41943040,
-      "free_bytes": 178257920
-    }
-  ],
-  "network": {
-    "rx_bytes_per_sec": 128450,
-    "tx_bytes_per_sec": 42100,
-    "interfaces": {
-      "br-lan": { "rx_bytes": 184592010, "tx_bytes": 94820120 },
-      "wan": { "rx_bytes": 845920100, "tx_bytes": 45820120 }
-    }
-  }
+  "cpu": 12.4,
+  "ram": 28.5,
+  "ramTotal": 512,
+  "ramUsed": 145.9,
+  "temp": 48.5,
+  "uptime": 86400,
+  "loadAvg": [0.18, 0.22, 0.19],
+  "hostname": "R3P-Router",
+  "appVersion": "v1.1.26"
 }
 ```
 
-### 2.2. Network & DHCP Client (`ClientDevice`)
+### 2.2. Network Speedtest Result (`POST /api/v1/network/speedtest`)
 ```json
 {
-  "ip": "192.168.2.100",
-  "mac": "00:E0:03:45:1A:6B",
-  "hostname": "DESKTOP-6ULOEKT",
-  "interface": "br-lan",
-  "connection_type": "ethernet",
-  "lease_expires": 1794099430,
-  "rx_rate_bps": 85000,
-  "tx_rate_bps": 12000
+  "interface": "wan",
+  "device": "eth0.2",
+  "local_ip": "192.168.1.50",
+  "server": "Cloudflare Edge",
+  "download_mbps": 248.4,
+  "upload_mbps": 182.1,
+  "upload_supported": true,
+  "latency_ms": 12.3,
+  "jitter_ms": 1.8,
+  "tested_at": "2026-11-14T06:30:00+07:00"
 }
 ```
 
-### 2.3. Wireless Radio Configuration (`WirelessRadio`)
+### 2.3. Download Job (`R3pDownloadJob`)
 ```json
 {
-  "radio": "radio0",
-  "band": "5GHz",
-  "chipset": "MediaTek MT7615",
+  "id": "job-a1b2c3",
+  "url": "https://example.com/video",
+  "title": "Sample Media",
+  "quality": "1080p",
+  "engine": "yt-dlp",
+  "status": "DOWNLOADING",
+  "progress": 45.2,
+  "speed": "8.4 MiB/s",
+  "eta": "00:18",
+  "output_path": "/mnt/sda1/downloads/Sample.mp4"
+}
+```
+
+### 2.4. DDNS Configuration (`DDNSConfig` — `/etc/r3p/ddns.json`)
+```json
+{
   "enabled": true,
-  "ssid": "R3P_5G_HomeServer",
-  "encryption": "psk2+ccmp",
-  "channel": 36,
-  "htmode": "VHT80",
-  "txpower_dbm": 23,
-  "associated_clients": 4
+  "provider": "duckdns",
+  "domain": "r3phome",
+  "token": "••••1234",
+  "check_interval": 10,
+  "last_ip": "203.0.113.10",
+  "last_status": "OK",
+  "last_update": "2026-11-14 06:15:00"
 }
 ```
 
-### 2.4. Download Task (`DownloadTask`)
+### 2.5. System Plugin Manifest (`PluginManifest` — `/etc/r3p/plugins.json`)
 ```json
 {
-  "gid": "2089b05e0a3d43d1",
-  "status": "active",
-  "name": "ubuntu-24.04-server.iso",
-  "total_bytes": 2831155200,
-  "completed_bytes": 1415577600,
-  "download_speed_bps": 5242880,
-  "upload_speed_bps": 0,
-  "destination_dir": "/mnt/usb/downloads",
-  "created_at": 1794055000
-}
-```
-
-### 2.5. Automation Rule (`AutomationJob`)
-```json
-{
-  "id": "job-clean-temp",
-  "name": "Nightly Temporary File Cleanup",
+  "id": "plugin-nand-health",
+  "name": "ESMT SLC NAND UBI Inspector",
+  "version": "1.0.2",
+  "author": "R3P Core",
+  "description": "Reads UBI volume wear-leveling and bad block counters",
   "enabled": true,
-  "cron_expression": "0 3 * * *",
-  "action_type": "script",
-  "action_target": "/etc/r3p/scripts/cleanup.sh",
-  "notify_channel": "telegram",
-  "last_executed_at": 1794022800,
-  "last_exit_code": 0
+  "command": "nand_health",
+  "last_output": "...",
+  "last_run": "2026-11-14 06:20:00"
+}
+```
+> Only the 10 preset commands enumerated in `allowedPluginPresets` (`ram_flush`, `flush_ram_cache`, `lan_probe`, `nand_health`, `dns_reload`, `reload_dnsmasq`, `disk_usage`, `uptime_check`, `listening_sockets`, `ntp_sync`) are permitted on execution.
+
+### 2.6. Release Metadata (`release.json` / `/etc/r3p/version.json`)
+```json
+{
+  "version": "v1.1.26",
+  "revision": 26,
+  "released_at": "2026-11-14 08:45:00",
+  "repo_url": "https://github.com/neopro90/R3P_Project.git",
+  "branch": "main",
+  "commit_sha": "v1.1.26"
 }
 ```

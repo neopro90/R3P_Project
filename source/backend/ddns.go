@@ -1,17 +1,47 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+var (
+	publicIPMu         sync.Mutex
+	cachedPublicIP     string
+	cachedPublicIPAt   time.Time
+	publicIPRefreshing bool
+)
+
+func getCachedPublicIPv4() string {
+	publicIPMu.Lock()
+	ip := cachedPublicIP
+	stale := ip == "" || time.Since(cachedPublicIPAt) >= 60*time.Second
+	shouldRefresh := stale && !publicIPRefreshing
+	if shouldRefresh {
+		publicIPRefreshing = true
+	}
+	publicIPMu.Unlock()
+
+	if shouldRefresh {
+		go func() {
+			defer func() {
+				publicIPMu.Lock()
+				publicIPRefreshing = false
+				publicIPMu.Unlock()
+			}()
+			_ = fetchPublicIPv4()
+		}()
+	}
+	return ip
+}
 
 func maskDDNSToken(tok string) string {
 	tok = strings.TrimSpace(tok)
@@ -50,6 +80,7 @@ type DDNSConfig struct {
 
 var (
 	ddnsMu     sync.Mutex
+	ddnsOpMu   sync.Mutex
 	ddnsCached DDNSConfig
 )
 
@@ -73,10 +104,8 @@ func loadDDNSConfig() DDNSConfig {
 	defer ddnsMu.Unlock()
 
 	cfg := defaultDDNSConfig()
-	if b, err := os.ReadFile(ddnsConfigFile); err == nil {
-		_ = json.Unmarshal(b, &cfg)
-	}
-	if cfg.CheckInterval < 2 {
+	settingsDBLoadJSON(bucketSettings, "ddns", ddnsConfigFile, &cfg)
+	if cfg.CheckInterval < 5 || cfg.CheckInterval > 1440 {
 		cfg.CheckInterval = 10
 	}
 	if cfg.Provider == "" {
@@ -90,35 +119,46 @@ func saveDDNSConfig(cfg DDNSConfig) error {
 	ddnsMu.Lock()
 	defer ddnsMu.Unlock()
 
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	err = os.WriteFile(ddnsConfigFile, b, 0600)
+	err := settingsDBSaveJSON(bucketSettings, "ddns", ddnsConfigFile, 0600, cfg)
 	if err == nil {
 		ddnsCached = cfg
 	}
 	return err
 }
 
-// Fetch current external public IPv4 address
+// Fetch current external public IPv4 address (60s TTL cache avoids blocking UI page loads)
 func fetchPublicIPv4() string {
+	publicIPMu.Lock()
+	if cachedPublicIP != "" && time.Since(cachedPublicIPAt) < 60*time.Second {
+		ip := cachedPublicIP
+		publicIPMu.Unlock()
+		return ip
+	}
+	publicIPMu.Unlock()
+
 	endpoints := []string{
 		"https://api.ipify.org",
 		"https://checkip.amazonaws.com",
 		"https://icanhazip.com",
 		"https://ifconfig.me/ip",
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newPublicHTTPClient(publicClientOptions{
+		Timeout:     3 * time.Second,
+		DialTimeout: 3 * time.Second,
+	})
 	for _, ep := range endpoints {
 		resp, err := client.Get(ep)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
 			resp.Body.Close()
 			ip := strings.TrimSpace(string(b))
-			if net.ParseIP(ip) != nil {
-				return ip
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+				v4 := parsed.To4().String()
+				publicIPMu.Lock()
+				cachedPublicIP = v4
+				cachedPublicIPAt = time.Now()
+				publicIPMu.Unlock()
+				return v4
 			}
 		}
 		if resp != nil {
@@ -130,24 +170,49 @@ func fetchPublicIPv4() string {
 
 // Perform DDNS update for DuckDNS or other providers
 func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
+	ddnsOpMu.Lock()
+	defer ddnsOpMu.Unlock()
+	return performDDNSUpdateLocked(cfg)
+}
+
+func performDDNSUpdateLocked(cfg *DDNSConfig) (bool, string) {
 	cfg.Domain = strings.TrimSpace(cfg.Domain)
 	cfg.Token = strings.TrimSpace(cfg.Token)
 	cfg.Username = strings.TrimSpace(cfg.Username)
 	cfg.CustomURL = strings.TrimSpace(cfg.CustomURL)
 
+	recordFail := func(msg string) (bool, string) {
+		cfg.LastStatus = msg
+		cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
+		_ = saveDDNSConfig(*cfg)
+		return false, msg
+	}
+
 	if cfg.Domain == "" {
-		return false, "Vui lòng nhập tên miền (Domain / Subdomain)"
+		return recordFail("Vui lòng nhập tên miền (Domain / Subdomain)")
 	}
 	if cfg.Token == "" && cfg.Provider != "custom" {
-		return false, "Vui lòng nhập Token / API Key"
+		return recordFail("Vui lòng nhập Token / API Key")
 	}
 
 	pubIP := fetchPublicIPv4()
 	if pubIP == "" {
-		return false, "Không thể xác định IP công cộng của Router (Kiểm tra kết nối Internet)"
+		return recordFail("Không thể xác định IP công cộng của Router (Kiểm tra kết nối Internet)")
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	redactToken := func(s string) string {
+		if cfg.Token == "" {
+			return s
+		}
+		s = strings.ReplaceAll(s, cfg.Token, "[REDACTED]")
+		s = strings.ReplaceAll(s, url.QueryEscape(cfg.Token), "[REDACTED]")
+		return s
+	}
+
+	client := newPublicHTTPClient(publicClientOptions{
+		Timeout:   10 * time.Second,
+		AllowHTTP: true,
+	})
 	provider := strings.ToLower(cfg.Provider)
 
 	switch provider {
@@ -165,19 +230,13 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 
 		req, err := http.NewRequest(http.MethodGet, updateURL, nil)
 		if err != nil {
-			msg := "Lỗi tạo request DuckDNS: " + err.Error()
-			cfg.LastStatus = msg
-			cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-			return false, msg
+			return recordFail("Lỗi tạo request DuckDNS: " + redactToken(err.Error()))
 		}
-		req.Header.Set("User-Agent", "curl/7.88.1")
+		req.Header.Set("User-Agent", "R3P-DDNS/1.2")
 
 		resp, err := client.Do(req)
 		if err != nil {
-			msg := "Lỗi kết nối DuckDNS: " + err.Error()
-			cfg.LastStatus = msg
-			cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-			return false, msg
+			return recordFail("Lỗi kết nối DuckDNS: " + redactToken(err.Error()))
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -190,15 +249,11 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 			_ = saveDDNSConfig(*cfg)
 			return true, msg
 		}
-		msg := fmt.Sprintf("DuckDNS phản hồi thất bại (KO) - Kiểm tra Token và Domain: %s", reply)
-		cfg.LastStatus = msg
-		cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-		_ = saveDDNSConfig(*cfg)
-		return false, msg
+		return recordFail(fmt.Sprintf("DuckDNS phản hồi thất bại (KO) - Kiểm tra Token và Domain: %s", redactToken(reply)))
 
 	case "noip", "dyndns":
 		if cfg.Username == "" {
-			return false, fmt.Sprintf("Vui lòng nhập Username tài khoản %s", strings.ToUpper(provider))
+			return recordFail(fmt.Sprintf("Vui lòng nhập Username tài khoản %s", strings.ToUpper(provider)))
 		}
 		epHost := "dynupdate.no-ip.com"
 		label := "No-IP"
@@ -210,17 +265,13 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 			epHost, url.QueryEscape(cfg.Domain), url.QueryEscape(pubIP))
 		req, err := http.NewRequest(http.MethodGet, updateURL, nil)
 		if err != nil {
-			return false, err.Error()
+			return recordFail(fmt.Sprintf("Lỗi tạo request %s: %s", label, redactToken(err.Error())))
 		}
 		req.SetBasicAuth(cfg.Username, cfg.Token)
 		req.Header.Set("User-Agent", "R3P-Home-Server/1.1")
 		resp, err := client.Do(req)
 		if err != nil {
-			msg := fmt.Sprintf("Lỗi kết nối %s: %s", label, err.Error())
-			cfg.LastStatus = msg
-			cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-			_ = saveDDNSConfig(*cfg)
-			return false, msg
+			return recordFail(fmt.Sprintf("Lỗi kết nối %s: %s", label, redactToken(err.Error())))
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
@@ -233,32 +284,24 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 			_ = saveDDNSConfig(*cfg)
 			return true, msg
 		}
-		msg := fmt.Sprintf("%s phản hồi lỗi (HTTP %d): %s", label, resp.StatusCode, reply)
-		cfg.LastStatus = msg
-		cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-		_ = saveDDNSConfig(*cfg)
-		return false, msg
+		return recordFail(fmt.Sprintf("%s phản hồi lỗi (HTTP %d): %s", label, resp.StatusCode, redactToken(reply)))
 
 	case "custom":
 		rawURL := cfg.CustomURL
 		if rawURL == "" {
-			return false, "Vui lòng nhập URL cập nhật tùy chỉnh"
-		}
-		if err := validateDownloadURL(rawURL); err != nil {
-			return false, "Custom DDNS URL không hợp lệ hoặc không an toàn: " + err.Error()
+			return recordFail("Vui lòng nhập URL cập nhật tùy chỉnh")
 		}
 		rawURL = strings.ReplaceAll(rawURL, "[DOMAIN]", url.QueryEscape(cfg.Domain))
 		rawURL = strings.ReplaceAll(rawURL, "[TOKEN]", url.QueryEscape(cfg.Token))
 		rawURL = strings.ReplaceAll(rawURL, "[IP]", url.QueryEscape(pubIP))
 		rawURL = strings.ReplaceAll(rawURL, "[USERNAME]", url.QueryEscape(cfg.Username))
+		if err := validatePublicHTTPURL(context.Background(), rawURL); err != nil {
+			return recordFail("Custom DDNS URL không hợp lệ hoặc trỏ tới IP nội bộ: " + redactToken(err.Error()))
+		}
 
 		resp, err := client.Get(rawURL)
 		if err != nil {
-			msg := "Lỗi gọi Custom DDNS URL: " + err.Error()
-			cfg.LastStatus = msg
-			cfg.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
-			_ = saveDDNSConfig(*cfg)
-			return false, msg
+			return recordFail("Lỗi gọi Custom DDNS URL: " + redactToken(err.Error()))
 		}
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -273,24 +316,24 @@ func performDDNSUpdate(cfg *DDNSConfig) (bool, string) {
 		return true, fmt.Sprintf("Cập nhật Custom DDNS thành công (HTTP %d, IP: %s)", resp.StatusCode, pubIP)
 
 	default:
-		msg := fmt.Sprintf("Nhà cung cấp '%s' chưa được hỗ trợ — vui lòng dùng duckdns, noip, dyndns hoặc custom", cfg.Provider)
-		cfg.LastStatus = msg
-		return false, msg
+		return recordFail(fmt.Sprintf("Nhà cung cấp '%s' chưa được hỗ trợ — vui lòng dùng duckdns, noip, dyndns hoặc custom", cfg.Provider))
 	}
 }
 
 // Background DDNS periodic runner
 func initDDNSBackgroundRunner() {
 	go func() {
+		time.Sleep(90 * time.Second)
 		for {
-			time.Sleep(3 * time.Minute)
+			ddnsOpMu.Lock()
 			cfg := loadDDNSConfig()
 			if cfg.Enabled && cfg.Domain != "" && (cfg.Token != "" || cfg.Provider == "custom") {
 				currentIP := fetchPublicIPv4()
 				if currentIP != "" && currentIP != cfg.LastIP {
-					_, _ = performDDNSUpdate(&cfg)
+					_, _ = performDDNSUpdateLocked(&cfg)
 				}
 			}
+			ddnsOpMu.Unlock()
 			interval := cfg.CheckInterval
 			if interval < 5 {
 				interval = 10
@@ -308,7 +351,10 @@ func handleAccessDDNS(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg := sanitizePublicDDNS(loadDDNSConfig())
-		extIP := fetchPublicIPv4()
+		extIP := getCachedPublicIPv4()
+		if r.URL.Query().Get("refresh") == "1" {
+			extIP = fetchPublicIPv4()
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"ddns":        cfg,
 			"external_ip": extIP,
@@ -320,25 +366,57 @@ func handleAccessDDNS(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	case http.MethodPut:
-		var body DDNSConfig
-		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
+		var req struct {
+			Enabled       *bool   `json:"enabled"`
+			Provider      *string `json:"provider"`
+			Domain        *string `json:"domain"`
+			Token         *string `json:"token"`
+			Username      *string `json:"username"`
+			CustomURL     *string `json:"custom_url"`
+			CheckInterval *int    `json:"check_interval"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, false, "Dữ liệu JSON không hợp lệ: "+err.Error())
 			return
 		}
-		body.Domain = strings.TrimSpace(body.Domain)
-		body.Token = strings.TrimSpace(body.Token)
-		body.Username = strings.TrimSpace(body.Username)
-		body.CustomURL = strings.TrimSpace(body.CustomURL)
-		cur := loadDDNSConfig()
-		if strings.HasPrefix(body.Token, "••••") {
-			body.Token = cur.Token
+
+		ddnsOpMu.Lock()
+		defer ddnsOpMu.Unlock()
+
+		body := loadDDNSConfig()
+		if req.Enabled != nil {
+			body.Enabled = *req.Enabled
 		}
-		if body.CheckInterval < 5 || body.CheckInterval > 1440 {
+		if req.Provider != nil && strings.TrimSpace(*req.Provider) != "" {
+			body.Provider = strings.ToLower(strings.TrimSpace(*req.Provider))
+		}
+		if req.Domain != nil {
+			body.Domain = strings.TrimSpace(*req.Domain)
+		}
+		if req.Token != nil {
+			tok := strings.TrimSpace(*req.Token)
+			if !strings.HasPrefix(tok, "••••") {
+				body.Token = tok
+			}
+		}
+		if req.Username != nil {
+			body.Username = strings.TrimSpace(*req.Username)
+		}
+		if req.CustomURL != nil {
+			body.CustomURL = strings.TrimSpace(*req.CustomURL)
+		}
+		if req.CheckInterval != nil {
+			ci := *req.CheckInterval
+			if ci < 5 {
+				ci = 5
+			} else if ci > 1440 {
+				ci = 1440
+			}
+			body.CheckInterval = ci
+		} else if body.CheckInterval < 5 || body.CheckInterval > 1440 {
 			body.CheckInterval = 10
 		}
-		body.LastIP = cur.LastIP
-		body.LastUpdate = cur.LastUpdate
-		body.LastStatus = cur.LastStatus
+
 		if err := saveDDNSConfig(body); err != nil {
 			writeJSON(w, http.StatusInternalServerError, false, "Lỗi lưu cấu hình DDNS: "+err.Error())
 			return
@@ -346,7 +424,7 @@ func handleAccessDDNS(w http.ResponseWriter, r *http.Request) {
 		// If user enabled it and provided domain/token, run an immediate update
 		msg := "Đã lưu cài đặt DDNS thành công!"
 		if body.Enabled && body.Domain != "" && (body.Token != "" || body.Provider == "custom") {
-			ok, updateMsg := performDDNSUpdate(&body)
+			ok, updateMsg := performDDNSUpdateLocked(&body)
 			if ok {
 				msg = updateMsg
 			} else {
@@ -371,8 +449,10 @@ func handleAccessDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "Method not allowed")
 		return
 	}
+	ddnsOpMu.Lock()
+	defer ddnsOpMu.Unlock()
 	cfg := loadDDNSConfig()
-	ok, msg := performDDNSUpdate(&cfg)
+	ok, msg := performDDNSUpdateLocked(&cfg)
 	if ok {
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"message": msg,

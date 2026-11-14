@@ -2,6 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '@/services/api'
 import { copyToClipboard as copyText } from '@/composables/useClipboard'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface AdblockSource {
   id: string
@@ -191,8 +194,9 @@ async function clearDnsLogs() {
     await apiRequest('/logs', { method: 'DELETE' })
     recentLogs.value = []
     await loadAdblock()
+    showNotice('Đã xóa nhật ký truy vấn DNS.')
   } catch (err: any) {
-    alert('Lỗi xóa log: ' + (err?.message || err))
+    showError('Lỗi xóa log: ' + (err?.message || err))
   } finally {
     clearingDnsLogs.value = false
   }
@@ -223,7 +227,7 @@ async function loadAdblock() {
     if (res?.gateway_setup) {
       gatewaySetup.value = res.gateway_setup
     }
-    activeRules.value = res?.active_rules ?? config.value.total_blocked
+    activeRules.value = config.value.enabled ? (res?.active_rules ?? config.value.total_blocked) : 0
     blockedHits.value = res?.blocked_hits ?? 0
     recentLogs.value = res?.recent_logs || []
   } catch (err: any) {
@@ -262,6 +266,7 @@ async function saveGlobalConfig() {
       }),
     })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? (res?.total_blocked ?? config.value.total_blocked) : 0
     notice.value = res?.message || 'Đã lưu cài đặt AdBlock thành công!'
     await loadAdblock()
     setTimeout(() => { notice.value = null }, 4000)
@@ -289,6 +294,7 @@ async function updateBlocklistsNow() {
       message: string
     }>('/adblock/update', { method: 'POST' })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? (res?.total_blocked ?? config.value.total_blocked) : 0
     showNotice(res?.message || `Đã cập nhật ${res?.total_blocked || 0} tên miền chặn!`, 4500)
     await loadAdblock()
   } catch (err: any) {
@@ -306,6 +312,7 @@ async function addSourceList() {
       body: JSON.stringify(newSource.value),
     })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? config.value.total_blocked : 0
     newSource.value = { name: '', url: '', category: 'Ads & Trackers' }
     showAddSource.value = false
     showNotice(res?.message || 'Đã thêm nguồn danh sách chặn!')
@@ -321,6 +328,7 @@ async function toggleSource(src: AdblockSource) {
       body: JSON.stringify({ id: src.id, enabled: !src.enabled }),
     })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? config.value.total_blocked : 0
     showNotice(`Đã ${!src.enabled ? 'bật' : 'tắt'} nguồn "${src.name}"!`)
   } catch (err: any) {
     showError('Lỗi: ' + (err?.message || err))
@@ -333,6 +341,7 @@ async function deleteSource(id: string) {
       method: 'DELETE',
     })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? config.value.total_blocked : 0
     showNotice('Đã xóa nguồn danh sách chặn!')
   } catch (err: any) {
     showError('Lỗi xóa danh sách: ' + (err?.message || err))
@@ -348,6 +357,7 @@ async function addCustomDomain(listType: 'blacklist' | 'whitelist') {
       body: JSON.stringify({ list_type: listType, domain: raw }),
     })
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? (res?.total_blocked ?? config.value.total_blocked) : 0
     if (listType === 'blacklist') newBlacklistDomain.value = ''
     else newWhitelistDomain.value = ''
     showNotice(res?.message || 'Đã cập nhật danh sách tên miền!')
@@ -359,11 +369,12 @@ async function addCustomDomain(listType: 'blacklist' | 'whitelist') {
 
 async function removeCustomDomain(listType: 'blacklist' | 'whitelist', domain: string) {
   try {
-    const res = await apiRequest<{ config: AdblockConfig }>(
+    const res = await apiRequest<{ config: AdblockConfig; total_blocked?: number }>(
       `/adblock/domains?list_type=${listType}&domain=${encodeURIComponent(domain)}`,
       { method: 'DELETE' },
     )
     if (res?.config) config.value = res.config
+    activeRules.value = config.value.enabled ? (res?.total_blocked ?? config.value.total_blocked) : 0
     showNotice(`Đã xóa "${domain}" khỏi ${listType === 'blacklist' ? 'Blacklist' : 'Whitelist'}!`)
     await loadAdblock()
   } catch (err: any) {
@@ -418,9 +429,9 @@ onMounted(() => {
             class="w-3 h-3 rounded-full shrink-0"
             :class="config.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'"
           ></span>
-          <span class="pro-card-title text-sm truncate">R3P AdBlock DNS Shield (Chặn Quảng Cáo & Mã Độc)</span>
+          <span class="pro-card-title text-sm truncate">{{ t('adblock_banner') }}</span>
           <span class="badge" :class="config.enabled ? 'badge-green' : 'badge-orange'">
-            {{ config.enabled ? 'ADBLOCK ACTIVE' : 'ADBLOCK DISABLED' }}
+            {{ config.enabled ? t('adblock_active') : t('adblock_disabled') }}
           </span>
           <span class="badge" :class="config.force_dns ? 'badge-blue' : 'badge-gray'">
             FORCE DNS: {{ config.force_dns ? 'ON' : 'OFF' }}
@@ -455,8 +466,8 @@ onMounted(() => {
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mt-1.5">
         <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
           <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Tổng Tên Miền Đang Chặn</div>
-          <div class="mono text-xl font-black text-emerald-400">{{ (activeRules || config.total_blocked).toLocaleString() }}</div>
-          <div class="text-[12px] text-gray-400 font-medium">Nạp trong /tmp/r3p-adblock.hosts</div>
+          <div class="mono text-xl font-black text-emerald-400">{{ (config.enabled ? (activeRules || config.total_blocked) : 0).toLocaleString() }}</div>
+          <div class="text-[12px] text-gray-400 font-medium">Nạp trong /tmp/dnsmasq.d/r3p-adblock.conf</div>
         </div>
         <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
           <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Nguồn Blocklist Đang Bật</div>
@@ -493,7 +504,9 @@ onMounted(() => {
           <span class="pro-card-title text-emerald-300 truncate">
             💡 Gợi Ý Setup DNS Cho Gateway Chính (Do R3P Đang Chạy Chế Độ Client · {{ gatewaySetup.r3p_client_iface || 'WWAN/WAN' }})
           </span>
-          <span class="badge badge-green">PORT 53 WAN/WWAN: ĐÃ MỞ SẴN</span>
+          <span class="badge" :class="gatewaySetup.wan_dns_listening ? 'badge-green' : 'badge-gray'">
+            {{ gatewaySetup.wan_dns_listening ? 'PORT 53 WAN/WWAN: ĐANG MỞ' : 'PORT 53 WAN/WWAN: CHỈ LAN' }}
+          </span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
           <a
@@ -513,7 +526,9 @@ onMounted(() => {
         <div class="p-3 rounded-lg bg-black/40 border border-white/10 space-y-2">
           <div class="font-bold text-sky-300 uppercase text-[11px]">1. Địa Chỉ IP Máy Chủ DNS Của R3P</div>
           <p class="text-gray-400 text-[11px]">
-            R3P đã tự động mở cổng DNS <code class="mono text-emerald-300">53 (TCP/UDP)</code> trên cả mạng chính và mạng LAN nội bộ:
+            {{ gatewaySetup.wan_dns_listening
+              ? 'R3P đang mở cổng DNS 53 (TCP/UDP) trên cả mạng LAN và mạng chính nội bộ (RFC1918):'
+              : 'R3P đang lắng nghe cổng DNS 53 (TCP/UDP) trên mạng LAN nội bộ (bật tùy chọn chia sẻ RFC1918 bên dưới nếu cần cho router chính dùng chung):' }}
           </p>
           <div class="flex items-center justify-between p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
             <div class="min-w-0 pr-2">

@@ -1,6 +1,8 @@
+import io
 import getpass
 import os
 import sys
+import tarfile
 import time
 import glob
 import socket
@@ -130,7 +132,8 @@ def run_ssh(client, cmd, timeout=180):
 def main():
     print(f"Waiting for router {ROUTER_IP}:22...")
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     for attempt in range(60):
         try:
             client.connect(ROUTER_IP, 22, ROUTER_USER, ROUTER_PASS, timeout=3)
@@ -148,7 +151,7 @@ def main():
     run_ssh(client, """
 mkdir -p /mnt/sda1
 if [ -b /dev/sda1 ] && ! grep -q '/mnt/sda1' /proc/mounts; then
-    mount -t ext4 -o noatime,nodiratime,commit=30,barrier=0 /dev/sda1 /mnt/sda1 || mount /dev/sda1 /mnt/sda1
+    mount -t ext4 -o noatime,nodiratime,commit=30 /dev/sda1 /mnt/sda1 || mount /dev/sda1 /mnt/sda1
 fi
 ln -sfn /mnt/sda1 /mnt/usb
 mkdir -p /mnt/sda1/downloads /mnt/sda1/share
@@ -178,21 +181,59 @@ which yt-dlp iwinfo
 yt-dlp --version 2>/dev/null || true
 """, timeout=300)
 
-    # 3. Upload new Frontend (/www) and Backend (/usr/bin/r3p-api)
-    sftp = client.open_sftp()
-    print("Uploading new Frontend (/www)...")
-    run_ssh(client, "rm -rf /www/assets/*")
-    upload_dir(sftp, FRONTEND_DIST, "/www")
-
-    print("Uploading new Backend (/usr/bin/r3p-api)...")
-    run_ssh(client, "/etc/init.d/r3p-api stop 2>/dev/null || killall r3p-api 2>/dev/null || true")
-    sftp.put(BACKEND_BIN, "/usr/bin/r3p-api")
-    run_ssh(client, "chmod +x /usr/bin/r3p-api && /etc/init.d/r3p-api start")
-    sftp.close()
-
-    time.sleep(3)
-    run_ssh(client, "ps | grep r3p-api; netstat -tlpn 2>/dev/null | grep r3p-api || true")
+    # 3. Stream Frontend (/www) and Backend (/usr/bin/r3p-api) via tar over SSH stdin (no sftp-server on Dropbear)
+    print("Uploading new Frontend (/www) and Backend (/usr/bin/r3p-api.new)...")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        api_data = open(BACKEND_BIN, "rb").read()
+        ti = tarfile.TarInfo("usr/bin/r3p-api.new")
+        ti.size = len(api_data)
+        ti.mode = 0o755
+        tar.addfile(ti, io.BytesIO(api_data))
+        for rdir, _, files in os.walk(FRONTEND_DIST):
+            for fname in sorted(files):
+                lfile = os.path.join(rdir, fname)
+                rel = os.path.relpath(lfile, FRONTEND_DIST).replace("\\", "/")
+                wdata = open(lfile, "rb").read()
+                wti = tarfile.TarInfo(f"www/{rel}")
+                wti.size = len(wdata)
+                wti.mode = 0o644
+                tar.addfile(wti, io.BytesIO(wdata))
+    payload = buf.getvalue()
+    stdin, stdout, _ = client.exec_command("cat > /tmp/r3p-deploy-payload.tar.gz")
+    stdin.write(payload)
+    stdin.channel.shutdown_write()
+    stdout.read()
+    rc, _, _ = run_ssh(client, """
+set -e
+rm -rf /www/assets
+tar -xzf /tmp/r3p-deploy-payload.tar.gz -C /
+rm -f /tmp/r3p-deploy-payload.tar.gz
+chmod +x /usr/bin/r3p-api.new
+if [ -f /usr/bin/r3p-api ]; then cp /usr/bin/r3p-api /usr/bin/r3p-api.bak; fi
+/etc/init.d/r3p-api stop 2>/dev/null || killall r3p-api 2>/dev/null || true
+mv /usr/bin/r3p-api.new /usr/bin/r3p-api
+sync
+/etc/init.d/r3p-api start
+sleep 3
+if (command -v curl >/dev/null && curl -kfsS https://127.0.0.1:8443/api/v1/health >/dev/null) || wget -qO- --no-check-certificate https://127.0.0.1:8443/api/v1/health >/dev/null 2>&1; then
+    rm -f /usr/bin/r3p-api.bak
+    echo "HEALTH_OK"
+else
+    echo "HEALTH_FAILED_ROLLING_BACK"
+    /etc/init.d/r3p-api stop 2>/dev/null || true
+    if [ -f /usr/bin/r3p-api.bak ]; then
+        mv /usr/bin/r3p-api.bak /usr/bin/r3p-api
+        chmod +x /usr/bin/r3p-api
+        /etc/init.d/r3p-api start
+    fi
+    exit 1
+fi
+ps | grep r3p-api; netstat -tlpn 2>/dev/null | grep r3p-api || true
+""")
     client.close()
+    if rc != 0:
+        sys.exit(rc)
     print("ALL DEPLOYMENTS COMPLETE!")
 
 

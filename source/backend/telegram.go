@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,19 +74,42 @@ func newTelegramService() *telegramService {
 }
 
 func (s *telegramService) load() error {
-	data, err := os.ReadFile(s.configPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read Telegram configuration: %w", err)
-	}
 	var config telegramConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("decode Telegram configuration: %w", err)
+	isDefaultPath := s.configPath == "/etc/r3p/telegram.json"
+	if isDefaultPath {
+		if raw, ok := settingsDBGetRaw(bucketSettings, "telegram"); ok && len(bytes.TrimSpace(raw)) > 0 {
+			if err := json.Unmarshal(raw, &config); err != nil {
+				return fmt.Errorf("decode Telegram configuration: %w", err)
+			}
+		} else {
+			data, err := os.ReadFile(s.configPath)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("read Telegram configuration: %w", err)
+			}
+			if err := json.Unmarshal(data, &config); err != nil {
+				return fmt.Errorf("decode Telegram configuration: %w", err)
+			}
+		}
+	} else {
+		data, err := os.ReadFile(s.configPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read Telegram configuration: %w", err)
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("decode Telegram configuration: %w", err)
+		}
 	}
 	if err := validateTelegramConfig(config.BotToken, config.ChatID); err != nil {
 		return fmt.Errorf("invalid Telegram configuration: %w", err)
+	}
+	if isDefaultPath {
+		_ = settingsDBSaveJSON(bucketSettings, "telegram", "", 0600, config)
 	}
 	s.mu.Lock()
 	s.config = &config
@@ -96,8 +120,11 @@ func (s *telegramService) load() error {
 		Mount:      config.Mount,
 		Path:       config.Path,
 	}
-	s.startLocked()
+	tok, chatID, enabled, mount, subPath, shouldSync := s.startLocked()
 	s.mu.Unlock()
+	if shouldSync {
+		syncTelegramConfigToDownloader(tok, chatID, enabled, mount, subPath)
+	}
 	return nil
 }
 
@@ -118,15 +145,23 @@ func (s *telegramService) currentToken() string {
 
 func (s *telegramService) setConfig(config telegramConfig) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if config.BotToken == "" && s.config != nil {
 		config.BotToken = s.config.BotToken
 	}
 	if err := validateTelegramConfig(config.BotToken, config.ChatID); err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	if err := writePrivateJSON(s.configPath, config); err != nil {
-		return fmt.Errorf("save Telegram configuration: %w", err)
+	if s.configPath == "/etc/r3p/telegram.json" {
+		if err := settingsDBSaveJSON(bucketSettings, "telegram", s.configPath, 0600, config); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("save Telegram configuration: %w", err)
+		}
+	} else {
+		if err := writePrivateJSON(s.configPath, config); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("save Telegram configuration: %w", err)
+		}
 	}
 	if s.cancel != nil {
 		s.cancel()
@@ -140,7 +175,11 @@ func (s *telegramService) setConfig(config telegramConfig) error {
 		Mount:      config.Mount,
 		Path:       config.Path,
 	}
-	s.startLocked()
+	tok, chatID, enabled, mount, subPath, shouldSync := s.startLocked()
+	s.mu.Unlock()
+	if shouldSync {
+		syncTelegramConfigToDownloader(tok, chatID, enabled, mount, subPath)
+	}
 	return nil
 }
 
@@ -150,23 +189,26 @@ func (s *telegramService) clearConfig() error {
 		s.cancel()
 		s.cancel = nil
 	}
+	isDefaultPath := s.configPath == "/etc/r3p/telegram.json"
+	if isDefaultPath {
+		_ = settingsDBDelete(bucketSettings, "telegram")
+	}
 	if err := os.Remove(s.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.mu.Unlock()
 		return fmt.Errorf("remove Telegram configuration: %w", err)
 	}
 	s.config = nil
 	s.status = telegramServiceStatus{}
-	isDefaultPath := s.configPath == "/etc/r3p/telegram.json"
 	s.mu.Unlock()
 	if isDefaultPath {
-		syncTelegramConfigToDownloader("", "", false)
+		syncTelegramConfigToDownloader("", "", false, "", "")
 	}
 	return nil
 }
 
-func (s *telegramService) startLocked() {
+func (s *telegramService) startLocked() (tok, chatID string, enabled bool, mount, subPath string, shouldSync bool) {
 	if s.config == nil {
-		return
+		return "", "", false, "", "", false
 	}
 	// Unified polling runs in r3pTelegramPollerLoop so /api/v1/telegram and
 	// /api/v1/download/* never spawn competing getUpdates requests (HTTP 409).
@@ -175,11 +217,9 @@ func (s *telegramService) startLocked() {
 		s.status.Connected = false
 	}
 	if s.configPath == "/etc/r3p/telegram.json" {
-		tok := s.config.BotToken
-		chatID := s.config.ChatID
-		enabled := s.config.Enabled
-		go syncTelegramConfigToDownloader(tok, chatID, enabled)
+		return s.config.BotToken, s.config.ChatID, s.config.Enabled, s.config.Mount, s.config.Path, true
 	}
+	return "", "", false, "", "", false
 }
 
 func (s *telegramService) syncFromDownloader(botToken, chatID string, enabled bool, defaultMount, defaultPath string) {
@@ -540,55 +580,6 @@ func handleTelegram(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, true, telegramDownloader.statusSnapshot())
 	default:
 		w.Header().Set("Allow", "GET, PUT, DELETE, OPTIONS")
-		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
-	}
-}
-
-func handleDownloads(w http.ResponseWriter, r *http.Request) {
-	if !requireOpenWrt(w) {
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		items, err := fetchAria2Downloads(ctx)
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, false, "download service is unavailable")
-			return
-		}
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"downloads": items})
-	case http.MethodPost:
-		var body struct {
-			URL   string `json:"url"`
-			Mount string `json:"mount"`
-			Path  string `json:"path"`
-		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, false, "invalid download request")
-			return
-		}
-		if err := validateDownloadURL(body.URL); err != nil {
-			writeJSON(w, http.StatusBadRequest, false, err.Error())
-			return
-		}
-		destination, err := validateDownloadDestination(body.Mount, body.Path)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, false, err.Error())
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		gid, err := queueAria2URL(ctx, body.URL, destination)
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, false, "download service could not queue this URL")
-			return
-		}
-		writeJSON(w, http.StatusAccepted, true, map[string]string{"gid": gid})
-	default:
-		w.Header().Set("Allow", "GET, POST, OPTIONS")
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
 }

@@ -26,6 +26,7 @@ const (
 	loginRateLimitWindow = 5 * time.Minute
 	loginRateLimitMax    = 10
 	maxTrackedAttemptIPs = 256
+	maxActiveSessions    = 64
 )
 
 type loginAttemptState struct {
@@ -194,7 +195,7 @@ func (a *authenticator) clearLoginFailures(ip string) {
 }
 
 func (a *authenticator) createSession(w http.ResponseWriter, r *http.Request) {
-	if !a.tokenConfigured {
+	if !a.tokenConfigured && a.shadowPath == "" {
 		writeJSON(w, http.StatusServiceUnavailable, false, "API token is not configured")
 		return
 	}
@@ -245,7 +246,7 @@ func (a *authenticator) createSession(w http.ResponseWriter, r *http.Request) {
 			a.mu.Unlock()
 			if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1 {
 				authenticated = true
-			} else if (user == "root" || user == "admin") && shadowPath != "" {
+			} else if (user == "" || user == "root" || user == "admin") && shadowPath != "" {
 				authenticated = verifyShadowPassword(shadowPath, "root", body.Password)
 			}
 		}
@@ -267,6 +268,20 @@ func (a *authenticator) createSession(w http.ResponseWriter, r *http.Request) {
 	expiresAt := a.now().Add(sessionDuration)
 	a.mu.Lock()
 	a.removeExpiredSessionsLocked(a.now())
+	for len(a.sessions) >= maxActiveSessions {
+		var oldestID string
+		var oldestExp time.Time
+		for sid, exp := range a.sessions {
+			if oldestID == "" || exp.Before(oldestExp) {
+				oldestID = sid
+				oldestExp = exp
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(a.sessions, oldestID)
+	}
 	a.sessions[sessionID] = expiresAt
 	a.mu.Unlock()
 
@@ -339,4 +354,35 @@ func sameHostOrigin(origin, requestHost string) bool {
 		strings.TrimSuffix(originURL.Hostname(), "."),
 		strings.TrimSuffix(requestURL.Hostname(), "."),
 	)
+}
+
+func sameOriginForRequest(origin string, r *http.Request) bool {
+	if r == nil || !sameHostOrigin(origin, r.Host) {
+		return false
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if r.TLS != nil && originURL.Scheme != "https" {
+		return false
+	}
+	if op := originURL.Port(); op != "" {
+		reqURL, err := url.Parse("//" + r.Host)
+		if err != nil {
+			return false
+		}
+		rp := reqURL.Port()
+		if rp == "" {
+			if r.TLS != nil {
+				rp = "443"
+			} else {
+				rp = "80"
+			}
+		}
+		if op != rp {
+			return false
+		}
+	}
+	return true
 }

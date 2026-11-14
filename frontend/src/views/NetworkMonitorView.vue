@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useNetworkStore } from '@/stores/network'
 import { useSystemStore } from '@/stores/system'
 import { apiRequest } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 const network = useNetworkStore()
 const systemStore = useSystemStore()
@@ -105,29 +108,97 @@ const dnsOutput = ref('')
 const selectedSpeedTestIface = ref('wwan')
 const speedDown = ref<number | null>(null)
 const speedUp = ref<number | null>(null)
+const speedLatency = ref<number | null>(null)
+const speedJitter = ref<number | null>(null)
+const speedServer = ref<string>('')
+const speedTestedAt = ref<string>('')
+const uploadSupported = ref<boolean>(true)
 const testingSpeed = ref(false)
+let speedAbort: AbortController | null = null
+
+const speedtestChoices = computed(() => {
+  const defaults = [
+    { name: 'wwan', label: 'WWAN (Wi-Fi Thu Sóng)', up: false, ip: '' },
+    { name: 'wan', label: 'WAN (Cổng Dây RJ45)', up: false, ip: '' },
+    { name: 'usbwan', label: 'USBWAN (Modem 4G / USB)', up: false, ip: '' },
+  ]
+  const wanLike = ifaceConfigs.value.filter((it) => it.name !== 'lan')
+  const mapped = wanLike.length > 0
+    ? wanLike.map((it) => {
+        const fallback = defaults.find((d) => d.name === it.name)
+        return {
+          name: it.name,
+          label: fallback?.label || it.name.toUpperCase(),
+          up: Boolean(it.live_up),
+          ip: it.live_ipv4 || it.ipaddr || '',
+        }
+      })
+    : defaults
+
+  const lanIface = ifaceConfigs.value.find((it) => it.name === 'lan')
+  if (lanIface?.live_up) {
+    mapped.push({
+      name: 'lan',
+      label: `LAN / Uplink (${lanIface.device || 'br-lan'})`,
+      up: true,
+      ip: lanIface.live_ipv4 || lanIface.ipaddr || '',
+    })
+  }
+  return mapped
+})
+
+function cancelInterfaceSpeedtest() {
+  if (speedAbort) {
+    speedAbort.abort()
+    speedAbort = null
+  }
+}
+
+onUnmounted(() => {
+  cancelInterfaceSpeedtest()
+})
 
 async function runInterfaceSpeedtest() {
+  if (testingSpeed.value) return
+  cancelInterfaceSpeedtest()
+  speedAbort = new AbortController()
   testingSpeed.value = true
   try {
     const res = await apiRequest<{
       interface: string
+      device: string
+      local_ip: string
+      server: string
       download_mbps: number
       upload_mbps: number
+      upload_supported: boolean
       latency_ms: number
+      jitter_ms: number
+      tested_at: string
       message: string
     }>(`/network/speedtest?interface=${encodeURIComponent(selectedSpeedTestIface.value)}`, {
       method: 'POST',
+      signal: speedAbort.signal,
     })
     if (res) {
       speedDown.value = res.download_mbps
       speedUp.value = res.upload_mbps
+      speedLatency.value = res.latency_ms
+      speedJitter.value = res.jitter_ms
+      speedServer.value = res.server || ''
+      speedTestedAt.value = res.tested_at || ''
+      uploadSupported.value = res.upload_supported !== false
       showNotice(res.message || `Đo tốc độ ${res.interface.toUpperCase()} thành công!`)
     }
   } catch (err: any) {
-    showError('Lỗi đo tốc độ: ' + (err?.message || err))
+    if (err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort')) {
+      showNotice('Đã huỷ phiên đo tốc độ mạng')
+    } else {
+      showError('Lỗi đo tốc độ: ' + (err?.message || err))
+    }
   } finally {
     testingSpeed.value = false
+    speedAbort = null
   }
 }
 
@@ -160,6 +231,11 @@ async function loadNetworkDetails() {
         ...it,
         dns_string: (it.dns || []).join(' '),
       }))
+      const activeChoice = speedtestChoices.value.find((c) => c.name === selectedSpeedTestIface.value && c.up)
+      if (!activeChoice) {
+        const firstUp = speedtestChoices.value.find((c) => c.up)
+        if (firstUp) selectedSpeedTestIface.value = firstUp.name
+      }
       defaultGateway.value = cfgRes.default_gateway || ''
       defaultDevice.value = cfgRes.default_device || 'br-lan'
       quickGatewayForm.value.gateway = cfgRes.default_gateway || ''
@@ -314,13 +390,13 @@ onMounted(() => {
     <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
       <div class="stat-mini">
         <div class="flex items-center justify-between">
-          <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">LAN IPv4 Address</span>
+          <span class="text-[12px] text-gray-300 font-bold uppercase tracking-wider">{{ t('net_lan_ip') }}</span>
           <button
             type="button"
             class="text-[12px] text-sky-400 hover:underline font-bold cursor-pointer"
             @click="openEditLan"
           >
-            ✎ Đổi IP LAN
+            {{ t('net_edit_lan') }}
           </button>
         </div>
         <div class="mono text-[16px] font-bold text-sky-400 mt-1">
@@ -358,7 +434,7 @@ onMounted(() => {
           </button>
         </div>
         <div class="mono text-[16px] font-bold text-purple-400 truncate mt-1">
-          {{ dnsServers.join(' · ') || '1.1.1.1 · 8.8.8.8' }}
+          {{ dnsServers.length ? dnsServers.join(' · ') : '—' }}
         </div>
         <div class="text-[11.5px] text-gray-400 font-medium">Active /etc/resolv.conf</div>
       </div>
@@ -438,33 +514,57 @@ onMounted(() => {
             <span class="text-[11px] text-gray-300">Cổng:</span>
             <select
               v-model="selectedSpeedTestIface"
+              :disabled="testingSpeed"
               class="bg-transparent text-sky-400 font-bold text-xs mono focus:outline-none cursor-pointer"
             >
-              <option value="wwan" class="bg-gray-900 text-white">WWAN (Wi-Fi Thu Sóng)</option>
-              <option value="wan" class="bg-gray-900 text-white">WAN (Cổng Dây RJ45)</option>
-              <option value="usbwan" class="bg-gray-900 text-white">USBWAN (Modem 4G / USB)</option>
+              <option
+                v-for="ch in speedtestChoices"
+                :key="ch.name"
+                :value="ch.name"
+                class="bg-gray-900 text-white"
+              >
+                {{ ch.label }} {{ ch.up ? '● UP' : '○ DOWN' }}
+              </option>
             </select>
           </div>
 
           <!-- Speed Display Label -->
-          <div class="flex items-center gap-2 bg-black/50 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-xs mono">
+          <div
+            class="flex flex-wrap items-center gap-2 bg-black/50 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-xs mono"
+            :title="speedServer ? `Server: ${speedServer} lúc ${speedTestedAt}` : 'Chưa đo'"
+          >
             <span class="text-emerald-400 font-extrabold">
               ↓ {{ speedDown !== null ? speedDown.toFixed(1) : '—' }} Mbps
             </span>
             <span class="text-gray-500">·</span>
             <span class="text-sky-400 font-extrabold">
-              ↑ {{ speedUp !== null ? (speedUp > 0 ? `${speedUp.toFixed(1)} Mbps` : 'N/A') : '— Mbps' }}
+              ↑ {{ speedUp !== null ? (uploadSupported ? `${speedUp.toFixed(1)} Mbps` : 'N/A') : '— Mbps' }}
+            </span>
+            <span class="text-gray-500">·</span>
+            <span class="text-amber-300 font-semibold">
+              Ping {{ speedLatency !== null ? `${speedLatency.toFixed(0)}ms` : '—' }}
+              <template v-if="speedJitter !== null">
+                <span class="text-gray-400"> (±{{ speedJitter.toFixed(1) }}ms)</span>
+              </template>
             </span>
           </div>
 
-          <!-- Test Button -->
+          <!-- Test / Cancel Button -->
           <button
+            v-if="!testingSpeed"
             type="button"
             class="btn-primary text-xs py-1 px-3 font-bold flex items-center gap-1 cursor-pointer shadow"
-            :disabled="testingSpeed"
             @click="runInterfaceSpeedtest"
           >
-            <span>{{ testingSpeed ? '⏳ Đang Đo…' : '⚡ Test Tốc Độ' }}</span>
+            <span>⚡ Test Tốc Độ</span>
+          </button>
+          <button
+            v-else
+            type="button"
+            class="btn-secondary text-xs py-1 px-3 font-bold text-amber-300 border-amber-500/40"
+            @click="cancelInterfaceSpeedtest"
+          >
+            ✕ Huỷ Đo…
           </button>
 
           <!-- Reload Button -->

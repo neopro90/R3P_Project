@@ -1,4 +1,5 @@
 import { reactive, watch } from 'vue'
+import { apiRequest } from '@/services/api'
 
 export type DashboardWidgetId =
   | 'cpu'
@@ -20,6 +21,7 @@ interface Preferences {
   accent: AccentColor
   lang: LangCode
   hassStyle: HassThemeStyle
+  sidebarCollapsed: boolean
 }
 
 const storageKey = 'r3p.ui-preferences.v2'
@@ -36,6 +38,8 @@ const allowedAccents: AccentColor[] = ['blue', 'teal', 'purple', 'green', 'orang
 const allowedLangs: LangCode[] = ['vi', 'en', 'cn']
 const allowedHassStyles: HassThemeStyle[] = ['hass-classic', 'hass-mushroom', 'hass-neon']
 
+export { allowedAccents }
+
 const defaults: Preferences = {
   widgets: [...allowedWidgets],
   hiddenWidgets: [],
@@ -43,6 +47,7 @@ const defaults: Preferences = {
   accent: 'blue',
   lang: 'vi',
   hassStyle: 'hass-mushroom',
+  sidebarCollapsed: false,
 }
 
 export const translations: Record<LangCode, Record<string, string>> = {
@@ -96,6 +101,82 @@ export const translations: Record<LangCode, Record<string, string>> = {
     hass_classic: 'Hass Lovelace',
     hass_mushroom: 'Hass Mushroom',
     hass_neon: 'Hass Energy',
+    checking_session: 'Đang kiểm tra phiên đăng nhập R3P…',
+    mobile_overview: 'Tổng Quan',
+    mobile_ai: 'Trợ Lý AI',
+    mobile_network: 'Mạng',
+    mobile_downloads: 'Tải Xuống',
+    mobile_all_tabs: 'Tất Cả Tab',
+    open_menu_tooltip: 'Mở menu danh mục',
+    hass_tooltip: 'Chọn 1 trong 3 bộ giao diện phong cách Home Assistant',
+    theme_toggle_tooltip: 'Đổi giao diện Sáng / Tối',
+    lang_toggle_tooltip: 'Đổi ngôn ngữ (VI → EN → CN)',
+    accent_tooltip: 'Đổi màu nhấn chủ đạo',
+    recheck_net_tooltip: 'Kiểm tra lại kết nối Internet',
+    logout_tooltip: 'Đăng xuất khỏi phiên quản trị Router',
+    collapse_tooltip: 'Thu gọn thanh bên',
+    expand_tooltip: 'Mở rộng thanh bên',
+    wan_usb_tether: 'USB TETHER',
+    wan_wifi_client: 'WIFI CLIENT',
+    wan_eth: 'WAN ETH',
+    wan_offline: 'NGOẠI TUYẾN',
+    btn_refresh: 'Làm mới ↻',
+    btn_loading: 'Đang tải…',
+    btn_cancel: 'Hủy',
+    btn_sync: 'Đồng Bộ ↻',
+    btn_syncing: 'Đang đồng bộ…',
+    login_subtitle: 'MediaTek MT7621 · OpenWrt Embedded Linux',
+    login_username: 'Tài Khoản (Username)',
+    login_password: 'Mật Khẩu (Password)',
+    login_submitting: 'Đang xác thực…',
+    login_submit: 'Đăng Nhập Máy Chủ',
+    login_hint: 'Đăng nhập bằng mật khẩu SSH / WebUI',
+    dash_flush_cache: '🧹 Giải Phóng Cache',
+    dash_cpu_load: '⚡ Tải CPU',
+    dash_bandwidth: '🌐 Băng Thông Mạng (Live)',
+    dash_ram: '🧠 Bộ Nhớ RAM',
+    dash_storage: '💾 Lưu Trữ & Phân Vùng',
+    dash_standby_now: 'Cho SSD Nghỉ',
+    dash_auto_idle: 'Tự nghỉ:',
+    dash_services: 'Dịch Vụ Hệ Thống (procd)',
+    dash_adblock_shield: '🛡️ Lá Chắn DNS AdBlock',
+    dash_active_clients: 'Thiết Bị DHCP Đang Kết Nối',
+    ai_config_heading: 'Cấu Hình API AI & Quyền Root',
+    ai_key_ready: 'ĐÃ NHÚNG API KEY',
+    ai_key_missing: 'CHƯA CÓ API KEY',
+    ai_subtitle: 'Hỗ trợ toàn quyền root, Multi-Session, Blueprint hệ thống, bộ nhớ dài hạn và bot Telegram.',
+    net_lan_ip: 'Địa Chỉ LAN IPv4',
+    net_edit_lan: '✎ Đổi IP LAN',
+    wifi_banner: 'MediaTek MT7615N Dual-Band 4x4 MU-MIMO (Phát AP + Thu Sóng WWAN)',
+    wifi_reload: 'Khởi động lại Radio',
+    wifi_reloading: 'Đang khởi động Wi-Fi…',
+    adblock_banner: 'R3P AdBlock DNS Shield (Chặn Quảng Cáo & Mã Độc)',
+    adblock_active: 'ĐANG BẬT',
+    adblock_disabled: 'ĐÃ TẮT',
+    fw_engine: 'Bộ Lọc Gói Tin',
+    fw_syn_flood: 'Chống SYN Flood',
+    fw_conntrack: 'Kết Nối Theo Dõi',
+    fw_rules_redirects: 'Luật & Chuyển Tiếp',
+    acc_ssh_title: 'Máy Chủ SSH (Dropbear)',
+    acc_ssh_port: 'Cổng Lắng Nghe (Port)',
+    acc_ssh_pw_auth: 'Xác thực Mật khẩu',
+    cfg_editor_title: 'Trình Sửa Cấu Hình UCI',
+    cfg_auto_reload: 'Tự Nạp Lại Dịch Vụ',
+    cfg_restore_bak: '↩ Khôi Phục .bak',
+    dl_heading: 'Trình Tải Video yt-dlp Trực Tiếp Trên R3P (Native Downloader)',
+    dl_sub: 'R3P nhận link trực tiếp và giao cho yt-dlp tải về ổ cứng USB 3.0 (/mnt/sda1) · Tự động nhận link qua Telegram Bot & Web.',
+    nas_usb_heading: 'Cổng USB 3.0 SuperSpeed Dual-Role (Ổ Cứng Lưu Trữ + USB Tethering / 4G WAN)',
+    exp_quick_roots: '⚡ Lối Tắt Thư Mục Hệ Thống & Lưu Trữ (Quick Roots)',
+    apps_repo_heading: '📦 Quản Lý Nguồn Ứng Dụng GitHub & OpenWrt Package Feeds',
+    apps_repo_sub: 'Thêm URL kho lưu trữ GitHub chứa ứng dụng OpenWrt hoặc APK/OPKG Feed URL để tìm kiếm và cài đặt trực tiếp.',
+    auto_cron_heading: 'Lịch Tự Động Hóa Cron (/etc/crontabs/root)',
+    auto_add_task: '+ Thêm Lịch Tự Động',
+    iot_mqtt_bridge: 'Cầu Nối MQTT',
+    iot_topic_ns: 'Nhánh Topic MQTT',
+    plg_heading: 'Tiện Ích Mở Rộng Đã Cài',
+    plg_create: '+ Tạo Plugin Mới',
+    sys_ota_heading: '🚀 Trung Tâm Cập Nhật Firmware Thủ Công & Cập Nhật Trực Tuyến Qua GitHub',
+    sys_current_ver: 'Phiên bản hiện tại:',
   },
   en: {
     group_overview: 'Overview & AI',
@@ -147,6 +228,82 @@ export const translations: Record<LangCode, Record<string, string>> = {
     hass_classic: 'Hass Lovelace',
     hass_mushroom: 'Hass Mushroom',
     hass_neon: 'Hass Energy',
+    checking_session: 'Checking router session…',
+    mobile_overview: 'Overview',
+    mobile_ai: 'AI Agent',
+    mobile_network: 'Network',
+    mobile_downloads: 'Downloads',
+    mobile_all_tabs: 'All Tabs',
+    open_menu_tooltip: 'Open navigation menu',
+    hass_tooltip: 'Choose Home Assistant UI preset',
+    theme_toggle_tooltip: 'Toggle Light / Dark Mode',
+    lang_toggle_tooltip: 'Switch language (VI → EN → CN)',
+    accent_tooltip: 'Cycle accent color',
+    recheck_net_tooltip: 'Recheck Internet connectivity',
+    logout_tooltip: 'Sign out of router session',
+    collapse_tooltip: 'Collapse sidebar',
+    expand_tooltip: 'Expand sidebar',
+    wan_usb_tether: 'USB TETHER',
+    wan_wifi_client: 'WIFI CLIENT',
+    wan_eth: 'WAN ETH',
+    wan_offline: 'OFFLINE',
+    btn_refresh: 'Refresh ↻',
+    btn_loading: 'Loading…',
+    btn_cancel: 'Cancel',
+    btn_sync: 'Sync ↻',
+    btn_syncing: 'Syncing…',
+    login_subtitle: 'MediaTek MT7621 · OpenWrt Embedded Linux',
+    login_username: 'Username',
+    login_password: 'Password',
+    login_submitting: 'Signing in…',
+    login_submit: 'Sign In to Router',
+    login_hint: 'Sign in with SSH / WebUI root password',
+    dash_flush_cache: '🧹 Flush Cache',
+    dash_cpu_load: '⚡ CPU Load',
+    dash_bandwidth: '🌐 Network Bandwidth (Live)',
+    dash_ram: '🧠 Memory RAM',
+    dash_storage: '💾 Storage & Partitions',
+    dash_standby_now: 'Standby SSD',
+    dash_auto_idle: 'Auto Idle:',
+    dash_services: 'Core System Daemons (procd)',
+    dash_adblock_shield: '🛡️ DNS AdBlock Shield',
+    dash_active_clients: 'Active DHCP Clients',
+    ai_config_heading: 'AI API Configuration & Root Access',
+    ai_key_ready: 'API KEY CONFIGURED',
+    ai_key_missing: 'NO API KEY',
+    ai_subtitle: 'Full root tool execution, multi-session chat, system blueprint, persistent memory & Telegram bot.',
+    net_lan_ip: 'LAN IPv4 Address',
+    net_edit_lan: '✎ Edit LAN IP',
+    wifi_banner: 'MediaTek MT7615N Dual-Band 4x4 MU-MIMO (AP Broadcast + WWAN Client Repeater)',
+    wifi_reload: 'Reload All Radios',
+    wifi_reloading: 'Reloading Wi-Fi…',
+    adblock_banner: 'R3P AdBlock DNS Shield (Network-Wide Ad & Malware Blocking)',
+    adblock_active: 'ADBLOCK ACTIVE',
+    adblock_disabled: 'ADBLOCK DISABLED',
+    fw_engine: 'Firewall Engine',
+    fw_syn_flood: 'SYN Flood Guard',
+    fw_conntrack: 'Active Conntrack',
+    fw_rules_redirects: 'Rules & Redirects',
+    acc_ssh_title: 'SSH Server (Dropbear)',
+    acc_ssh_port: 'Listen Port',
+    acc_ssh_pw_auth: 'Password Auth',
+    cfg_editor_title: 'Live UCI Configuration Editor',
+    cfg_auto_reload: 'Auto Reload Service',
+    cfg_restore_bak: '↩ Restore .bak',
+    dl_heading: 'R3P Native yt-dlp Video & Media Downloader',
+    dl_sub: 'Direct yt-dlp downloads onto R3P USB 3.0 storage · Auto link intake via Telegram Bot & Web UI.',
+    nas_usb_heading: 'USB 3.0 SuperSpeed Dual-Role (Storage + USB Tethering / 4G WAN)',
+    exp_quick_roots: '⚡ System & USB Storage Quick Roots',
+    apps_repo_heading: '📦 GitHub Repositories & OpenWrt Package Feeds',
+    apps_repo_sub: 'Add GitHub repository URLs or OpenWrt APK/OPKG feeds to browse and install packages directly.',
+    auto_cron_heading: 'Scheduled Cron Jobs (/etc/crontabs/root)',
+    auto_add_task: '+ Add Scheduled Task',
+    iot_mqtt_bridge: 'MQTT Bridge',
+    iot_topic_ns: 'Topic Namespace',
+    plg_heading: 'Installed Plugins & Extensions',
+    plg_create: '+ Create Custom Plugin',
+    sys_ota_heading: '🚀 Firmware Update Center (GitHub Online & Manual Upload)',
+    sys_current_ver: 'Current Version:',
   },
   cn: {
     group_overview: '总览与 AI 助手',
@@ -198,6 +355,82 @@ export const translations: Record<LangCode, Record<string, string>> = {
     hass_classic: 'Hass 经典蓝',
     hass_mushroom: 'Hass 蘑菇卡片',
     hass_neon: 'Hass 能源霓虹',
+    checking_session: '正在检查路由器会话…',
+    mobile_overview: '总览',
+    mobile_ai: 'AI 助手',
+    mobile_network: '网络',
+    mobile_downloads: '下载',
+    mobile_all_tabs: '全部标签',
+    open_menu_tooltip: '打开导航菜单',
+    hass_tooltip: '切换 Home Assistant 风格主题',
+    theme_toggle_tooltip: '切换深色 / 浅色模式',
+    lang_toggle_tooltip: '切换语言 (VI → EN → CN)',
+    accent_tooltip: '切换主题强调色',
+    recheck_net_tooltip: '重新检测互联网连接',
+    logout_tooltip: '退出登录',
+    collapse_tooltip: '收起侧边栏',
+    expand_tooltip: '展开侧边栏',
+    wan_usb_tether: 'USB 共享',
+    wan_wifi_client: 'WIFI 中继',
+    wan_eth: '有线 WAN',
+    wan_offline: '已离线',
+    btn_refresh: '刷新 ↻',
+    btn_loading: '加载中…',
+    btn_cancel: '取消',
+    btn_sync: '同步 ↻',
+    btn_syncing: '同步中…',
+    login_subtitle: 'MediaTek MT7621 · OpenWrt 嵌入式系统',
+    login_username: '用户名 (Username)',
+    login_password: '密码 (Password)',
+    login_submitting: '正在验证…',
+    login_submit: '登录路由器控制台',
+    login_hint: '请使用 SSH / WebUI 管理员密码登录',
+    dash_flush_cache: '🧹 释放缓存',
+    dash_cpu_load: '⚡ CPU 负载',
+    dash_bandwidth: '🌐 实时网络带宽',
+    dash_ram: '🧠 内存 (RAM)',
+    dash_storage: '💾 存储与分区',
+    dash_standby_now: '立即休眠磁盘',
+    dash_auto_idle: '自动休眠:',
+    dash_services: '核心系统服务 (procd)',
+    dash_adblock_shield: '🛡️ DNS 广告拦截盾',
+    dash_active_clients: '在线 DHCP 客户端',
+    ai_config_heading: 'AI 接口配置与 Root 权限',
+    ai_key_ready: '已配置密钥',
+    ai_key_missing: '未配置密钥',
+    ai_subtitle: '支持 Root 命令、多会话对话、系统蓝图、长期记忆及 Telegram 机器人。',
+    net_lan_ip: 'LAN IPv4 地址',
+    net_edit_lan: '✎ 修改 LAN IP',
+    wifi_banner: 'MediaTek MT7615N 双频 4x4 MU-MIMO (AP 发射 + WWAN 无线中继)',
+    wifi_reload: '重载无线射频',
+    wifi_reloading: '正在重载无线…',
+    adblock_banner: 'R3P AdBlock DNS 盾 (全网广告与恶意域名拦截)',
+    adblock_active: '拦截运行中',
+    adblock_disabled: '拦截已停用',
+    fw_engine: '防火墙引擎',
+    fw_syn_flood: 'SYN 洪水防护',
+    fw_conntrack: '活动连接追踪',
+    fw_rules_redirects: '规则与端口转发',
+    acc_ssh_title: 'SSH 服务 (Dropbear)',
+    acc_ssh_port: '监听端口',
+    acc_ssh_pw_auth: '密码登录验证',
+    cfg_editor_title: 'UCI 实时配置编辑器',
+    cfg_auto_reload: '保存后重载服务',
+    cfg_restore_bak: '↩ 从备份恢复',
+    dl_heading: 'R3P 原生 yt-dlp 视频与文件下载中心',
+    dl_sub: 'R3P 本地运行 yt-dlp 下载至 USB 3.0 磁盘 · 支持 Telegram 机器人自动接管链接。',
+    nas_usb_heading: 'USB 3.0 超高速双模接口 (磁盘存储 + USB 网络共享 / 4G WAN)',
+    exp_quick_roots: '⚡ 系统与存储快捷目录 (Quick Roots)',
+    apps_repo_heading: '📦 GitHub 应用仓库与 OpenWrt 软件源管理',
+    apps_repo_sub: '添加 GitHub OpenWrt 仓库链接或 APK/OPKG 软件源以在线搜索安装。',
+    auto_cron_heading: 'Cron 定时任务列表 (/etc/crontabs/root)',
+    auto_add_task: '+ 新建定时任务',
+    iot_mqtt_bridge: 'MQTT 网关桥接',
+    iot_topic_ns: 'Topic 主题前缀',
+    plg_heading: '已安装扩展插件',
+    plg_create: '+ 新建安全插件',
+    sys_ota_heading: '🚀 固件在线更新中心 (GitHub 与本地上传)',
+    sys_current_ver: '当前版本:',
   },
 }
 
@@ -230,6 +463,7 @@ function loadPreferences(): Preferences {
       hassStyle: allowedHassStyles.includes(record.hassStyle as HassThemeStyle)
         ? (record.hassStyle as HassThemeStyle)
         : 'hass-mushroom',
+      sidebarCollapsed: Boolean(record.sidebarCollapsed),
     }
   } catch (cause) {
     console.warn('Could not load R3P UI preferences; using defaults.', cause)
@@ -238,6 +472,46 @@ function loadPreferences(): Preferences {
 }
 
 const state = reactive<Preferences>(loadPreferences())
+let serverSyncEnabled = false
+let serverSyncTimer: ReturnType<typeof setTimeout> | null = null
+
+interface ServerUIPreferencesPayload {
+  theme?: string
+  sidebar_collapsed?: boolean
+  default_tab?: string
+  preferences?: Record<string, unknown>
+  updated_at?: string
+}
+
+async function pushPreferencesToServer() {
+  try {
+    await apiRequest('/ui/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({
+        theme: state.theme,
+        sidebar_collapsed: state.sidebarCollapsed,
+        preferences: {
+          widgets: state.widgets,
+          hiddenWidgets: state.hiddenWidgets,
+          accent: state.accent,
+          lang: state.lang,
+          hassStyle: state.hassStyle,
+        },
+      }),
+    })
+  } catch {
+    // Offline fallback stays safely in localStorage
+  }
+}
+
+function scheduleServerSync() {
+  if (!serverSyncEnabled) return
+  if (serverSyncTimer !== null) clearTimeout(serverSyncTimer)
+  serverSyncTimer = setTimeout(() => {
+    serverSyncTimer = null
+    if (serverSyncEnabled) void pushPreferencesToServer()
+  }, 500)
+}
 
 watch(
   state,
@@ -247,6 +521,7 @@ watch(
     } catch (cause) {
       console.error('Could not save R3P UI preferences.', cause)
     }
+    scheduleServerSync()
   },
   { deep: true },
 )
@@ -287,6 +562,17 @@ export function useUiPreferences() {
     applyTheme()
   }
 
+  function setAccent(accent: AccentColor) {
+    state.accent = allowedAccents.includes(accent) ? accent : 'blue'
+    applyTheme()
+  }
+
+  function cycleAccent() {
+    const idx = allowedAccents.indexOf(state.accent)
+    state.accent = allowedAccents[(idx + 1) % allowedAccents.length] || 'blue'
+    applyTheme()
+  }
+
   function cycleHassStyle() {
     const idx = allowedHassStyles.indexOf(state.hassStyle)
     state.hassStyle = allowedHassStyles[(idx + 1) % allowedHassStyles.length] || 'hass-mushroom'
@@ -307,7 +593,75 @@ export function useUiPreferences() {
         : state.theme
     root.dataset.theme = mode
     root.dataset.hass = state.hassStyle
+    root.dataset.accent = state.accent
     root.lang = state.lang === 'cn' ? 'zh-CN' : state.lang
+  }
+
+  function setSidebarCollapsed(collapsed: boolean) {
+    state.sidebarCollapsed = Boolean(collapsed)
+  }
+
+  function setServerSync(enabled: boolean) {
+    serverSyncEnabled = enabled
+    if (!enabled && serverSyncTimer !== null) {
+      clearTimeout(serverSyncTimer)
+      serverSyncTimer = null
+    }
+  }
+
+  async function syncFromServer() {
+    let hadLocal = false
+    try {
+      hadLocal = Boolean(localStorage.getItem(storageKey))
+    } catch {
+      hadLocal = false
+    }
+    const prevSync = serverSyncEnabled
+    serverSyncEnabled = false
+    try {
+      const srv = await apiRequest<ServerUIPreferencesPayload>('/ui/preferences')
+      if (srv && (srv.updated_at || !hadLocal)) {
+        if (srv.theme && allowedThemes.includes(srv.theme as ThemeMode)) {
+          state.theme = srv.theme as ThemeMode
+        }
+        if (typeof srv.sidebar_collapsed === 'boolean') {
+          state.sidebarCollapsed = srv.sidebar_collapsed
+        }
+        const extra = srv.preferences || {}
+        if (allowedAccents.includes(extra.accent as AccentColor)) {
+          state.accent = extra.accent as AccentColor
+        }
+        if (allowedLangs.includes(extra.lang as LangCode)) {
+          state.lang = extra.lang as LangCode
+        }
+        if (allowedHassStyles.includes(extra.hassStyle as HassThemeStyle)) {
+          state.hassStyle = extra.hassStyle as HassThemeStyle
+        }
+        if (Array.isArray(extra.widgets)) {
+          const valid = extra.widgets.filter((id): id is DashboardWidgetId =>
+            typeof id === 'string' && allowedWidgets.includes(id as DashboardWidgetId),
+          )
+          if (valid.length > 0) {
+            state.widgets = [...new Set([...valid, ...allowedWidgets])]
+          }
+        }
+        if (Array.isArray(extra.hiddenWidgets)) {
+          state.hiddenWidgets = [
+            ...new Set(
+              extra.hiddenWidgets.filter((id): id is DashboardWidgetId =>
+                typeof id === 'string' && allowedWidgets.includes(id as DashboardWidgetId),
+              ),
+            ),
+          ]
+        }
+        applyTheme()
+      } else if (hadLocal) {
+        await pushPreferencesToServer()
+      }
+      serverSyncEnabled = true
+    } catch {
+      serverSyncEnabled = prevSync || true
+    }
   }
 
   return {
@@ -318,7 +672,12 @@ export function useUiPreferences() {
     cycleLang,
     setLang,
     setHassStyle,
+    setAccent,
+    cycleAccent,
     cycleHassStyle,
+    setSidebarCollapsed,
+    setServerSync,
+    syncFromServer,
     t,
     applyTheme,
   }

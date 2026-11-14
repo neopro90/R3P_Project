@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useSystemStore } from '@/stores/system'
-import { apiRequest } from '@/services/api'
+import { apiRequest, apiFetchRaw } from '@/services/api'
+import { useUiPreferences } from '@/composables/useUiPreferences'
+
+const { t } = useUiPreferences()
 
 interface SystemVersionInfo {
   version: string
@@ -59,17 +62,34 @@ const errorMsg = ref<string | null>(null)
 const editHostname = ref('R3P-Router')
 const editTimezone = ref('ICT-7')
 const savingSettings = ref(false)
+const includeSecrets = ref(false)
+const downloadingBackup = ref(false)
 
 // Firmware & GitHub Update State
 const currentVer = ref<SystemVersionInfo>({
-  version: 'v1.0.0',
-  revision: 1,
-  released_at: '2026-11-06',
+  version: 'v1.1.25',
+  revision: 25,
+  released_at: '2026-11-14',
   repo_url: 'https://github.com/neopro90/R3P_Project.git',
   branch: 'main',
-  commit_sha: 'v1.0.0',
+  commit_sha: 'v1.1.25',
   changelog: '',
 })
+
+interface SettingsDBSummary {
+  path: string
+  engine: string
+  initialized: boolean
+  size_bytes: number
+  schema_version: number
+  migrated_at?: string
+  last_migration_count: number
+  buckets: Record<string, number>
+  total_keys: number
+}
+
+const dbSummary = ref<SettingsDBSummary | null>(null)
+const syncingDb = ref(false)
 const stagedFw = ref<StagedFirmwareInfo>({
   present: false,
   filename: '',
@@ -228,6 +248,12 @@ async function applyStagedFirmware() {
     errorMsg.value = 'File Firmware chưa vượt qua kiểm tra hợp lệ. Vui lòng tích xác nhận Force Flash nếu thực sự muốn tiếp tục.'
     return
   }
+  if (!stagedFw.value.valid && forceFlash.value) {
+    const confirmed = window.confirm(
+      'CẢNH BÁO: File Firmware chưa vượt qua kiểm tra hợp lệ chuẩn! Bạn có chắc chắn muốn thực hiện Force Flash không? Thao tác sai có thể làm thiết bị không khởi động lại được.'
+    )
+    if (!confirmed) return
+  }
   applyingFw.value = true
   errorMsg.value = null
   notice.value = 'Đang thực thi cập nhật Firmware / OS... Vui lòng chờ hệ thống khởi động lại dịch vụ!'
@@ -353,9 +379,8 @@ async function executeRestore() {
     formData.append('file', selectedRestoreFile.value)
     formData.append('reboot', restoreReboot.value ? 'true' : 'false')
 
-    const resp = await fetch('/api/v1/system/restore', {
+    const resp = await apiFetchRaw('/system/restore', {
       method: 'POST',
-      credentials: 'include',
       body: formData,
     })
 
@@ -383,12 +408,76 @@ async function executeRestore() {
   }
 }
 
+async function downloadBackup() {
+  downloadingBackup.value = true
+  errorMsg.value = null
+  try {
+    const query = includeSecrets.value ? '?include_secrets=1' : ''
+    const resp = await apiFetchRaw(`/system/backup${query}`)
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`
+      try {
+        const j = await resp.json()
+        if (j?.error) msg = j.error
+      } catch {}
+      throw new Error(msg)
+    }
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = includeSecrets.value ? 'r3p-backup-with-secrets.tar.gz' : 'r3p-backup.tar.gz'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    notice.value = includeSecrets.value
+      ? 'Đã tải bản sao lưu cấu hình (kèm bí mật)!'
+      : 'Đã tải bản sao lưu cấu hình (đã lọc bí mật)!'
+    setTimeout(() => { notice.value = null }, 4000)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi tải bản sao lưu: ' + (err?.message || err)
+  } finally {
+    downloadingBackup.value = false
+  }
+}
+
+async function fetchDbSummary() {
+  try {
+    const res = await apiRequest<SettingsDBSummary>('/system/db')
+    if (res) dbSummary.value = res
+  } catch {
+    // ignore non-OpenWrt dev mode
+  }
+}
+
+async function syncSettingsDatabase() {
+  syncingDb.value = true
+  errorMsg.value = null
+  try {
+    const res = await apiRequest<{ migrated: number; summary: SettingsDBSummary }>('/system/db', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'migrate' }),
+    })
+    if (res?.summary) dbSummary.value = res.summary
+    notice.value = `Đã đồng bộ Settings DB (${res?.summary?.total_keys ?? 0} cấu hình trong r3p.db, nhập mới ${res?.migrated ?? 0})!`
+    setTimeout(() => { notice.value = null }, 3500)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi đồng bộ Settings DB: ' + (err?.message || err)
+  } finally {
+    syncingDb.value = false
+  }
+}
+
 onMounted(async () => {
   await system.refresh()
   if (system.hostname && system.hostname !== '—') {
     editHostname.value = system.hostname
   }
-  await Promise.all([fetchFirmwareStatus(), fetchLogs()])
+  if (system.timezone) {
+    editTimezone.value = system.timezone
+  }
+  await Promise.all([fetchFirmwareStatus(), fetchLogs(), fetchDbSummary()])
 })
 </script>
 
@@ -412,10 +501,10 @@ onMounted(async () => {
     <div class="pro-card border border-sky-500/30">
       <div class="pro-card-header flex-wrap gap-2">
         <div class="min-w-0">
-          <span class="pro-card-title text-sky-400">🚀 Trung Tâm Cập Nhật Firmware Thủ Công & Cập Nhật Trực Tuyến Qua GitHub</span>
+          <span class="pro-card-title text-sky-400">{{ t('sys_ota_heading') }}</span>
           <p class="text-[11px] text-gray-400 mt-0.5 truncate">
-            Phiên bản hiện tại: <strong class="mono text-emerald-400">{{ currentVer.version }} (Revision #{{ currentVer.revision }})</strong> ·
-            Kho GitHub: <code class="mono text-sky-300">{{ currentVer.repo_url }}</code>
+            {{ t('sys_current_ver') }} <strong class="mono text-emerald-400">{{ currentVer.version }} (Revision #{{ currentVer.revision }})</strong> ·
+            <code class="mono text-sky-300">{{ currentVer.repo_url }}</code>
           </p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
@@ -565,7 +654,7 @@ onMounted(async () => {
               </label>
               <label v-if="stagedFw.present && !stagedFw.valid" class="flex items-center gap-1.5 text-xs text-amber-300 cursor-pointer">
                 <input v-model="forceFlash" type="checkbox" class="rounded accent-amber-500" />
-                <span>⚠️ Kiểm tra thất bại — xác nhận Force Flash / Bỏ qua cảnh báo</span>
+                <span>⚠️ Kiểm tra thất bại — xác nhận Force Flash (vẫn bắt buộc kiểm tra SHA256 & cấu trúc ELF/tar an toàn)</span>
               </label>
             </div>
             <button
@@ -606,7 +695,12 @@ onMounted(async () => {
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">RAM Memory</span>
-            <span class="mono text-emerald-400">{{ (system.ramUsed || 0).toFixed(0) }} / {{ (system.ramTotal || 512).toFixed(0) }} MB ({{ (system.ram || 0).toFixed(1) }}%)</span>
+            <span
+              class="mono text-emerald-400"
+              :title="system.ramReserved > 0 ? `Vật lý ${system.ramPhysical} MB DDR3 (${system.ramTotal} MB khả dụng cho HĐH, ${system.ramReserved} MB giữ cho Kernel/DMA)` : ''"
+            >
+              {{ system.ramTotal ? `${(system.ramUsed || 0).toFixed(0)} / ${system.ramTotal.toFixed(0)} MB OS · ${system.ramPhysical || system.ramTotal} MB DDR3` : '—' }}
+            </span>
           </div>
           <div class="flex justify-between py-1 border-b border-white/5">
             <span class="text-gray-400">Flash Chip</span>
@@ -683,6 +777,48 @@ onMounted(async () => {
       </form>
     </div>
 
+    <!-- 2.5 Embedded Firmware Settings Database -->
+    <div v-if="dbSummary" class="pro-card">
+      <div class="pro-card-header">
+        <div class="flex items-center gap-2">
+          <span class="pro-card-title">Firmware Settings Database</span>
+          <span class="badge badge-green mono text-[10px]">{{ dbSummary.engine.toUpperCase() }} v{{ dbSummary.schema_version }}</span>
+        </div>
+        <button type="button" class="btn-secondary text-[11px] py-1 px-2.5" :disabled="syncingDb" @click="syncSettingsDatabase">
+          {{ syncingDb ? 'Đang đồng bộ…' : 'Sync & Migrate DB ↻' }}
+        </button>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11.5px] mb-2">
+        <div class="p-2 rounded bg-black/40 border border-white/5">
+          <div class="text-gray-400 text-[10px] uppercase">Tệp CSDL</div>
+          <div class="mono text-sky-300 font-semibold truncate" :title="dbSummary.path">{{ dbSummary.path || '—' }}</div>
+        </div>
+        <div class="p-2 rounded bg-black/40 border border-white/5">
+          <div class="text-gray-400 text-[10px] uppercase">Dung Lượng</div>
+          <div class="mono text-emerald-400 font-bold">{{ (dbSummary.size_bytes / 1024).toFixed(1) }} KB</div>
+        </div>
+        <div class="p-2 rounded bg-black/40 border border-white/5">
+          <div class="text-gray-400 text-[10px] uppercase">Tổng Tham Số</div>
+          <div class="mono text-amber-300 font-bold">{{ dbSummary.total_keys }} keys</div>
+        </div>
+        <div class="p-2 rounded bg-black/40 border border-white/5">
+          <div class="text-gray-400 text-[10px] uppercase">Di Trú JSON Cũ</div>
+          <div class="mono text-gray-200 truncate" :title="dbSummary.migrated_at || 'Chưa chạy'">
+            {{ dbSummary.migrated_at ? dbSummary.migrated_at.slice(0, 19).replace('T', ' ') : 'Đã sẵn sàng' }}
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-1.5 text-[10.5px]">
+        <span
+          v-for="(cnt, bkt) in dbSummary.buckets"
+          :key="bkt"
+          class="px-2 py-0.5 rounded bg-white/5 border border-white/10 mono text-gray-300"
+        >
+          {{ bkt }}: <strong class="text-sky-300">{{ cnt }}</strong>
+        </span>
+      </div>
+    </div>
+
     <!-- 3. Power, Backup & Memory Maintenance -->
     <div class="pro-card">
       <div class="pro-card-header">
@@ -694,13 +830,20 @@ onMounted(async () => {
           Flush Memory Cache (drop_caches)
         </button>
 
-        <a
-          href="/api/v1/system/backup"
-          download="r3p-backup.tar.gz"
-          class="btn-primary text-[11.5px]"
-        >
-          ↓ Download Config Backup (tar.gz)
-        </a>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="flex items-center gap-1.5 text-[11px] text-gray-300 px-2 py-1 rounded bg-white/5 border border-white/10 cursor-pointer" title="Mặc định bản sao lưu sẽ lọc bỏ mật khẩu, API key và session secrets để an toàn khi chia sẻ.">
+            <input v-model="includeSecrets" type="checkbox" class="rounded accent-sky-500" />
+            <span>Kèm bí mật (<code class="mono text-sky-300">include_secrets</code>)</span>
+          </label>
+          <button
+            type="button"
+            :disabled="downloadingBackup"
+            class="btn-primary text-[11.5px]"
+            @click="downloadBackup"
+          >
+            {{ downloadingBackup ? '⏳ Đang nén bản sao lưu…' : '↓ Download Config Backup (tar.gz)' }}
+          </button>
+        </div>
 
         <!-- Restore Config Button & Hidden File Input -->
         <input

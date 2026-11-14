@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useUiPreferences } from '@/composables/useUiPreferences'
 
 const auth = useAuthStore()
+const { t } = useUiPreferences()
 const username = ref('root')
 const password = ref('')
 const submitting = ref(false)
@@ -28,19 +30,19 @@ async function submit() {
       style="max-width: 380px !important; width: 100% !important; margin: auto !important;"
     >
       <div class="flex items-center gap-3 mb-5 pb-4 border-b border-white/10">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-cyan-400 flex items-center justify-center text-white font-black text-base tracking-wider shadow-lg shrink-0">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-cyan-400 flex items-center justify-center keep-white font-black text-base tracking-wider shadow-lg shrink-0">
           R3
         </div>
         <div class="min-w-0">
           <h1 class="text-sm font-bold text-white tracking-wide truncate">R3P HOME SERVER OS</h1>
-          <p class="text-[11px] text-gray-400 truncate">MediaTek MT7621AT · 512MB RAM · 256MB NAND</p>
+          <p class="text-[11px] text-gray-400 truncate">{{ t('login_subtitle') }}</p>
         </div>
       </div>
 
       <form class="space-y-4" @submit.prevent="submit">
         <div>
           <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="username">
-            Tài Khoản (Username)
+            {{ t('login_username') }}
           </label>
           <input
             id="username"
@@ -55,7 +57,7 @@ async function submit() {
 
         <div>
           <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="password">
-            Mật Khẩu (Password)
+            {{ t('login_password') }}
           </label>
           <input
             id="password"
@@ -77,13 +79,13 @@ async function submit() {
           :disabled="submitting || !password"
           class="w-full btn-primary justify-center py-2.5 text-[13px] font-bold disabled:opacity-50 shadow-md cursor-pointer transition-all"
         >
-          {{ submitting ? 'Đang xác thực…' : 'Đăng Nhập Máy Chủ' }}
+          {{ submitting ? t('login_submitting') : t('login_submit') }}
         </button>
       </form>
 
       <div class="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-400">
-        <span>Mặc định: <code class="mono text-gray-300">root / root</code></span>
-        <span class="mono text-sky-400">OpenWrt 25.12.5</span>
+        <span>{{ t('login_hint') }}</span>
+        <span class="mono text-sky-400">R3P · OpenWrt</span>
       </div>
     </div>
   </main>

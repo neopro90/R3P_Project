@@ -32,6 +32,7 @@ interface SystemResponse {
   version?: string
   hardware?: string
   lan_ip?: string
+  timezone?: string
   firmware_version: string
   openwrt: Record<string, string>
   cpu_aggregate_pct: number
@@ -43,6 +44,8 @@ interface SystemResponse {
 
 interface MemoryResponse {
   total_kb: number
+  physical_total_kb?: number
+  reserved_kb?: number
   used_kb: number
   used_percent: number
 }
@@ -52,6 +55,8 @@ export interface SystemState {
   cpuHistory: number[]
   ram: number
   ramTotal: number
+  ramPhysical: number
+  ramReserved: number
   ramUsed: number
   temp: number | null
   uptime: number
@@ -73,6 +78,8 @@ export const useSystemStore = defineStore('system', () => {
   const cpuHistory = ref<number[]>(Array(60).fill(0))
   const ram = ref(0)
   const ramTotal = ref(0)
+  const ramPhysical = ref(0)
+  const ramReserved = ref(0)
   const ramUsed = ref(0)
   const temp = ref<number | null>(null)
   const temperatures = ref<TemperatureItem[]>([])
@@ -84,6 +91,7 @@ export const useSystemStore = defineStore('system', () => {
   const appVersion = ref('—')
   const hardware = ref('MT7621')
   const lanIp = ref(typeof window !== 'undefined' ? window.location.hostname : '')
+  const timezone = ref('')
   const firmwareVersion = ref('—')
   const connected = ref(false)
   const lastUpdate = ref(0)
@@ -137,6 +145,8 @@ export const useSystemStore = defineStore('system', () => {
     }
     if (data.ram !== undefined) ram.value = data.ram
     if (data.ramTotal !== undefined) ramTotal.value = data.ramTotal
+    if (data.ramPhysical !== undefined) ramPhysical.value = data.ramPhysical
+    if (data.ramReserved !== undefined) ramReserved.value = data.ramReserved
     if (data.ramUsed !== undefined) ramUsed.value = data.ramUsed
     if (data.temp !== undefined) temp.value = data.temp
     if (data.uptime !== undefined) uptime.value = data.uptime
@@ -175,6 +185,12 @@ export const useSystemStore = defineStore('system', () => {
       ])
       cpu.value = Math.round(system.cpu_aggregate_pct)
       ramTotal.value = Math.round(memory.total_kb / 1024)
+      ramPhysical.value = memory.physical_total_kb
+        ? Math.round(memory.physical_total_kb / 1024)
+        : ramTotal.value
+      ramReserved.value = memory.reserved_kb !== undefined
+        ? Math.round(memory.reserved_kb / 1024)
+        : Math.max(0, ramPhysical.value - ramTotal.value)
       ramUsed.value = Math.round(memory.used_kb / 1024)
       ram.value = Math.round(memory.used_percent)
       temperatures.value = system.temperatures || []
@@ -189,6 +205,7 @@ export const useSystemStore = defineStore('system', () => {
       if (system.version) appVersion.value = system.version
       if (system.hardware) hardware.value = system.hardware
       if (system.lan_ip) lanIp.value = system.lan_ip
+      if (system.timezone) timezone.value = system.timezone
       firmwareVersion.value = system.firmware_version || system.openwrt.DISTRIB_RELEASE || '—'
       if (system.internet) {
         internet.value = system.internet
@@ -200,8 +217,8 @@ export const useSystemStore = defineStore('system', () => {
   }
 
   return {
-    cpu, cpuHistory, ram, ramTotal, ramUsed, temp, temperatures, uptime,
-    loadAvg, hostname, kernel, arch, appVersion, hardware, lanIp, firmwareVersion, connected, lastUpdate, error,
+    cpu, cpuHistory, ram, ramTotal, ramPhysical, ramReserved, ramUsed, temp, temperatures, uptime,
+    loadAvg, hostname, kernel, arch, appVersion, hardware, lanIp, timezone, firmwareVersion, connected, lastUpdate, error,
     internet,
     uptimeFormatted, cpuColor, tempColor, ramPercent, dataAvailable,
     updateFromSSE, setConnected, refresh, refreshInternet,

@@ -1,15 +1,46 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+var networkConfigMu sync.Mutex
+
+func isValidIPv4Addr(s string) bool {
+	ip := net.ParseIP(strings.TrimSpace(s))
+	return ip != nil && ip.To4() != nil
+}
+
+func ipv4SubnetsOverlap(ipStrA, maskStrA, ipStrB, maskStrB string) bool {
+	ipA := net.ParseIP(strings.TrimSpace(ipStrA)).To4()
+	maskA := net.ParseIP(strings.TrimSpace(maskStrA)).To4()
+	ipB := net.ParseIP(strings.TrimSpace(ipStrB)).To4()
+	maskB := net.ParseIP(strings.TrimSpace(maskStrB)).To4()
+	if ipA == nil || maskA == nil || ipB == nil || maskB == nil {
+		return false
+	}
+	uA := uint32(ipA[0])<<24 | uint32(ipA[1])<<16 | uint32(ipA[2])<<8 | uint32(ipA[3])
+	mA := uint32(maskA[0])<<24 | uint32(maskA[1])<<16 | uint32(maskA[2])<<8 | uint32(maskA[3])
+	uB := uint32(ipB[0])<<24 | uint32(ipB[1])<<16 | uint32(ipB[2])<<8 | uint32(ipB[3])
+	mB := uint32(maskB[0])<<24 | uint32(maskB[1])<<16 | uint32(maskB[2])<<8 | uint32(maskB[3])
+	commonMask := mA & mB
+	if mA > mB {
+		commonMask = mB
+	} else {
+		commonMask = mA
+	}
+	return (uA & commonMask) == (uB & commonMask)
+}
 
 func isValidIPv4Netmask(s string) bool {
 	ip := net.ParseIP(strings.TrimSpace(s)).To4()
@@ -29,10 +60,10 @@ func resolveGatewayQuickTarget(dev string) string {
 	switch {
 	case d == "wan" || strings.HasPrefix(d, "eth0.2") || strings.HasPrefix(d, "pppoe"):
 		return "wan"
-	case strings.Contains(d, "sta") || strings.Contains(d, "wwan"):
-		return "wwan"
-	case strings.HasPrefix(d, "usb") || strings.HasPrefix(d, "wwan"):
+	case d == "usbwan" || strings.HasPrefix(d, "usb") || strings.HasPrefix(d, "wwan0") || strings.HasPrefix(d, "wwan1"):
 		return "usbwan"
+	case d == "wwan" || strings.Contains(d, "sta") || strings.HasPrefix(d, "wlan") || strings.HasPrefix(d, "apcli"):
+		return "wwan"
 	case d == "br-lan" || d == "lan":
 		return "lan"
 	default:
@@ -242,6 +273,9 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Quick Gateway & DNS edit shortcut
 		if sec == "gateway_quick" {
+			networkConfigMu.Lock()
+			defer networkConfigMu.Unlock()
+
 			gw := strings.TrimSpace(body.Gateway)
 			dev := strings.TrimSpace(body.Device)
 			if dev == "" {
@@ -251,24 +285,16 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, false, "invalid device name")
 				return
 			}
-			targetSec := resolveGatewayQuickTarget(dev)
-			if gw != "" {
-				if net.ParseIP(gw) == nil {
-					writeJSON(w, http.StatusBadRequest, false, "invalid gateway IPv4 address")
-					return
-				}
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.gateway=%s", targetSec, gw))
-				_, _ = runCmd(4, "ip", "route", "replace", "default", "via", gw, "dev", dev)
-			} else {
-				_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.gateway", targetSec))
+			if gw != "" && !isValidIPv4Addr(gw) {
+				writeJSON(w, http.StatusBadRequest, false, "invalid gateway IPv4 address")
+				return
 			}
-
 			var dnsList []string
 			for _, d := range body.DNS {
 				t := strings.TrimSpace(d)
 				if t != "" {
-					if net.ParseIP(t) == nil {
-						writeJSON(w, http.StatusBadRequest, false, "invalid DNS IP: "+t)
+					if !isValidIPv4Addr(t) {
+						writeJSON(w, http.StatusBadRequest, false, "invalid DNS IPv4 address: "+t)
 						return
 					}
 					dnsList = append(dnsList, t)
@@ -276,19 +302,40 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, d := range strings.Fields(body.DNSString) {
 				t := strings.TrimSpace(d)
-				if net.ParseIP(t) == nil {
-					writeJSON(w, http.StatusBadRequest, false, "invalid DNS IP: "+t)
+				if !isValidIPv4Addr(t) {
+					writeJSON(w, http.StatusBadRequest, false, "invalid DNS IPv4 address: "+t)
 					return
 				}
 				dnsList = append(dnsList, t)
 			}
+
+			targetSec := resolveGatewayQuickTarget(dev)
+			if gw != "" {
+				if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s.gateway=%s", targetSec, gw)); err != nil {
+					_, _ = runCmd(3, "uci", "revert", "network")
+					writeJSON(w, http.StatusInternalServerError, false, "uci set gateway failed: "+out)
+					return
+				}
+				_, _ = runCmd(4, "ip", "route", "replace", "default", "via", gw, "dev", dev)
+			} else {
+				_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.gateway", targetSec))
+			}
+
 			if len(dnsList) > 0 {
 				if targetSec != "lan" {
 					_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.peerdns=0", targetSec))
 				}
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.dns=%s", targetSec, strings.Join(dnsList, " ")))
+				if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s.dns=%s", targetSec, strings.Join(dnsList, " "))); err != nil {
+					_, _ = runCmd(3, "uci", "revert", "network")
+					writeJSON(w, http.StatusInternalServerError, false, "uci set dns failed: "+out)
+					return
+				}
 			}
-			_, _ = runCmd(5, "uci", "commit", "network")
+			if out, err := runCmd(5, "uci", "commit", "network"); err != nil {
+				_, _ = runCmd(3, "uci", "revert", "network")
+				writeJSON(w, http.StatusInternalServerError, false, "uci commit network failed: "+out)
+				return
+			}
 			go func() {
 				_, _ = runCmd(8, "/etc/init.d/dnsmasq", "reload")
 				time.Sleep(1 * time.Second)
@@ -307,29 +354,23 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 
 		proto := strings.ToLower(strings.TrimSpace(body.Proto))
-		if proto != "static" && proto != "dhcp" && proto != "pppoe" {
+		if proto == "" {
 			proto = "dhcp"
 		}
-
-		// Ensure section exists
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s=interface", sec))
-		if body.Device != "" && safeWirelessVal.MatchString(body.Device) {
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.device=%s", sec, body.Device))
-		} else if sec == "lan" {
-			_, _ = runCmd(4, "uci", "set", "network.lan.device=br-lan")
-		} else if sec == "wan" {
-			_, _ = runCmd(4, "uci", "set", "network.wan.device=wan")
+		if proto != "static" && proto != "dhcp" && proto != "pppoe" {
+			writeJSON(w, http.StatusBadRequest, false, "proto không hợp lệ (chỉ chấp nhận static, dhcp, pppoe)")
+			return
 		}
 
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.proto=%s", sec, proto))
-
+		// Pre-validate all fields before touching UCI
+		ip := strings.TrimSpace(body.IPAddr)
+		nm := strings.TrimSpace(body.Netmask)
+		gw := strings.TrimSpace(body.Gateway)
 		if proto == "static" {
-			ip := strings.TrimSpace(body.IPAddr)
-			if net.ParseIP(ip) == nil {
+			if !isValidIPv4Addr(ip) {
 				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ IPv4 không hợp lệ cho chế độ Static IP")
 				return
 			}
-			nm := strings.TrimSpace(body.Netmask)
 			if nm == "" {
 				nm = "255.255.255.0"
 			}
@@ -337,15 +378,147 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, false, "Subnet Mask không hợp lệ cho chế độ Static IP")
 				return
 			}
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.ipaddr=%s", sec, ip))
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.netmask=%s", sec, nm))
+			if gw != "" && !isValidIPv4Addr(gw) {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway IPv4 không hợp lệ")
+				return
+			}
+			// Guard against overlapping LAN/WAN static subnets
+			netUCI := parseUCIConfigMap("network")
+			for _, peer := range []string{"lan", "wan", "wwan", "usbwan"} {
+				if peer == sec {
+					continue
+				}
+				if (sec == "lan") != (peer == "lan") && netUCI["network."+peer+".proto"] == "static" {
+					peerIP := netUCI["network."+peer+".ipaddr"]
+					peerMask := netUCI["network."+peer+".netmask"]
+					if peerMask == "" {
+						peerMask = "255.255.255.0"
+					}
+					if ipv4SubnetsOverlap(ip, nm, peerIP, peerMask) {
+						writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Dải mạng %s (%s/%s) bị trùng subnet với cổng %s (%s/%s)", strings.ToUpper(sec), ip, nm, strings.ToUpper(peer), peerIP, peerMask))
+						return
+					}
+				}
+			}
+		} else if proto == "dhcp" && gw != "" && !isValidIPv4Addr(gw) {
+			writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway IPv4 không hợp lệ")
+			return
+		}
 
-			gw := strings.TrimSpace(body.Gateway)
-			if gw != "" {
-				if net.ParseIP(gw) == nil {
-					writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway không hợp lệ")
+		var validDNS []string
+		for _, d := range body.DNS {
+			for _, part := range strings.Fields(strings.ReplaceAll(d, ",", " ")) {
+				if !isValidIPv4Addr(part) {
+					writeJSON(w, http.StatusBadRequest, false, "DNS server IPv4 không hợp lệ: "+part)
 					return
 				}
+				validDNS = append(validDNS, part)
+			}
+		}
+		if body.DNSString != "" {
+			for _, part := range strings.Fields(strings.ReplaceAll(body.DNSString, ",", " ")) {
+				if !isValidIPv4Addr(part) {
+					writeJSON(w, http.StatusBadRequest, false, "DNS server IPv4 không hợp lệ: "+part)
+					return
+				}
+				validDNS = append(validDNS, part)
+			}
+		}
+
+		if strings.TrimSpace(body.MTU) != "" {
+			mtu, err := strconv.Atoi(strings.TrimSpace(body.MTU))
+			if err != nil || mtu < 576 || mtu > 9000 {
+				writeJSON(w, http.StatusBadRequest, false, "MTU phải từ 576 đến 9000")
+				return
+			}
+		}
+		if strings.TrimSpace(body.Metric) != "" {
+			metric, err := strconv.Atoi(strings.TrimSpace(body.Metric))
+			if err != nil || metric < 0 || metric > 1000 {
+				writeJSON(w, http.StatusBadRequest, false, "Metric phải từ 0 đến 1000")
+				return
+			}
+		}
+		if strings.TrimSpace(body.MACAddr) != "" {
+			if _, err := net.ParseMAC(strings.TrimSpace(body.MACAddr)); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ MAC không hợp lệ")
+				return
+			}
+		}
+		if sec == "lan" {
+			startNum, hasStart := 0, strings.TrimSpace(body.DHCPStart) != ""
+			limitNum, hasLimit := 0, strings.TrimSpace(body.DHCPLimit) != ""
+			if hasStart {
+				v, err := strconv.Atoi(strings.TrimSpace(body.DHCPStart))
+				if err != nil || v < 2 || v > 250 {
+					writeJSON(w, http.StatusBadRequest, false, "DHCP start phải trong khoảng 2–250")
+					return
+				}
+				startNum = v
+			}
+			if hasLimit {
+				v, err := strconv.Atoi(strings.TrimSpace(body.DHCPLimit))
+				if err != nil || v < 1 || v > 250 {
+					writeJSON(w, http.StatusBadRequest, false, "DHCP limit phải trong khoảng 1–250")
+					return
+				}
+				limitNum = v
+			}
+			if hasStart && hasLimit && startNum+limitNum > 254 {
+				writeJSON(w, http.StatusBadRequest, false, "Tổng DHCP start + limit vượt quá giới hạn 254 của subnet /24")
+				return
+			}
+			if strings.TrimSpace(body.DHCPLeaseTime) != "" && !safeTokenKeyPattern.MatchString(strings.TrimSpace(body.DHCPLeaseTime)) {
+				writeJSON(w, http.StatusBadRequest, false, "Thời hạn cấp DHCP leasetime không hợp lệ")
+				return
+			}
+		}
+		if body.Device != "" && (!safeWirelessVal.MatchString(body.Device) || strings.HasPrefix(body.Device, "-") || strings.Contains(body.Device, "..")) {
+			writeJSON(w, http.StatusBadRequest, false, "Tên device không hợp lệ")
+			return
+		}
+
+		networkConfigMu.Lock()
+		defer networkConfigMu.Unlock()
+		if sec == "lan" {
+			dhcpMu.Lock()
+			defer dhcpMu.Unlock()
+		}
+
+		prevNet, prevNetErr := runCmd(4, "uci", "export", "network")
+		revertAndFail := func(msg string) {
+			_, _ = runCmd(3, "uci", "revert", "network")
+			_, _ = runCmd(3, "uci", "revert", "dhcp")
+			writeJSON(w, http.StatusInternalServerError, false, msg)
+		}
+
+		if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s=interface", sec)); err != nil {
+			revertAndFail("uci set interface failed: " + out)
+			return
+		}
+		if body.Device != "" {
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.device=%s", sec, body.Device))
+		} else if sec == "lan" {
+			_, _ = runCmd(4, "uci", "set", "network.lan.device=br-lan")
+		} else if sec == "wan" {
+			_, _ = runCmd(4, "uci", "set", "network.wan.device=wan")
+		}
+
+		if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s.proto=%s", sec, proto)); err != nil {
+			revertAndFail("uci set proto failed: " + out)
+			return
+		}
+
+		if proto == "static" {
+			if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s.ipaddr=%s", sec, ip)); err != nil {
+				revertAndFail("uci set ipaddr failed: " + out)
+				return
+			}
+			if out, err := runCmd(4, "uci", "set", fmt.Sprintf("network.%s.netmask=%s", sec, nm)); err != nil {
+				revertAndFail("uci set netmask failed: " + out)
+				return
+			}
+			if gw != "" {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.gateway=%s", sec, gw))
 			} else {
 				_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.gateway", sec))
@@ -361,33 +534,15 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.password=%s", sec, body.Password))
 			}
 		} else {
-			// dhcp
 			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.ipaddr", sec))
 			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.netmask", sec))
-			gw := strings.TrimSpace(body.Gateway)
-			if gw != "" && net.ParseIP(gw) != nil {
+			if gw != "" {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.gateway=%s", sec, gw))
 			} else {
 				_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.gateway", sec))
 			}
 		}
 
-		// DNS servers
-		var validDNS []string
-		for _, d := range body.DNS {
-			for _, part := range strings.Fields(strings.ReplaceAll(d, ",", " ")) {
-				if net.ParseIP(part) != nil {
-					validDNS = append(validDNS, part)
-				}
-			}
-		}
-		if body.DNSString != "" {
-			for _, part := range strings.Fields(strings.ReplaceAll(body.DNSString, ",", " ")) {
-				if net.ParseIP(part) != nil {
-					validDNS = append(validDNS, part)
-				}
-			}
-		}
 		if len(validDNS) > 0 {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.peerdns=0", sec))
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.dns=%s", sec, strings.Join(validDNS, " ")))
@@ -396,23 +551,28 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.dns", sec))
 		}
 
-		if body.MTU != "" {
-			if mtu, err := strconv.Atoi(body.MTU); err == nil && mtu >= 576 && mtu <= 9000 {
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.mtu=%d", sec, mtu))
-			}
+		if strings.TrimSpace(body.MTU) != "" {
+			mtu, _ := strconv.Atoi(strings.TrimSpace(body.MTU))
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.mtu=%d", sec, mtu))
+		} else {
+			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.mtu", sec))
 		}
-		if body.Metric != "" {
-			if metric, err := strconv.Atoi(body.Metric); err == nil && metric >= 0 && metric <= 1000 {
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.metric=%d", sec, metric))
-			}
+		if strings.TrimSpace(body.Metric) != "" {
+			metric, _ := strconv.Atoi(strings.TrimSpace(body.Metric))
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.metric=%d", sec, metric))
+		} else {
+			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.metric", sec))
 		}
-		if body.MACAddr != "" {
-			if _, err := net.ParseMAC(body.MACAddr); err == nil {
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.macaddr=%s", sec, strings.ToUpper(body.MACAddr)))
-			}
+		if strings.TrimSpace(body.MACAddr) != "" {
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("network.%s.macaddr=%s", sec, strings.ToUpper(strings.TrimSpace(body.MACAddr))))
+		} else {
+			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("network.%s.macaddr", sec))
 		}
 
-		_, _ = runCmd(5, "uci", "commit", "network")
+		if out, err := runCmd(5, "uci", "commit", "network"); err != nil {
+			revertAndFail("uci commit network failed: " + out)
+			return
+		}
 
 		// If LAN, also update DHCP settings if provided
 		if sec == "lan" {
@@ -423,33 +583,49 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 					_, _ = runCmd(4, "uci", "set", "dhcp.lan.ignore=1")
 				}
 			}
-			if start, err := strconv.Atoi(body.DHCPStart); err == nil && start >= 2 && start <= 250 {
+			if body.DHCPStart != "" {
+				start, _ := strconv.Atoi(strings.TrimSpace(body.DHCPStart))
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.start=%d", start))
 			}
-			if limit, err := strconv.Atoi(body.DHCPLimit); err == nil && limit >= 1 && limit <= 250 {
+			if body.DHCPLimit != "" {
+				limit, _ := strconv.Atoi(strings.TrimSpace(body.DHCPLimit))
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.limit=%d", limit))
 			}
-			if body.DHCPLeaseTime != "" && safeTokenKeyPattern.MatchString(body.DHCPLeaseTime) {
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.leasetime=%s", body.DHCPLeaseTime))
+			if body.DHCPLeaseTime != "" {
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.leasetime=%s", strings.TrimSpace(body.DHCPLeaseTime)))
 			}
-			_, _ = runCmd(5, "uci", "commit", "dhcp")
+			if out, err := runCmd(5, "uci", "commit", "dhcp"); err != nil {
+				_, _ = runCmd(3, "uci", "revert", "dhcp")
+				if prevNetErr == nil && prevNet != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					cmd := exec.CommandContext(ctx, "uci", "import", "network")
+					cmd.Stdin = strings.NewReader(prevNet + "\n")
+					_ = cmd.Run()
+					cancel()
+					_, _ = runCmd(5, "uci", "commit", "network")
+				}
+				writeJSON(w, http.StatusInternalServerError, false, "uci commit dhcp failed (network rolled back): "+out)
+				return
+			}
 		}
 
 		// Apply changes asynchronously so HTTP response returns cleanly before interface reload
 		go func(targetSec, targetGW string) {
+			netApplyMu.Lock()
+			defer netApplyMu.Unlock()
 			time.Sleep(300 * time.Millisecond)
 			_, _ = runCmd(8, "/sbin/ifup", targetSec)
 			if targetSec == "lan" {
 				_, _ = runCmd(8, "/etc/init.d/dnsmasq", "reload")
 				_, _ = runCmd(8, "/etc/init.d/samba4", "restart")
 				_, _ = runCmd(8, "/etc/init.d/vsftpd", "restart")
-				if targetGW != "" && net.ParseIP(targetGW) != nil {
+				if targetGW != "" && isValidIPv4Addr(targetGW) {
 					_, _ = runCmd(4, "ip", "route", "replace", "default", "via", targetGW, "dev", "br-lan")
 				}
 			}
 			time.Sleep(2 * time.Second)
 			refreshInternetStatus(true)
-		}(sec, strings.TrimSpace(body.Gateway))
+		}(sec, gw)
 
 		ifaces, defaultGW, defaultDev, activeDNS := readNetworkInterfacesConfig()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -466,6 +642,8 @@ func handleNetworkInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
 }
+
+var netApplyMu sync.Mutex
 
 // POST /api/v1/network/interfaces-config/action
 func handleNetworkInterfaceAction(w http.ResponseWriter, r *http.Request) {
@@ -493,12 +671,16 @@ func handleNetworkInterfaceAction(w http.ResponseWriter, r *http.Request) {
 	case "ifup", "reconnect":
 		if sec == "all" {
 			go func() {
+				netApplyMu.Lock()
+				defer netApplyMu.Unlock()
 				_, _ = runCmd(10, "/etc/init.d/network", "reload")
 				time.Sleep(2 * time.Second)
 				refreshInternetStatus(true)
 			}()
 		} else {
 			go func() {
+				netApplyMu.Lock()
+				defer netApplyMu.Unlock()
 				_, _ = runCmd(10, "/sbin/ifup", sec)
 				time.Sleep(2 * time.Second)
 				refreshInternetStatus(true)
@@ -510,12 +692,16 @@ func handleNetworkInterfaceAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		go func() {
+			netApplyMu.Lock()
+			defer netApplyMu.Unlock()
 			_, _ = runCmd(8, "/sbin/ifdown", sec)
 			time.Sleep(1 * time.Second)
 			refreshInternetStatus(true)
 		}()
 	case "reload":
 		go func() {
+			netApplyMu.Lock()
+			defer netApplyMu.Unlock()
 			_, _ = runCmd(10, "/etc/init.d/network", "reload")
 			time.Sleep(2 * time.Second)
 			refreshInternetStatus(true)

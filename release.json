@@ -1,9 +1,9 @@
 {
-    "version": "v1.1.23",
-    "revision": 24,
-    "released_at": "2026-11-14 05:10:00",
+    "version": "v1.1.26",
+    "revision": 26,
+    "released_at": "2026-11-14 08:45:00",
     "repo_url": "https://github.com/neopro90/R3P_Project.git",
     "branch": "main",
-    "commit_sha": "v1.1.23",
-    "changelog": "v1.1.23 (Rev 24): full security hardening, P0/P1 bug fixes across all backend modules & Vue views, and removal of orphaned files/bundles"
+    "commit_sha": "v1.1.26",
+    "changelog": "v1.1.26 (Rev 26): Security hardening (OpenRoot symlink/traversal, shell-free cron validation, AI LAN SSRF protection, UCI secret masking/rollback), GDrive token refresh coalescing & diagnostics, unified bbolt UI preferences sync, complete Light Mode CSS & IoT MAC telemetry, and expanded Go/Vitest test coverage"
 }

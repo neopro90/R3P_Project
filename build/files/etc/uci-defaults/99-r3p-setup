@@ -4,10 +4,10 @@
 # Sets up base network config for Xiaomi Mi Router 3 Pro
 # ============================================================
 
-# Hostname & Timezone
+# Hostname & Timezone (OpenWrt musl TZ string ICT-7 = Asia/Ho_Chi_Minh UTC+7)
 uci set system.@system[0].hostname='R3P-Router'
-uci set system.@system[0].timezone='Asia/Ho_Chi_Minh'
-uci set system.@system[0].zonename='Asia/Ho Chi Minh'
+uci set system.@system[0].timezone='ICT-7'
+uci set system.@system[0].zonename='Asia/Ho_Chi_Minh'
 uci commit system
 
 # Set default LAN IP and explicit /24 netmask (critical for routing)
@@ -15,8 +15,10 @@ uci set network.lan.ipaddr='192.168.2.1'
 uci set network.lan.netmask='255.255.255.0'
 uci commit network
 
-# Default 2.4GHz Wi-Fi AP for initial flash onboarding
-# SSID: r3pminisever, Password: admin1234 (WPA2-PSK requires 8+ chars), Host: 192.168.2.1
+# Default 2.4GHz Wi-Fi AP & factory-boot SSH onboarding (initial image only).
+# IMPORTANT: Change the root password, Wi-Fi PSK, and generate an API token in
+# Access/System settings immediately after first boot (see SECURITY_MODEL.md).
+# Initial SSID: r3pminisever, Initial PSK: admin1234, Initial Host: 192.168.2.1
 [ -s /etc/config/wireless ] || wifi config
 uci set wireless.radio0.disabled='0'
 uci -q set wireless.radio0.country='VN'

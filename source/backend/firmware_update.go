@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,95 @@ func isELFBinary(path string) bool {
 	var hdr [4]byte
 	n, err := io.ReadFull(f, hdr[:])
 	return err == nil && n == 4 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F'
+}
+
+// isMIPSLEELF32Binary verifies full ELF32 Little-Endian MIPS (e_machine == 8) header
+// so incompatible x86/ARM binaries cannot overwrite /usr/bin/r3p-api on MT7621.
+func isMIPSLEELF32Binary(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return false
+	}
+	if hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' {
+		return false
+	}
+	if hdr[4] != 1 || hdr[5] != 1 { // ELFCLASS32 + ELFDATA2LSB
+		return false
+	}
+	eMachine := uint16(hdr[18]) | uint16(hdr[19])<<8
+	return eMachine == 8 // EM_MIPS
+}
+
+func parseSemverTuple(v string) ([3]int, bool) {
+	trimmed := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(v)), "v")
+	if idx := strings.IndexAny(trimmed, "-+"); idx != -1 {
+		trimmed = trimmed[:idx]
+	}
+	parts := strings.Split(trimmed, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return [3]int{}, false
+	}
+	var res [3]int
+	for i := 0; i < len(parts); i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil || n < 0 {
+			return [3]int{}, false
+		}
+		res[i] = n
+	}
+	return res, true
+}
+
+func isNewerSystemVersion(remoteVer string, remoteRev int, curVer string, curRev int) bool {
+	if rSem, okR := parseSemverTuple(remoteVer); okR {
+		if cSem, okC := parseSemverTuple(curVer); okC {
+			for i := 0; i < 3; i++ {
+				if rSem[i] != cSem[i] {
+					return rSem[i] > cSem[i]
+				}
+			}
+		}
+	}
+	return remoteRev > curRev
+}
+
+func downloadURLToFileLimit(client *http.Client, rawURL, destPath string, maxBytes int64) error {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "R3P-Home-Server-OS")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	written, copyErr := io.Copy(f, io.LimitReader(resp.Body, maxBytes+1))
+	closeErr := f.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(destPath)
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	if written > maxBytes {
+		_ = os.Remove(destPath)
+		return fmt.Errorf("file exceeds max size limit (%d bytes)", maxBytes)
+	}
+	return nil
 }
 
 func shortSHA(sha string) string {
@@ -96,7 +186,10 @@ func inspectTarGzSafety(tgzPath string, allowSafeSymlinks bool, allowedPrefixes 
 			if !allowSafeSymlinks {
 				return 0, fmt.Errorf("không cho phép symlink trong gói cập nhật: %s", hdr.Name)
 			}
-			link := filepath.ToSlash(hdr.Linkname)
+			link := filepath.ToSlash(strings.TrimSpace(hdr.Linkname))
+			if link == "" || strings.HasPrefix(link, "/") || strings.Contains(link, ":") {
+				return 0, fmt.Errorf("symlink tuyệt đối không an toàn trong gói nén: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			for _, seg := range strings.Split(link, "/") {
 				if seg == ".." {
 					return 0, fmt.Errorf("symlink không an toàn trong gói nén: %s -> %s", hdr.Name, hdr.Linkname)
@@ -240,37 +333,66 @@ func getFwLogs() []string {
 }
 
 func getCurrentSystemVersion() SystemVersionInfo {
+	rev := currentRevision()
 	def := SystemVersionInfo{
-		Version:    "v1.0.0",
-		Revision:   1,
+		Version:    Version,
+		Revision:   rev,
 		ReleasedAt: BuildDate,
 		RepoURL:    "https://github.com/neopro90/R3P_Project.git",
 		Branch:     "main",
-		CommitSHA:  "v1.0.0-initial",
-		Changelog:  "R3P Home Server OS v1.0.0 — Full LAN/WAN Config, AdBlock DNS Engine, USB 3.0 Format & Benchmark, Root AI Agent, OpenWrt + GitHub App Manager & Online GitHub Updater",
+		CommitSHA:  Version,
+		Changelog:  fmt.Sprintf("R3P Home Server OS %s (Rev %d) — Security, Concurrency, Full-Stack Parity & Reliability Release", Version, rev),
 	}
 	if def.ReleasedAt == "" || def.ReleasedAt == "unknown" {
 		def.ReleasedAt = time.Now().Format("2006-01-02")
 	}
+
+	var loaded SystemVersionInfo
+	hasLoaded := settingsDBLoadJSON(bucketSettings, "version", versionConfigFile, &loaded)
+	var diskVer SystemVersionInfo
 	if b, err := os.ReadFile(versionConfigFile); err == nil {
-		_ = json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &def)
+		if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &diskVer) == nil && diskVer.Version != "" {
+			if !hasLoaded || isNewerSystemVersion(diskVer.Version, diskVer.Revision, loaded.Version, loaded.Revision) {
+				loaded = diskVer
+				hasLoaded = true
+				_ = settingsDBSaveJSON(bucketSettings, "version", "", 0644, loaded)
+			}
+		}
 	}
-	if def.RepoURL == "" {
-		def.RepoURL = "https://github.com/neopro90/R3P_Project.git"
-	}
-	if def.Branch == "" {
-		def.Branch = "main"
+	if hasLoaded {
+		if loaded.RepoURL != "" {
+			def.RepoURL = loaded.RepoURL
+		}
+		if loaded.Branch != "" {
+			def.Branch = loaded.Branch
+		}
+		if loaded.Version != "" && !isNewerSystemVersion(Version, rev, loaded.Version, loaded.Revision) {
+			def.Version = loaded.Version
+			if loaded.Revision >= 1 {
+				def.Revision = loaded.Revision
+			}
+			if loaded.ReleasedAt != "" {
+				def.ReleasedAt = loaded.ReleasedAt
+			}
+			if loaded.CommitSHA != "" {
+				def.CommitSHA = loaded.CommitSHA
+			}
+			if loaded.Changelog != "" {
+				def.Changelog = loaded.Changelog
+			}
+		}
 	}
 	if def.Version == "" {
-		def.Version = "v1.0.0"
+		def.Version = Version
 	}
 	if def.Revision < 1 {
-		def.Revision = 1
+		def.Revision = rev
 	}
 	return def
 }
 
 func saveCurrentSystemVersion(v SystemVersionInfo) {
+	_ = settingsDBSaveJSON(bucketSettings, "version", versionConfigFile, 0644, v)
 	_ = os.MkdirAll("/etc/r3p", 0755)
 	if b, err := json.MarshalIndent(v, "", "  "); err == nil {
 		_ = os.WriteFile(versionConfigFile, b, 0644)
@@ -325,7 +447,12 @@ func handleFirmwareConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ver := getCurrentSystemVersion()
 	if strings.TrimSpace(body.RepoURL) != "" {
-		ver.RepoURL = strings.TrimSpace(body.RepoURL)
+		repoURL := strings.TrimSpace(body.RepoURL)
+		if _, _, ok := parseGitHubOwnerRepo(repoURL); !ok {
+			writeJSON(w, http.StatusBadRequest, false, "URL GitHub không hợp lệ (ví dụ: https://github.com/neopro90/R3P_Project.git)")
+			return
+		}
+		ver.RepoURL = repoURL
 	}
 	if strings.TrimSpace(body.Branch) != "" {
 		branch := strings.TrimSpace(body.Branch)
@@ -369,7 +496,11 @@ func handleFirmwareGitHubCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appendFwLog(fmt.Sprintf("Đang kiểm tra bản cập nhật từ GitHub %s/%s (nhánh %s)...", owner, repo, branch))
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newPublicHTTPClient(publicClientOptions{
+		Timeout:      10 * time.Second,
+		AllowHTTP:    false,
+		MaxRedirects: 5,
+	})
 
 	remoteVer := cur.Version
 	remoteRev := cur.Revision
@@ -467,7 +598,7 @@ func handleFirmwareGitHubCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updateAvailable := (remoteVer != cur.Version) || (remoteRev > cur.Revision)
+	updateAvailable := isNewerSystemVersion(remoteVer, remoteRev, cur.Version, cur.Revision)
 	statusMsg := fmt.Sprintf("Đã kết nối GitHub %s/%s: Phiên bản trên kho là %s (Rev %d).", owner, repo, remoteVer, remoteRev)
 	if !reachable {
 		statusMsg = fmt.Sprintf("Không thể kết nối trực tiếp tới GitHub %s/%s (Kiểm tra kết nối Internet của Router hoặc kho lưu trữ đang trống).", owner, repo)
@@ -540,14 +671,17 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appendFwLog(fmt.Sprintf("Bắt đầu cập nhật hệ thống từ GitHub %s/%s (nhánh %s, chế độ: %s)...", owner, repo, branch, mode))
-	dlClient := &http.Client{Timeout: 15 * time.Second}
+	dlClient := newPublicHTTPClient(publicClientOptions{
+		Timeout:      90 * time.Second,
+		AllowHTTP:    false,
+		MaxRedirects: 5,
+	})
 
 	if mode == "sysupgrade" {
 		fwURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/R3P-Firmware-Sysupgrade.bin", owner, repo, branch)
 		appendFwLog("Đang tải R3P-Firmware-Sysupgrade.bin từ GitHub: " + fwURL)
 		_ = os.Remove(stagedFwPath)
-		_, dlErr := runCmd(90, "curl", "-L", "-f", "-s", "-o", stagedFwPath, fwURL)
-		if dlErr != nil {
+		if dlErr := downloadURLToFileLimit(dlClient, fwURL, stagedFwPath, 48<<20); dlErr != nil {
 			appendFwLog("Lỗi tải R3P-Firmware-Sysupgrade.bin từ GitHub: " + dlErr.Error())
 			writeJSON(w, http.StatusBadGateway, false, "Không thể tải R3P-Firmware-Sysupgrade.bin từ GitHub (Kiểm tra kết nối Internet hoặc file trên nhánh "+branch+"): "+dlErr.Error())
 			return
@@ -598,16 +732,20 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 	_ = os.Remove(tmpBundle)
 	defer func() { _ = os.Remove(tmpBundle) }()
 	appendFwLog("Đang tải gói cập nhật R3P OS Bundle: " + bundleURL)
-	_, err := runCmd(60, "curl", "-L", "-f", "-s", "-o", tmpBundle, bundleURL)
+	err := downloadURLToFileLimit(dlClient, bundleURL, tmpBundle, 32<<20)
 	if err == nil {
 		if st, sErr := os.Stat(tmpBundle); sErr == nil && st.Size() > 100*1024 {
-			if shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, bundleURL+".sha256", tmpBundle); shaErr != nil {
-				appendFwLog("Từ chối gói cập nhật do sai lệch SHA256: " + shaErr.Error())
-				writeJSON(w, http.StatusBadGateway, false, "Gói cập nhật từ GitHub sai lệch SHA256: "+shaErr.Error())
+			shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, bundleURL+".sha256", tmpBundle)
+			if shaErr != nil || !shaOK {
+				reason := "thiếu file xác thực .sha256 trên GitHub"
+				if shaErr != nil {
+					reason = shaErr.Error()
+				}
+				appendFwLog("Từ chối gói cập nhật do lỗi xác thực SHA256: " + reason)
+				writeJSON(w, http.StatusBadGateway, false, "Gói cập nhật từ GitHub chưa vượt qua xác thực SHA256: "+reason)
 				return
-			} else if shaOK {
-				appendFwLog("Đã xác thực SHA256 sidecar của OS Bundle.")
 			}
+			appendFwLog("Đã xác thực SHA256 sidecar của OS Bundle.")
 			if _, safetyErr := inspectTarGzSafety(tmpBundle, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"}); safetyErr != nil {
 				appendFwLog("Gói cập nhật không hợp lệ hoặc chứa đường dẫn không an toàn: " + safetyErr.Error())
 				writeJSON(w, http.StatusBadGateway, false, "Gói cập nhật tải về không hợp lệ: "+safetyErr.Error())
@@ -638,38 +776,50 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(tmpBin)
 		defer func() { _ = os.Remove(tmpBin) }()
 		appendFwLog("Đang tải trực tiếp binary r3p-api từ GitHub: " + binURL)
-		_, binErr := runCmd(60, "curl", "-L", "-f", "-s", "-o", tmpBin, binURL)
-		if binErr != nil {
+		if binErr := downloadURLToFileLimit(dlClient, binURL, tmpBin, 24<<20); binErr != nil {
 			appendFwLog("Không thể tải bản cập nhật từ GitHub: " + binErr.Error())
 			writeJSON(w, http.StatusBadGateway, false, "Không thể tải bản cập nhật từ GitHub (Kiểm tra kết nối Internet của Router): "+binErr.Error())
 			return
 		}
-		if shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, binURL+".sha256", tmpBin); shaErr != nil {
-			appendFwLog("Từ chối binary r3p-api do sai lệch SHA256: " + shaErr.Error())
-			writeJSON(w, http.StatusBadGateway, false, "Binary r3p-api sai lệch SHA256: "+shaErr.Error())
+		shaOK, shaErr := verifyOptionalRemoteSHA256(dlClient, binURL+".sha256", tmpBin)
+		if shaErr != nil || !shaOK {
+			reason := "thiếu file xác thực .sha256 trên GitHub"
+			if shaErr != nil {
+				reason = shaErr.Error()
+			}
+			appendFwLog("Từ chối binary r3p-api do lỗi xác thực SHA256: " + reason)
+			writeJSON(w, http.StatusBadGateway, false, "Binary r3p-api chưa vượt qua xác thực SHA256: "+reason)
 			return
-		} else if shaOK {
-			appendFwLog("Đã xác thực SHA256 sidecar của binary r3p-api.")
 		}
-		if st, sErr := os.Stat(tmpBin); sErr == nil && st.Size() > 1024*1024 && isELFBinary(tmpBin) {
+		appendFwLog("Đã xác thực SHA256 sidecar của binary r3p-api.")
+		if st, sErr := os.Stat(tmpBin); sErr == nil && st.Size() > 1024*1024 && isMIPSLEELF32Binary(tmpBin) {
 			_ = os.Chmod(tmpBin, 0755)
+			_ = os.Remove("/usr/bin/r3p-api.old")
+			_ = os.Rename("/usr/bin/r3p-api", "/usr/bin/r3p-api.old")
 			// Use cp -f because /tmp and /usr/bin are on different filesystems (cross-device link)
 			if _, cpErr := runCmd(10, "cp", "-f", tmpBin, "/usr/bin/r3p-api"); cpErr != nil {
+				_ = os.Rename("/usr/bin/r3p-api.old", "/usr/bin/r3p-api")
 				writeJSON(w, http.StatusInternalServerError, false, "Không thể ghi đè /usr/bin/r3p-api: "+cpErr.Error())
 				return
 			}
+			_ = os.Remove("/usr/bin/r3p-api.old")
+			_ = os.Chmod("/usr/bin/r3p-api", 0755)
 			_ = os.Remove(tmpBin)
 			appendFwLog(fmt.Sprintf("Đã cập nhật /usr/bin/r3p-api (%.2f MB) thành công!", float64(st.Size())/(1024*1024)))
 		} else {
-			writeJSON(w, http.StatusBadGateway, false, "File r3p-api tải từ GitHub không hợp lệ (không phải ELF binary > 1MB)")
+			writeJSON(w, http.StatusBadGateway, false, "File r3p-api tải từ GitHub không hợp lệ (không phải binary ELF32 MIPSLE > 1MB)")
 			return
 		}
 	}
 
 	// Update /etc/r3p/version.json from remote release.json if available
 	relURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/release.json", owner, repo, branch)
-	client := &http.Client{Timeout: 8 * time.Second}
-	if resp, err := client.Get(relURL); err == nil {
+	relClient := newPublicHTTPClient(publicClientOptions{
+		Timeout:      8 * time.Second,
+		AllowHTTP:    false,
+		MaxRedirects: 5,
+	})
+	if resp, err := relClient.Get(relURL); err == nil {
 		if resp.StatusCode == http.StatusOK {
 			rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
 			rawBody = bytes.TrimPrefix(rawBody, []byte("\xef\xbb\xbf"))
@@ -683,6 +833,7 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 		resp.Body.Close()
 	}
 
+	_ = syncSettingsDB()
 	_, _ = runCmd(4, "sync")
 	newVer := getCurrentSystemVersion()
 	appendFwLog(fmt.Sprintf("Hoàn tất cập nhật lên %s (Rev %d)! Đang khởi động lại dịch vụ r3p-api...", newVer.Version, newVer.Revision))
@@ -696,6 +847,8 @@ func handleFirmwareGitHubUpdate(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
+		_ = syncSettingsDB()
+		_ = closeSettingsDB()
 		_, _ = runCmd(10, "/etc/init.d/r3p-api", "restart")
 	}()
 }
@@ -768,11 +921,11 @@ func handleFirmwareManualUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if lower == "r3p-api" || strings.HasPrefix(lower, "r3p-api") {
 		formatType = "r3p_api_binary"
-		valid = written > 1024*1024 && isELFBinary(stagedFwPath)
+		valid = written > 1024*1024 && isMIPSLEELF32Binary(stagedFwPath)
 		if valid {
-			checkMsg = "Binary ELF r3p-api (MIPS Little-Endian) sẵn sàng cập nhật nóng."
+			checkMsg = "Binary ELF32 MIPSLE r3p-api sẵn sàng cập nhật nóng."
 		} else {
-			checkMsg = "File binary không hợp lệ (yêu cầu ELF executable > 1MB)."
+			checkMsg = "File binary không hợp lệ (yêu cầu ELF32 Little-Endian MIPS > 1MB)."
 		}
 	} else {
 		formatType = "sysupgrade_bin"
@@ -841,27 +994,32 @@ func handleFirmwareApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "File tạm trên RAM không khớp mã SHA256 ban đầu — vui lòng tải lại file.")
 		return
 	}
-	if !staged.Valid && !body.Force {
-		writeJSON(w, http.StatusBadRequest, false, "File chưa vượt qua kiểm tra hợp lệ ("+staged.CheckMsg+"). Bật tùy chọn Force Flash nếu bạn chắc chắn.")
+	if !staged.Valid && (staged.FormatType != "sysupgrade_bin" || !body.Force) {
+		writeJSON(w, http.StatusBadRequest, false, "File chưa vượt qua kiểm tra hợp lệ ("+staged.CheckMsg+").")
 		return
 	}
 
 	switch staged.FormatType {
 	case "os_bundle_targz":
-		if _, safetyErr := inspectTarGzSafety(staged.Path, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"}); safetyErr != nil && !body.Force {
+		if _, safetyErr := inspectTarGzSafety(staged.Path, false, []string{"usr/", "www/", "etc/", "sbin/", "lib/"}); safetyErr != nil {
 			writeJSON(w, http.StatusBadRequest, false, "Gói OS Bundle không an toàn để giải nén: "+safetyErr.Error())
 			return
 		}
 		appendFwLog("Đang giải nén gói R3P OS Bundle thủ công (" + staged.Filename + ") vào hệ thống...")
+		_ = os.Remove("/usr/bin/r3p-api.old")
+		_ = os.Rename("/usr/bin/r3p-api", "/usr/bin/r3p-api.old")
 		out, err := runCmd(35, "tar", "-xzf", staged.Path, "-C", "/")
 		if err != nil {
+			_ = os.Rename("/usr/bin/r3p-api.old", "/usr/bin/r3p-api")
 			appendFwLog("Lỗi giải nén: " + err.Error() + " " + out)
 			writeJSON(w, http.StatusInternalServerError, false, "Giải nén gói cập nhật thất bại: "+err.Error())
 			return
 		}
+		_ = os.Remove("/usr/bin/r3p-api.old")
 		_ = os.Chmod("/usr/bin/r3p-api", 0755)
 		_ = os.Remove(staged.Path)
 		_ = os.Remove(stagedMetaPath)
+		_ = syncSettingsDB()
 		_, _ = runCmd(4, "sync")
 		appendFwLog("Đã cập nhật R3P OS Bundle thành công! Đang khởi động lại r3p-api...")
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -872,26 +1030,30 @@ func handleFirmwareApply(w http.ResponseWriter, r *http.Request) {
 		})
 		go func() {
 			time.Sleep(1500 * time.Millisecond)
+			_ = syncSettingsDB()
+			_ = closeSettingsDB()
 			_, _ = runCmd(10, "/etc/init.d/r3p-api", "restart")
 		}()
 
 	case "r3p_api_binary":
-		if !isELFBinary(staged.Path) && !body.Force {
-			writeJSON(w, http.StatusBadRequest, false, "File tải lên không phải binary ELF hợp lệ")
+		if !isMIPSLEELF32Binary(staged.Path) {
+			writeJSON(w, http.StatusBadRequest, false, "File tải lên không phải binary ELF32 MIPSLE hợp lệ cho R3P")
 			return
 		}
 		appendFwLog("Đang cập nhật binary /usr/bin/r3p-api từ file tải lên...")
 		_ = os.Chmod(staged.Path, 0755)
-		if err := os.Rename(staged.Path, "/usr/bin/r3p-api"); err != nil {
-			_, cpErr := runCmd(10, "cp", "-f", staged.Path, "/usr/bin/r3p-api")
-			if cpErr != nil {
-				writeJSON(w, http.StatusInternalServerError, false, "Không thể ghi đè /usr/bin/r3p-api: "+cpErr.Error())
-				return
-			}
-			_ = os.Chmod("/usr/bin/r3p-api", 0755)
+		_ = os.Remove("/usr/bin/r3p-api.old")
+		_ = os.Rename("/usr/bin/r3p-api", "/usr/bin/r3p-api.old")
+		if _, cpErr := runCmd(10, "cp", "-f", staged.Path, "/usr/bin/r3p-api"); cpErr != nil {
+			_ = os.Rename("/usr/bin/r3p-api.old", "/usr/bin/r3p-api")
+			writeJSON(w, http.StatusInternalServerError, false, "Không thể ghi đè /usr/bin/r3p-api: "+cpErr.Error())
+			return
 		}
+		_ = os.Remove("/usr/bin/r3p-api.old")
+		_ = os.Chmod("/usr/bin/r3p-api", 0755)
 		_ = os.Remove(staged.Path)
 		_ = os.Remove(stagedMetaPath)
+		_ = syncSettingsDB()
 		_, _ = runCmd(4, "sync")
 		appendFwLog("Đã cập nhật /usr/bin/r3p-api thành công! Đang khởi động lại dịch vụ...")
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -902,6 +1064,8 @@ func handleFirmwareApply(w http.ResponseWriter, r *http.Request) {
 		})
 		go func() {
 			time.Sleep(1500 * time.Millisecond)
+			_ = syncSettingsDB()
+			_ = closeSettingsDB()
 			_, _ = runCmd(10, "/etc/init.d/r3p-api", "restart")
 		}()
 

@@ -30,6 +30,8 @@ export function useSSE() {
           wan_rx_bytes_per_second?: number
           wan_tx_bytes_per_second?: number
           mem_total_mb?: number
+          mem_physical_mb?: number
+          mem_reserved_mb?: number
           mem_used_mb?: number
           temp_celsius?: number | null
           uptime_seconds?: number
@@ -46,8 +48,10 @@ export function useSSE() {
         systemStore.updateFromSSE({
           cpu: data.cpu_percent,
           ram: data.mem_used_percent,
-          ramTotal: data.mem_total_mb,
-          ramUsed: data.mem_used_mb,
+          ramTotal: data.mem_total_mb !== undefined ? Math.round(data.mem_total_mb) : undefined,
+          ramPhysical: data.mem_physical_mb !== undefined ? Math.round(data.mem_physical_mb) : undefined,
+          ramReserved: data.mem_reserved_mb !== undefined ? Math.round(data.mem_reserved_mb) : undefined,
+          ramUsed: data.mem_used_mb !== undefined ? Math.round(data.mem_used_mb) : undefined,
           uptime: data.uptime_seconds,
           temp: data.temp_celsius,
           hostname: data.hostname,
@@ -85,6 +89,7 @@ export function useSSE() {
     evtSource?.close()
     evtSource = null
     isConnected.value = false
+    systemStore.setConnected(false)
   }
 
   onUnmounted(() => {

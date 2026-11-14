@@ -6,13 +6,16 @@
 
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/source/backend"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC_DIR="$ROOT_DIR/source/backend"
+ARTIFACT_DIR="$ROOT_DIR/build/artifacts"
 OUT_DIR="$(dirname "${BASH_SOURCE[0]}")/output"
 
-mkdir -p "$OUT_DIR"
+mkdir -p "$ARTIFACT_DIR" "$OUT_DIR" "$ROOT_DIR/build/files/usr/bin"
 
 echo "=== R3P API Cross-Compile ==="
 echo "Source: $SRC_DIR"
+echo "Artifact: $ARTIFACT_DIR/r3p-api"
 echo "Output: $OUT_DIR"
 
 # ---- MIPS LE (target: Xiaomi R3P / MT7621) ----
@@ -22,19 +25,16 @@ GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 \
     go build -C "$SRC_DIR" \
     -ldflags="-s -w -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -trimpath \
-    -o "$OUT_DIR/r3p-api-mipsle" .
+    -o "$ARTIFACT_DIR/r3p-api" .
 
-command -v upx >/dev/null || {
-    echo "UPX is required to compress the MIPSLE API; install upx-ucl." >&2
-    exit 1
-}
-upx --best --lzma "$OUT_DIR/r3p-api-mipsle"
-upx -t "$OUT_DIR/r3p-api-mipsle"
-size=$(stat -c%s "$OUT_DIR/r3p-api-mipsle")
-echo "  ✅ r3p-api-mipsle UPX-packed: $size bytes ($(echo "scale=1; $size/1024" | bc) KB)"
+cp -f "$ARTIFACT_DIR/r3p-api" "$ROOT_DIR/build/files/usr/bin/r3p-api"
+cp -f "$ARTIFACT_DIR/r3p-api" "$OUT_DIR/r3p-api-mipsle"
+
+size=$(stat -c%s "$ARTIFACT_DIR/r3p-api")
+echo "  ✅ r3p-api ready: $size bytes ($(echo "scale=1; $size/1024" | bc) KB)"
 
 # Verify ELF
-file "$OUT_DIR/r3p-api-mipsle"
+file "$ARTIFACT_DIR/r3p-api"
 
 # ---- Linux amd64 (test reference / WSL test) ----
 echo ""
@@ -59,7 +59,7 @@ echo "→ Quick API test..."
 API_PID=$!
 sleep 1
 
-if curl -sf http://127.0.0.1:8080/api/v1/health | python3 -m json.tool; then
+if curl -kfsS https://127.0.0.1:8443/api/v1/health | python3 -m json.tool; then
     echo "  ✅ API health check passed"
 else
     echo "  ❌ API health check failed"

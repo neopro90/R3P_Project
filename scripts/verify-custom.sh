@@ -68,11 +68,13 @@ UNSQUASHFS=/usr/bin/unsquashfs
     echo "unsquashfs is required to inspect the firmware root filesystem" >&2
     exit 1
 }
-command -v upx >/dev/null 2>&1 || {
-    echo "upx is required to verify the compressed MIPSLE API binary" >&2
+command -v upx >/dev/null 2>&1 || true
+API_EXPECTED="$PROJECT_ROOT/build/artifacts/r3p-api"
+[[ -f "$API_EXPECTED" ]] || API_EXPECTED="$PROJECT_ROOT/build/output/r3p-api-mipsle"
+[[ -f "$API_EXPECTED" ]] || {
+    echo "Expected MIPSLE API binary missing: $API_EXPECTED" >&2
     exit 1
 }
-upx -t "$PROJECT_ROOT/build/output/r3p-api-mipsle" >/dev/null
 rootfs_tmp="$(mktemp "$OUTPUT_DIR/.verify-root.XXXXXX")"
 listing_tmp="$(mktemp "$OUTPUT_DIR/.verify-list.XXXXXX")"
 trap 'rm -f -- "$rootfs_tmp" "$listing_tmp"' EXIT
@@ -87,7 +89,7 @@ for path in \
     /etc/uci-defaults/98-r3p-aria2 \
     /etc/init.d/r3p-aria2 \
     /etc/config/uhttpd \
-    /etc/r3p/config.json
+    /etc/r3p/version.json
 do
     grep -Eq "$path"'$' "$listing_tmp" || {
         echo "Required overlay path missing from image: $path" >&2
@@ -114,7 +116,13 @@ if grep -Eq '/(root/r3p-api-token|etc/r3p/api-token)$' "$listing_tmp"; then
     echo "A pre-provisioned API token must not be baked into the image" >&2
     exit 1
 fi
-"$UNSQUASHFS" -cat "$rootfs_tmp" usr/bin/r3p-api | cmp - "$PROJECT_ROOT/build/output/r3p-api-mipsle"
+ROOT_API_TMP="$(mktemp "$OUTPUT_DIR/.verify-api.XXXXXX")"
+"$UNSQUASHFS" -cat "$rootfs_tmp" usr/bin/r3p-api > "$ROOT_API_TMP"
+if command -v upx >/dev/null 2>&1 && upx -t "$ROOT_API_TMP" >/dev/null 2>&1; then
+    upx -d "$ROOT_API_TMP" >/dev/null
+fi
+cmp -s "$ROOT_API_TMP" "$API_EXPECTED"
+rm -f -- "$ROOT_API_TMP"
 "$UNSQUASHFS" -cat "$rootfs_tmp" www/index.html | grep -E 'assets/[^"]+\.js' > /dev/null
 "$UNSQUASHFS" -cat "$rootfs_tmp" etc/config/uhttpd | grep -E 'option enabled 0' > /dev/null
 

@@ -7,6 +7,7 @@ Packages R3P OS Update Bundle (r3p-update-bundle.tar.gz) containing:
 And optionally deploys & verifies it on the live R3P router (192.168.2.1).
 """
 import getpass
+import hashlib
 import io
 import json
 import os
@@ -34,6 +35,8 @@ def build_bundle() -> Path:
     with tarfile.open(BUNDLE_PATH, "w:gz") as tar:
         # 1. Add usr/bin/r3p-api with 0755 permissions
         api_bytes = BINARY_PATH.read_bytes()
+        bin_sha = hashlib.sha256(api_bytes).hexdigest()
+        BINARY_PATH.with_name(BINARY_PATH.name + ".sha256").write_text(f"{bin_sha}  r3p-api\n", encoding="utf-8")
         ti = tarfile.TarInfo(name="usr/bin/r3p-api")
         ti.size = len(api_bytes)
         ti.mode = 0o755
@@ -60,7 +63,11 @@ def build_bundle() -> Path:
                 ti_web.mtime = now
                 tar.addfile(ti_web, io.BytesIO(data))
 
-    print(f"[OK] Built {BUNDLE_PATH} ({BUNDLE_PATH.stat().st_size:,} bytes)")
+    bundle_sha = hashlib.sha256(BUNDLE_PATH.read_bytes()).hexdigest()
+    BUNDLE_PATH.with_name(BUNDLE_PATH.name + ".sha256").write_text(
+        f"{bundle_sha}  r3p-update-bundle.tar.gz\n", encoding="utf-8"
+    )
+    print(f"[OK] Built {BUNDLE_PATH} ({BUNDLE_PATH.stat().st_size:,} bytes, sha256={bundle_sha[:12]}...)")
     return BUNDLE_PATH
 
 
@@ -100,6 +107,7 @@ def deploy_to_router(host="192.168.1.7", user="root", password=None):
         raise ConnectionError(f"Failed to connect to any target router host: {target_hosts}")
 
     bundle_bytes = BUNDLE_PATH.read_bytes()
+    expected_sha = hashlib.sha256(bundle_bytes).hexdigest()
     print(f"[*] Streaming {len(bundle_bytes):,} bytes to /tmp/r3p-update-bundle.tar.gz ...")
     stdin, stdout, stderr = ssh.exec_command("cat > /tmp/r3p-update-bundle.tar.gz")
     stdin.write(bundle_bytes)
@@ -107,30 +115,33 @@ def deploy_to_router(host="192.168.1.7", user="root", password=None):
     stdout.read()
 
     cmds = [
+        f"echo '{expected_sha}  /tmp/r3p-update-bundle.tar.gz' | sha256sum -c -",
         "mkdir -p /etc/r3p /www",
+        "if [ -f /usr/bin/r3p-api ]; then cp /usr/bin/r3p-api /usr/bin/r3p-api.bak; fi",
         "/etc/init.d/r3p-api stop 2>/dev/null || true",
         "killall -9 r3p-api 2>/dev/null || true",
-        "rm -f /usr/bin/r3p-api",
         "rm -rf /www/assets",
         "tar -xzf /tmp/r3p-update-bundle.tar.gz -C /",
         "rm -f /tmp/r3p-update-bundle.tar.gz",
-        "rm -rf /var/cache/apk/* /lib/apk/cache/* 2>/dev/null || true",
-        "uci -q delete firewall.allow_wan_8787 && uci commit firewall && /etc/init.d/firewall reload 2>/dev/null || true",
-        "[ -d /mnt/sda1/downloads ] && [ ! -L /overlay/downloads ] && ln -sf /mnt/sda1/downloads /overlay/downloads || true",
         "chmod 755 /usr/bin/r3p-api",
         "sync",
         "/etc/init.d/r3p-api start",
         "sleep 2",
+        "if (command -v curl >/dev/null && curl -kfsS https://127.0.0.1:8443/api/v1/health >/dev/null) || wget -qO- --no-check-certificate https://127.0.0.1:8443/api/v1/health >/dev/null 2>&1; then rm -f /usr/bin/r3p-api.bak; echo HEALTH_OK; else echo 'HEALTH_FAILED_ROLLING_BACK'; /etc/init.d/r3p-api stop 2>/dev/null || true; if [ -f /usr/bin/r3p-api.bak ]; then mv /usr/bin/r3p-api.bak /usr/bin/r3p-api && chmod 755 /usr/bin/r3p-api && /etc/init.d/r3p-api start; fi; exit 1; fi",
         "netstat -tlpn | grep r3p-api",
     ]
     for c in cmds:
         _, out, err = ssh.exec_command(c)
+        rc = out.channel.recv_exit_status()
         o = out.read().decode("utf-8", errors="ignore").strip()
         e = err.read().decode("utf-8", errors="ignore").strip()
         if o:
             print(f"  [{c}] -> {o}")
         if e and "uci" not in e.lower():
             print(f"  [{c} stderr] -> {e}")
+        if rc != 0:
+            ssh.close()
+            raise RuntimeError(f"Remote command failed (rc={rc}): {c}")
 
     ssh.close()
     print(f"[OK] Deployment to {active_host} completed!")

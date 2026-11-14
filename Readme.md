@@ -1,3 +1,38 @@
+# R3P Home Server OS (`v1.1.26` / Rev 26)
+
+Production embedded OS stack built on **OpenWrt 25.12.5 (ramips/mt7621)** for the **Xiaomi Mi Router 3 Pro (R3P)** (MediaTek MT7621AT 880 MHz Dual-Core MIPS32 LE, 512 MB DDR3 RAM, 256 MB SLC NAND, Dual-Band MT7615N 4x4 Wi-Fi, 1x USB 3.0).
+
+## Key Architecture & Modules
+
+- **Single Static Go Daemon (`r3p-api`, `linux/mipsle` `softfloat`):** Serves the Vue 3 SPA from `/www` and all `/api/v1/*` endpoints over **HTTPS (`:8443`, TLS 1.2+)** with zero Node.js/LuCI runtime overhead on the router, backed by embedded `/etc/r3p/r3p.db` (`bbolt`).
+- **Real-Time Telemetry:** Server-Sent Events (`GET /api/v1/monitor/stream`) stream `/proc` and `/sys` CPU, `/proc/iomem`-aware RAM, load average, temperature, and interface RX/TX counters directly to the browser without polling storms.
+- **Core Modules:** LAN/WAN/PPPoE/WWAN/USBWAN manager, native multi-stream Speedtest (`POST /api/v1/network/speedtest`), MT7615 dual-band Wi-Fi + repeater client, nftables/`fw4` firewall & port forwarder, `dnsmasq` AdBlock shield + real-time DNS stream inspector, native `yt-dlp` / `aria2` downloader with Telegram URL/AI router, NAS Samba4/FTP/USB 3.0 manager, sandboxed File Explorer (`os.OpenRoot`), Google Drive sync, APK/IPK App Store, MQTT/ICMP IoT monitor, preset-allowlisted Plugins & Automation, UCI editor with `.bak` rollback, and SHA-256 + ELF32 MIPSLE verified OTA updates.
+
+## Development, Testing & Build
+
+```powershell
+# 1. Frontend typecheck, Vitest unit tests, and production dist build
+cd d:\R3P_Project\frontend
+npm test
+npm run build
+
+# 2. Backend Go static vet and unit test suite
+cd d:\R3P_Project\source\backend
+go vet ./...
+go test -count=1 ./...
+
+# 3. Cross-compile static MIPSLE binary & package OTA update bundle + SHA256
+$env:GOOS='linux'; $env:GOARCH='mipsle'; $env:GOMIPS='softfloat'; $env:CGO_ENABLED='0'
+go build -ldflags="-s -w -X main.Version=v1.1.26 -X main.RevisionStr=26 -X main.BuildDate=$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')" -trimpath -o d:\R3P_Project\build\artifacts\r3p-api .
+python d:\R3P_Project\scripts\package-and-deploy.py
+```
+
+- Detailed specifications live in [`docs/architecture/SYSTEM_ARCHITECTURE.md`](docs/architecture/SYSTEM_ARCHITECTURE.md), [`docs/architecture/SECURITY_MODEL.md`](docs/architecture/SECURITY_MODEL.md), [`docs/architecture/DATA_MODEL.md`](docs/architecture/DATA_MODEL.md), and [`docs/api/API_SPECIFICATION.md`](docs/api/API_SPECIFICATION.md).
+
+---
+
+## Hardware & OpenWrt Installation Reference
+
 Supported Versions
 Brand
 Model

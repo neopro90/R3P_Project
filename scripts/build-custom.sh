@@ -6,8 +6,14 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 PROJECT_ROOT=/mnt/d/R3P_Project
 WORK_ROOT=/root/r3p-work
 IMAGEBUILDER_ROOT="$WORK_ROOT/imagebuilder/openwrt-imagebuilder-25.12.5-ramips-mt7621.Linux-x86_64"
-API_BINARY="$PROJECT_ROOT/build/output/r3p-api-mipsle"
+API_BINARY="$PROJECT_ROOT/build/artifacts/r3p-api"
+if [[ ! -f "$API_BINARY" ]]; then
+    API_BINARY="$PROJECT_ROOT/build/output/r3p-api-mipsle"
+fi
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
+if [[ ! -f "$FRONTEND_DIST/index.html" && -f "$PROJECT_ROOT/build/web-static/index.html" ]]; then
+    FRONTEND_DIST="$PROJECT_ROOT/build/web-static"
+fi
 PROFILE=xiaomi_mi-router-3-pro
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUTPUT_DIR="$PROJECT_ROOT/build/output/custom-$STAMP"
@@ -36,20 +42,17 @@ echo "Overlay: $OVERLAY_DIR"
 }
 
 file "$API_BINARY" | tee /dev/stderr | grep -q 'ELF 32-bit LSB.*MIPS'
-if ! command -v upx >/dev/null 2>&1; then
-    echo "UPX is required to package the MIPSLE API binary; install upx-ucl in the project-local WSL environment." >&2
-    exit 1
-fi
-if upx -t "$API_BINARY" >/dev/null 2>&1; then
-    echo "MIPSLE API is already UPX-packed."
-else
-    upx --best --lzma "$API_BINARY"
-fi
-upx -t "$API_BINARY"
 mkdir -p "$OVERLAY_DIR"
 cp -a "$PROJECT_ROOT/build/files/." "$OVERLAY_DIR/"
 mkdir -p "$OVERLAY_DIR/usr/bin" "$OVERLAY_DIR/www"
+rm -rf "$OVERLAY_DIR/www/assets"
 install -m 0755 "$API_BINARY" "$OVERLAY_DIR/usr/bin/r3p-api"
+if command -v upx >/dev/null 2>&1; then
+    upx --best --lzma "$OVERLAY_DIR/usr/bin/r3p-api"
+    upx -t "$OVERLAY_DIR/usr/bin/r3p-api"
+else
+    echo "WARN: UPX not installed; embedding uncompressed r3p-api in overlay." >&2
+fi
 cp -a "$FRONTEND_DIST/." "$OVERLAY_DIR/www/"
 
 PACKAGES="kmod-mt7615-firmware kmod-usb3 kmod-usb-storage kmod-fs-ext4 block-mount uhttpd \

@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +17,112 @@ import (
 	"sync"
 	"time"
 )
+
+var aiConfigUpdateMu sync.Mutex
+
+func isLocalAIBaseURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+func newAIHTTPClient(baseURL string, timeout time.Duration) *http.Client {
+	explicitLocal := isLocalAIBaseURL(baseURL)
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
+	tr := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			checkIP := func(ip net.IP) error {
+				if ip == nil {
+					return errors.New("invalid IP address")
+				}
+				if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+					return fmt.Errorf("blocked unsafe AI destination IP %s", ip.String())
+				}
+				if !explicitLocal && (ip.IsLoopback() || ip.IsPrivate()) {
+					return fmt.Errorf("blocked DNS rebinding to private or loopback IP %s", ip.String())
+				}
+				return nil
+			}
+			if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+				if err := checkIP(ip); err != nil {
+					return nil, err
+				}
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			var lastErr error
+			for _, cand := range ips {
+				if err := checkIP(cand.IP); err != nil {
+					lastErr = err
+					continue
+				}
+				conn, dErr := dialer.DialContext(ctx, network, net.JoinHostPort(cand.IP.String(), port))
+				if dErr == nil {
+					return conn, nil
+				}
+				lastErr = dErr
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("no allowed IP address for %s", host)
+		},
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func validateAIBaseURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("invalid AI BaseURL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return fmt.Errorf("unsupported AI BaseURL scheme %q", u.Scheme)
+	}
+	if u.User != nil {
+		return errors.New("AI BaseURL must not contain credentials")
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return errors.New("AI BaseURL missing hostname")
+	}
+	// Allow localhost or private LAN LLM servers (e.g. Ollama), but strictly block metadata/link-local/unspecified/multicast IPs.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+			return fmt.Errorf("blocked unsafe AI BaseURL IP %s", ip.String())
+		}
+		if scheme == "http" && !ip.IsLoopback() && !ip.IsPrivate() {
+			return errors.New("plaintext HTTP AI BaseURL is restricted to localhost or private LAN hosts")
+		}
+	}
+	return nil
+}
 
 type AIConfig struct {
 	Provider          string `json:"provider"`
@@ -69,10 +179,33 @@ type AIChatSession struct {
 	Messages  []AIChatMessage `json:"messages"`
 }
 
+func cloneAISessions(src []AIChatSession) []AIChatSession {
+	if src == nil {
+		return nil
+	}
+	out := make([]AIChatSession, len(src))
+	for i, s := range src {
+		out[i] = s
+		if s.Messages != nil {
+			msgs := make([]AIChatMessage, len(s.Messages))
+			for j, m := range s.Messages {
+				msgs[j] = m
+				if m.ToolEvents != nil {
+					msgs[j].ToolEvents = append([]AIToolAction{}, m.ToolEvents...)
+				}
+				if m.Commands != nil {
+					msgs[j].Commands = append([]AICmdLog{}, m.Commands...)
+				}
+			}
+			out[i].Messages = msgs
+		}
+	}
+	return out
+}
+
 const (
-	aiConfigFile    = "/etc/r3p/ai_config.json"
-	aiHistoryFile   = "/etc/r3p/ai_history.json"
-	aiSessionsFile  = "/etc/r3p/ai_sessions.json"
+	aiConfigFile        = "/etc/r3p/ai_config.json"
+	aiSessionsFile      = "/etc/r3p/ai_sessions.json"
 	aiMemoryFile        = "/etc/r3p/ai_memory.json"
 	aiBlueprintFile     = "/etc/r3p/SYSTEM_BLUEPRINT.md"
 	aiQuickCommandsFile = "/etc/r3p/quick_commands.json"
@@ -84,6 +217,13 @@ var (
 	aiSessions []AIChatSession
 	aiMemories []AIMemoryEntry
 )
+
+func resetAIMemoryCaches() {
+	aiMu.Lock()
+	aiSessions = nil
+	aiMemories = nil
+	aiMu.Unlock()
+}
 
 const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOME SERVER OS (SYSTEM BLUEPRINT)
 > File tham chiếu kiến trúc cốt lõi tại: /etc/r3p/SYSTEM_BLUEPRINT.md
@@ -121,6 +261,7 @@ const defaultSystemBlueprintMD = `# TÀI LIỆU CẤU TRÚC HỆ THỐNG R3P HOM
   - API & Web UI Download cục bộ tích hợp trực tiếp tại /downloads và /api/v1/download/* (chạy hoàn toàn cục bộ trên R3P)
 - **Giao Diện Web (Frontend SPA)**: /www/ (Vue 3 R3P MINI SERVER OS Dashboard)
 - **Thư Mục Cấu Hình Bền Vững (/etc/r3p/)**:
+  - /etc/r3p/r3p.db              : Cơ sở dữ liệu nhúng bbolt lưu toàn bộ cấu hình hệ thống
   - /etc/r3p/SYSTEM_BLUEPRINT.md : Tài liệu cấu trúc hệ thống này
   - /etc/r3p/version.json        : Thông tin phiên bản Firmware & Revision GitHub
   - /etc/r3p/ai_config.json      : Cấu hình nhà cung cấp AI, API Key, Model, quyền Root
@@ -183,7 +324,7 @@ const defaultQuickCommandsJSON = `{
     { "label": "⚡ Thông số tinh chỉnh USB Queue", "cmd": "!cat /sys/block/sda/queue/read_ahead_kb; cat /sys/block/sda/queue/max_sectors_kb" }
   ],
   "adblock": [
-    { "label": "🛡️ Trạng thái AdBlock & Số domain", "cmd": "!cat /etc/r3p/adblock.json | grep total_blocked; wc -l /tmp/r3p-adblock.hosts" },
+    { "label": "🛡️ Trạng thái AdBlock & Số domain", "cmd": "!cat /etc/r3p/adblock.json 2>/dev/null | head -n 5; wc -l /tmp/dnsmasq.d/r3p-adblock.conf" },
     { "label": "🔍 Kiểm tra cổng DNS 53 listening", "cmd": "!netstat -tlpn | grep 53" },
     { "label": "🚫 Thử phân giải tên miền quảng cáo", "cmd": "!nslookup pagead2.googlesyndication.com 127.0.0.1" }
   ],
@@ -196,16 +337,22 @@ const defaultQuickCommandsJSON = `{
     { "label": "🧹 Giải phóng RAM (Drop Caches)", "cmd": "!sync && echo 3 > /proc/sys/vm/drop_caches && free -m" },
     { "label": "🔄 Khởi động lại dịch vụ r3p-api", "cmd": "!/etc/init.d/r3p-api restart" },
     { "label": "📶 Khởi động lại Wi-Fi subsystem", "cmd": "!wifi reload" },
-    { "label": "📦 Kiểm tra kho ứng dụng opkg", "cmd": "!opkg list-installed | wc -l" }
+    { "label": "📦 Kiểm tra kho ứng dụng apk", "cmd": "!apk info | wc -l" }
   ]
 }`
 
 func ensureSystemBlueprintFile() string {
-	_ = os.MkdirAll("/etc/r3p", 0755)
+	if raw, ok := settingsDBGetRaw(bucketSystemMeta, "ai_blueprint"); ok && len(strings.TrimSpace(string(raw))) > 0 {
+		return string(raw)
+	}
 	if b, err := os.ReadFile(aiBlueprintFile); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+		_ = settingsDBPutRaw(bucketSystemMeta, "ai_blueprint", b)
 		return string(b)
 	}
-	_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)
+	if settingsDBPutRaw(bucketSystemMeta, "ai_blueprint", []byte(defaultSystemBlueprintMD)) != nil {
+		_ = os.MkdirAll("/etc/r3p", 0755)
+		_ = os.WriteFile(aiBlueprintFile, []byte(defaultSystemBlueprintMD), 0644)
+	}
 	return defaultSystemBlueprintMD
 }
 
@@ -241,10 +388,7 @@ func loadAIConfig() AIConfig {
 		AutoRemember:      true,
 		ActiveSessionID:   "default",
 	}
-	b, err := os.ReadFile(aiConfigFile)
-	if err == nil {
-		_ = json.Unmarshal(b, &def)
-	}
+	settingsDBLoadJSON(bucketSettings, "ai_config", aiConfigFile, &def)
 	if def.BaseURL == "" {
 		def.BaseURL = defaultBaseURLForProvider(def.Provider)
 	}
@@ -275,10 +419,7 @@ func saveAIConfig(cfg AIConfig) {
 	defer aiCfgMu.Unlock()
 	cfg.HasAPIKey = cfg.APIKey != ""
 	cfg.APIKeyConfigured = cfg.APIKey != ""
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-		_ = os.WriteFile(aiConfigFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketSettings, "ai_config", aiConfigFile, 0600, cfg)
 }
 
 func loadAIMemories() []AIMemoryEntry {
@@ -291,9 +432,7 @@ func loadAIMemoriesLocked() []AIMemoryEntry {
 	if aiMemories != nil {
 		return aiMemories
 	}
-	if b, err := os.ReadFile(aiMemoryFile); err == nil {
-		_ = json.Unmarshal(b, &aiMemories)
-	}
+	settingsDBLoadJSON(bucketCollections, "ai_memory", aiMemoryFile, &aiMemories)
 	if len(aiMemories) == 0 {
 		aiMemories = []AIMemoryEntry{
 			{
@@ -315,13 +454,10 @@ func loadAIMemoriesLocked() []AIMemoryEntry {
 }
 
 func saveAIMemoriesLocked() {
-	_ = os.MkdirAll("/etc/r3p", 0755)
 	if len(aiMemories) > 100 {
 		aiMemories = aiMemories[len(aiMemories)-100:]
 	}
-	if b, err := json.MarshalIndent(aiMemories, "", "  "); err == nil {
-		_ = os.WriteFile(aiMemoryFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "ai_memory", aiMemoryFile, 0600, aiMemories)
 }
 
 func addAIMemoryEntry(category, content string) AIMemoryEntry {
@@ -364,18 +500,9 @@ func loadAISessionsLocked() []AIChatSession {
 	if aiSessions != nil {
 		return aiSessions
 	}
-	if b, err := os.ReadFile(aiSessionsFile); err == nil {
-		_ = json.Unmarshal(b, &aiSessions)
-	}
+	settingsDBLoadJSON(bucketCollections, "ai_sessions", aiSessionsFile, &aiSessions)
 	if len(aiSessions) == 0 {
-		// Migrate legacy ai_history.json if present
-		var legacy []AIChatMessage
-		if b, err := os.ReadFile(aiHistoryFile); err == nil {
-			_ = json.Unmarshal(b, &legacy)
-		}
-		if len(legacy) == 0 {
-			legacy = defaultWelcomeMessages()
-		}
+		legacy := defaultWelcomeMessages()
 		nowStr := time.Now().Format("2006-01-02 15:04")
 		aiSessions = []AIChatSession{
 			{
@@ -392,16 +519,13 @@ func loadAISessionsLocked() []AIChatSession {
 }
 
 func saveAISessionsLocked() {
-	_ = os.MkdirAll("/etc/r3p", 0755)
 	for i := range aiSessions {
 		aiSessions[i].Messages = filterOutBareURLMessages(aiSessions[i].Messages)
 		if len(aiSessions[i].Messages) > 80 {
 			aiSessions[i].Messages = aiSessions[i].Messages[len(aiSessions[i].Messages)-80:]
 		}
 	}
-	if b, err := json.MarshalIndent(aiSessions, "", "  "); err == nil {
-		_ = os.WriteFile(aiSessionsFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "ai_sessions", aiSessionsFile, 0600, aiSessions)
 }
 
 func getActiveSessionMessages(sessionID string) (string, []AIChatMessage) {
@@ -500,12 +624,29 @@ func defaultModelForProvider(provider string) string {
 	}
 }
 
+func buildLightweightSystemContext(extra string) string {
+	blueprint := ensureSystemBlueprintFile()
+	netStatus := getInternetStatusSnapshot()
+	mems := loadAIMemories()
+	var memLines []string
+	for _, m := range mems {
+		memLines = append(memLines, fmt.Sprintf("- [%s] (%s): %s", m.Category, m.CreatedAt, m.Content))
+	}
+	memBlock := "Chưa có ghi nhớ nào."
+	if len(memLines) > 0 {
+		memBlock = strings.Join(memLines, "\n")
+	}
+	return fmt.Sprintf("Blueprint: %d bytes | Internet Online=%v (%s) | Memories=%d\n%s\n%s",
+		len(blueprint), netStatus.Online, netStatus.WanIface, len(mems), memBlock, extra)
+}
+
 func buildSystemArchitecturePrompt(extra string) string {
 	blueprint := ensureSystemBlueprintFile()
 	dfOut, _ := runCmd(2, "df", "-h")
 	ipOut, _ := runCmd(2, "ip", "-br", "addr")
 	routeOut, _ := runCmd(2, "ip", "route")
-	wifiOut, _ := runCmd(2, "uci", "show", "wireless")
+	wifiRaw, _ := runCmd(2, "uci", "show", "wireless")
+	wifiOut := redactSensitiveLines(wifiRaw)
 	netStatus := getInternetStatusSnapshot()
 
 	mems := loadAIMemories()
@@ -750,12 +891,23 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURLForProvider(cfg.Provider)
 	}
+	if err := validateAIBaseURL(baseURL); err != nil {
+		return "", err
+	}
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
 		model = defaultModelForProvider(cfg.Provider)
 	}
 
-	client := &http.Client{Timeout: 45 * time.Second}
+	const maxLLMRespBytes = 2 << 20
+	client := newAIHTTPClient(baseURL, 45*time.Second)
+
+	redactAPIKey := func(s string) string {
+		if strings.TrimSpace(cfg.APIKey) != "" {
+			return strings.ReplaceAll(s, strings.TrimSpace(cfg.APIKey), "[REDACTED]")
+		}
+		return s
+	}
 
 	if strings.ToLower(cfg.Provider) == "anthropic" && !strings.Contains(baseURL, "/openai") {
 		sysPrompt := ""
@@ -776,19 +928,19 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		b, _ := json.Marshal(payload)
 		req, err := http.NewRequest(http.MethodPost, baseURL+"/messages", bytes.NewReader(b))
 		if err != nil {
-			return "", err
+			return "", errors.New(redactAPIKey(err.Error()))
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", cfg.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 		resp, err := client.Do(req)
 		if err != nil {
-			return "", err
+			return "", errors.New(redactAPIKey(err.Error()))
 		}
 		defer resp.Body.Close()
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxLLMRespBytes))
 		if resp.StatusCode >= 300 {
-			return "", fmt.Errorf("Anthropic HTTP %d: %s", resp.StatusCode, string(respBytes))
+			return "", fmt.Errorf("Anthropic HTTP %d: %s", resp.StatusCode, redactAPIKey(string(respBytes)))
 		}
 		var parsed struct {
 			Content []struct {
@@ -831,7 +983,7 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		b, _ := json.Marshal(payload)
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(b))
 		if err != nil {
-			return "", err
+			return "", errors.New(redactAPIKey(err.Error()))
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if cfg.APIKey != "" {
@@ -839,12 +991,12 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return "", err
+			return "", errors.New(redactAPIKey(err.Error()))
 		}
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxLLMRespBytes))
 		resp.Body.Close()
 		if resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("API HTTP %d (%s): %s", resp.StatusCode, tryModel, string(respBytes))
+			lastErr = fmt.Errorf("API HTTP %d (%s): %s", resp.StatusCode, tryModel, redactAPIKey(string(respBytes)))
 			if resp.StatusCode == 404 || resp.StatusCode == 503 || resp.StatusCode == 429 {
 				// 429: Free Tier quota exceeded for model; continue to next fallback candidate
 				continue
@@ -859,12 +1011,15 @@ func callLLMAPI(cfg AIConfig, messages []map[string]string) (string, error) {
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
-			return "", fmt.Errorf("invalid API response: %s", string(respBytes))
+			return "", fmt.Errorf("invalid API response: %s", redactAPIKey(string(respBytes)))
 		}
 		// If a fallback candidate succeeded, update system config so next calls use working model
 		if tryModel != model && strings.ToLower(cfg.Provider) == "gemini" {
-			cfg.Model = tryModel
-			saveAIConfig(cfg)
+			aiConfigUpdateMu.Lock()
+			latest := loadAIConfig()
+			latest.Model = tryModel
+			saveAIConfig(latest)
+			aiConfigUpdateMu.Unlock()
 		}
 		return parsed.Choices[0].Message.Content, nil
 	}
@@ -1018,7 +1173,7 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		safeCfg := cfg
 		safeCfg.APIKey = ""
 		aiMu.Lock()
-		sessions := append([]AIChatSession{}, loadAISessionsLocked()...)
+		sessions := cloneAISessions(loadAISessionsLocked())
 		aiMu.Unlock()
 		activeID, hist := getActiveSessionMessages(cfg.ActiveSessionID)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1036,7 +1191,7 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 			"active_session_id":   activeID,
 			"system_prompt_extra": cfg.SystemPromptExtra,
 			"system_note":         cfg.SystemNote,
-			"system_context":      buildSystemArchitecturePrompt(cfg.SystemPromptExtra),
+			"system_context":      buildLightweightSystemContext(cfg.SystemPromptExtra),
 			"blueprint_path":      aiBlueprintFile,
 			"memories":            loadAIMemories(),
 			"sessions":            sessions,
@@ -1044,6 +1199,9 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPut:
+		aiConfigUpdateMu.Lock()
+		defer aiConfigUpdateMu.Unlock()
+
 		var body struct {
 			Provider          string `json:"provider"`
 			APIKey            string `json:"api_key"`
@@ -1061,6 +1219,12 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(io.LimitReader(r.Body, 16384)).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
+		}
+		if strings.TrimSpace(body.BaseURL) != "" {
+			if err := validateAIBaseURL(body.BaseURL); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, err.Error())
+				return
+			}
 		}
 		cfg := loadAIConfig()
 		prevProvider := cfg.Provider
@@ -1189,7 +1353,7 @@ func handleAISessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		cfg := loadAIConfig()
 		aiMu.Lock()
-		sessions := append([]AIChatSession{}, loadAISessionsLocked()...)
+		sessions := cloneAISessions(loadAISessionsLocked())
 		aiMu.Unlock()
 		activeID, msgs := getActiveSessionMessages(cfg.ActiveSessionID)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1220,7 +1384,7 @@ func handleAISessions(w http.ResponseWriter, r *http.Request) {
 		_ = loadAISessionsLocked()
 		aiSessions = append([]AIChatSession{newSess}, aiSessions...)
 		saveAISessionsLocked()
-		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		sessionsCopy := cloneAISessions(aiSessions)
 		aiMu.Unlock()
 
 		cfg := loadAIConfig()
@@ -1255,7 +1419,7 @@ func handleAISessions(w http.ResponseWriter, r *http.Request) {
 			}
 			saveAISessionsLocked()
 		}
-		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		sessionsCopy := cloneAISessions(aiSessions)
 		aiMu.Unlock()
 
 		cfg := loadAIConfig()
@@ -1291,7 +1455,7 @@ func handleAISessions(w http.ResponseWriter, r *http.Request) {
 		aiSessions = kept
 		saveAISessionsLocked()
 		nextActive := aiSessions[0].ID
-		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		sessionsCopy := cloneAISessions(aiSessions)
 		msgsCopy := append([]AIChatMessage{}, aiSessions[0].Messages...)
 		aiMu.Unlock()
 
@@ -1334,8 +1498,10 @@ func handleAIBlueprint(w http.ResponseWriter, r *http.Request) {
 		if body.Reset || strings.TrimSpace(content) == "" {
 			content = defaultSystemBlueprintMD
 		}
-		_ = os.MkdirAll("/etc/r3p", 0755)
-		_ = os.WriteFile(aiBlueprintFile, []byte(content), 0644)
+		if err := settingsDBPutRaw(bucketSystemMeta, "ai_blueprint", []byte(content)); err != nil {
+			_ = os.MkdirAll("/etc/r3p", 0755)
+			_ = os.WriteFile(aiBlueprintFile, []byte(content), 0644)
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"saved":   true,
 			"path":    aiBlueprintFile,
@@ -1353,18 +1519,8 @@ func handleAIQuickCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		data, err := os.ReadFile(aiQuickCommandsFile)
-		if err != nil || len(strings.TrimSpace(string(data))) < 10 {
-			var defMap map[string]interface{}
-			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
-			writeJSON(w, http.StatusOK, true, map[string]interface{}{
-				"commands": defMap,
-				"custom":   false,
-			})
-			return
-		}
 		var parsed map[string]interface{}
-		if err := json.Unmarshal(data, &parsed); err != nil {
+		if !settingsDBLoadJSON(bucketCollections, "ai_quick_commands", aiQuickCommandsFile, &parsed) || len(parsed) == 0 {
 			var defMap map[string]interface{}
 			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1387,6 +1543,7 @@ func handleAIQuickCommands(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if body.Reset {
+			_ = settingsDBDelete(bucketCollections, "ai_quick_commands")
 			_ = os.Remove(aiQuickCommandsFile)
 			var defMap map[string]interface{}
 			_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
@@ -1401,14 +1558,8 @@ func handleAIQuickCommands(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "missing commands")
 			return
 		}
-		out, err := json.MarshalIndent(body.Commands, "", "  ")
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "failed to marshal commands")
-			return
-		}
-		_ = os.MkdirAll("/etc/r3p", 0755)
-		if err := os.WriteFile(aiQuickCommandsFile, out, 0644); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "failed to write file: "+err.Error())
+		if err := settingsDBSaveJSON(bucketCollections, "ai_quick_commands", aiQuickCommandsFile, 0644, body.Commands); err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "failed to save commands: "+err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1416,6 +1567,7 @@ func handleAIQuickCommands(w http.ResponseWriter, r *http.Request) {
 			"commands": body.Commands,
 		})
 	case http.MethodDelete:
+		_ = settingsDBDelete(bucketCollections, "ai_quick_commands")
 		_ = os.Remove(aiQuickCommandsFile)
 		var defMap map[string]interface{}
 		_ = json.Unmarshal([]byte(defaultQuickCommandsJSON), &defMap)
@@ -1447,7 +1599,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		saveAISessionsLocked()
-		sessionsCopy := append([]AIChatSession{}, aiSessions...)
+		sessionsCopy := cloneAISessions(aiSessions)
 		aiMu.Unlock()
 		_, hist := getActiveSessionMessages(activeSessID)
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1468,6 +1620,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		Execute      *bool      `json:"execute"`
 		BrowserReply string     `json:"browser_reply"`
 		PrevCommands []AICmdLog `json:"prev_commands"`
+		BridgeTurn   int        `json:"bridge_turn"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
@@ -1477,20 +1630,24 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		activeSessID = strings.TrimSpace(body.SessionID)
 	}
 
+	// Server policy is upper bound: request can only restrict execution, never enable it above cfg.AllowExec.
+	effectiveExec := cfg.AutoExecute && cfg.AllowExec
+	if body.Execute != nil && !*body.Execute {
+		effectiveExec = false
+	}
+
 	// Browser-Bridged AI Continuation
 	if strings.TrimSpace(body.BrowserReply) != "" {
 		respText := strings.TrimSpace(body.BrowserReply)
-		if body.Execute != nil {
-			cfg.AutoExecute = *body.Execute
-		}
-		allToolEvents, newCmdLogs, cmdOutputs, cleanReply := executeAIToolBlocks(respText, cfg.AutoExecute)
+		allToolEvents, newCmdLogs, cmdOutputs, cleanReply := executeAIToolBlocks(respText, effectiveExec)
 		var allCmdLogs []AICmdLog
 		allCmdLogs = append(allCmdLogs, body.PrevCommands...)
 		allCmdLogs = append(allCmdLogs, newCmdLogs...)
 
-		if len(cmdOutputs) > 0 && len(body.PrevCommands) == 0 {
+		if len(cmdOutputs) > 0 && body.BridgeTurn < 3 && (len(body.PrevCommands) == 0 || body.BridgeTurn > 0) {
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
 				"needs_browser_followup": true,
+				"bridge_turn":            body.BridgeTurn + 1,
 				"commands":               allCmdLogs,
 				"tool_events":            allToolEvents,
 				"followup_user_prompt":   "Kết quả thực thi công cụ trên Router:\n```\n" + strings.Join(cmdOutputs, "\n\n") + "\n```\nHãy tổng hợp kết quả và trả lời ngắn gọn, rõ ràng bằng tiếng Việt cho người dùng (không lặp lại thẻ công cụ).",
@@ -1511,7 +1668,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		}
 		histCopy := appendMessageToSession(activeSessID, replyMsg)
 		aiMu.Lock()
-		sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
+		sessionsCopy := cloneAISessions(loadAISessionsLocked())
 		aiMu.Unlock()
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -1556,13 +1713,9 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		Source:    "web",
 	})
 
-	if body.Execute != nil {
-		cfg.AutoExecute = *body.Execute
-	}
-
-	// Direct root shell command mode (!cmd or /exec cmd)
-	if strings.HasPrefix(userMsg, "!") || strings.HasPrefix(userMsg, "/exec ") {
-		if !cfg.AutoExecute {
+	// Direct root shell command mode (!cmd, /exec cmd, /sh cmd)
+	if strings.HasPrefix(userMsg, "!") || strings.HasPrefix(userMsg, "/exec ") || strings.HasPrefix(userMsg, "/sh ") {
+		if !effectiveExec {
 			replyMsg := AIChatMessage{
 				Role:      "assistant",
 				Content:   "⛔ Chế độ tự động thực thi lệnh đang tắt. Bật AllowExec trong cấu hình Trợ Lý AI để chạy lệnh trực tiếp.",
@@ -1576,7 +1729,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(userMsg, "!"), "/exec "))
+		cmdStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(userMsg, "!"), "/exec "), "/sh "))
 		t0 := time.Now()
 		out, err := runCmd(25, "sh", "-c", cmdStr)
 		durMs := time.Since(t0).Milliseconds()
@@ -1600,7 +1753,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		}
 		histCopy := appendMessageToSession(activeSessID, replyMsg)
 		aiMu.Lock()
-		sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
+		sessionsCopy := cloneAISessions(loadAISessionsLocked())
 		aiMu.Unlock()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"reply":       replyMsg,
@@ -1611,7 +1764,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if cfg.APIKey == "" && !strings.Contains(cfg.BaseURL, "127.0.0.1") && !strings.Contains(cfg.BaseURL, "localhost") && !strings.Contains(cfg.BaseURL, "192.168.") {
+	if cfg.APIKey == "" && !isLocalAIBaseURL(cfg.BaseURL) {
 		t0 := time.Now()
 		out, _ := runCmd(5, "sh", "-c", "uptime; df -h /overlay /mnt/sda1 2>/dev/null; ip -br addr")
 		durMs := time.Since(t0).Milliseconds()
@@ -1667,10 +1820,10 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 				}
 				writeJSON(w, http.StatusOK, true, map[string]interface{}{
 					"needs_browser_bridge": true,
+					"bridge_turn":          body.BridgeTurn + 1,
 					"bridge": map[string]interface{}{
 						"provider": cfg.Provider,
 						"endpoint": endpoint,
-						"api_key":  cfg.APIKey,
 						"model":    cfg.Model,
 						"messages": llmMsgs,
 					},
@@ -1680,7 +1833,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			finalReply = "❌ Lỗi kết nối AI API: `" + errStr + "`\nHãy kiểm tra lại kết nối Internet của Router và API Key ở khung cài đặt phía trên."
 			break
 		}
-		evts, logs, outputs, cleaned := executeAIToolBlocks(respText, cfg.AutoExecute)
+		evts, logs, outputs, cleaned := executeAIToolBlocks(respText, effectiveExec)
 		allToolEvents = append(allToolEvents, evts...)
 		allCmdLogs = append(allCmdLogs, logs...)
 		finalReply = cleaned
@@ -1708,7 +1861,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 
 	histCopy := appendMessageToSession(activeSessID, replyMsg)
 	aiMu.Lock()
-	sessionsCopy := append([]AIChatSession{}, loadAISessionsLocked()...)
+	sessionsCopy := cloneAISessions(loadAISessionsLocked())
 	aiMu.Unlock()
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{

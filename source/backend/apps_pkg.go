@@ -45,7 +45,14 @@ type OpenWrtPkgApp struct {
 
 const appReposConfigFile = "/etc/r3p/app_repos.json"
 
-var safePkgNamePattern = regexp.MustCompile(`^[a-zA-Z0-9+_.-]{1,80}$`)
+var (
+	safePkgNamePattern    = regexp.MustCompile(`^[a-zA-Z0-9+_.-]{1,80}$`)
+	safeGitHubSegPattern  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$`)
+)
+
+func isSafePkgName(s string) bool {
+	return safePkgNamePattern.MatchString(s) && !strings.HasPrefix(s, "-") && !strings.Contains(s, "..")
+}
 
 var curatedOpenWrtCatalog = []OpenWrtPkgApp{
 	{Name: "htop", Version: "3.3.0", Category: "System Tools", Description: "Interactive process viewer & CPU/RAM monitor for Linux terminal", Source: "OpenWrt Official"},
@@ -129,9 +136,8 @@ func defaultAppRepos() []AppRepoItem {
 					Name:        "r3p-api",
 					Version:     getCurrentSystemVersion().Version,
 					Category:    "R3P Core",
-					Description: "R3P Home Server OS Core Backend + Native Local Downloader + AI Root Agent",
+					Description: "R3P Home Server OS Core Backend + Native Local Downloader + AI Root Agent (cập nhật qua System OTA)",
 					Source:      "GitHub: neopro90/R3P_Project",
-					DownloadURL: "https://raw.githubusercontent.com/neopro90/R3P_Project/main/build/artifacts/r3p-api",
 				},
 				{
 					Name:        "yt-dlp",
@@ -161,10 +167,8 @@ func loadAppRepos() []AppRepoItem {
 
 func loadAppReposUnlocked() []AppRepoItem {
 	var list []AppRepoItem
-	if b, err := os.ReadFile(appReposConfigFile); err == nil {
-		if json.Unmarshal(b, &list) == nil && len(list) > 0 {
-			return list
-		}
+	if settingsDBLoadJSON(bucketCollections, "app_repos", appReposConfigFile, &list) && len(list) > 0 {
+		return list
 	}
 	list = defaultAppRepos()
 	saveAppReposUnlocked(list)
@@ -178,10 +182,7 @@ func saveAppRepos(list []AppRepoItem) {
 }
 
 func saveAppReposUnlocked(list []AppRepoItem) {
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
-		_ = os.WriteFile(appReposConfigFile, b, 0644)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "app_repos", appReposConfigFile, 0644, list)
 	// Sync custom apk_feed entries to /etc/apk/repositories.d/custom.list
 	_ = os.MkdirAll("/etc/apk/repositories.d", 0755)
 	var customFeeds []string
@@ -199,20 +200,40 @@ func saveAppReposUnlocked(list []AppRepoItem) {
 
 func parseGitHubOwnerRepo(rawURL string) (string, string, bool) {
 	u := strings.TrimSpace(rawURL)
-	u = strings.TrimSuffix(u, ".git")
-	u = strings.TrimSuffix(u, "/")
-	u = strings.TrimPrefix(u, "https://github.com/")
-	u = strings.TrimPrefix(u, "http://github.com/")
-	u = strings.TrimPrefix(u, "github.com/")
-	parts := strings.Split(u, "/")
-	if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
-		return parts[0], parts[1], true
+	if u == "" || strings.ContainsAny(u, "\r\n\x00 \t") {
+		return "", "", false
 	}
-	return "", "", false
+	if strings.HasPrefix(u, "github.com/") {
+		u = "https://" + u
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "github.com" && host != "www.github.com" {
+		return "", "", false
+	}
+	trimmed := strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	owner, repo := parts[0], parts[1]
+	if owner == "." || owner == ".." || repo == "." || repo == ".." || strings.Contains(owner, "..") || strings.Contains(repo, "..") {
+		return "", "", false
+	}
+	if !safeGitHubSegPattern.MatchString(owner) || !safeGitHubSegPattern.MatchString(repo) {
+		return "", "", false
+	}
+	return owner, repo, true
 }
 
 func inspectGitHubRepoPackages(owner, repo, branch string) (string, int, []OpenWrtPkgApp) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newPublicHTTPClient(publicClientOptions{
+		Timeout:      10 * time.Second,
+		MaxRedirects: 3,
+	})
 	desc := fmt.Sprintf("GitHub OpenWrt Repository (%s/%s)", owner, repo)
 	var pkgs []OpenWrtPkgApp
 
@@ -258,7 +279,7 @@ func inspectGitHubRepoPackages(owner, repo, branch string) (string, int, []OpenW
 				for _, rel := range releases {
 					for _, a := range rel.Assets {
 						lower := strings.ToLower(a.Name)
-						if strings.HasSuffix(lower, ".apk") || strings.HasSuffix(lower, ".ipk") || strings.HasSuffix(lower, ".sh") || strings.HasSuffix(lower, ".tar.gz") {
+						if strings.HasSuffix(lower, ".apk") || strings.HasSuffix(lower, ".ipk") || strings.HasSuffix(lower, ".tar.gz") {
 							pkgs = append(pkgs, OpenWrtPkgApp{
 								Name:        a.Name,
 								Version:     rel.TagName,
@@ -289,7 +310,7 @@ func inspectGitHubRepoPackages(owner, repo, branch string) (string, int, []OpenW
 			if json.NewDecoder(resp.Body).Decode(&items) == nil {
 				for _, it := range items {
 					lower := strings.ToLower(it.Name)
-					if it.Type == "file" && (strings.HasSuffix(lower, ".apk") || strings.HasSuffix(lower, ".ipk") || strings.HasSuffix(lower, ".sh")) {
+					if it.Type == "file" && (strings.HasSuffix(lower, ".apk") || strings.HasSuffix(lower, ".ipk")) {
 						pkgs = append(pkgs, OpenWrtPkgApp{
 							Name:        it.Name,
 							Version:     branch,
@@ -445,18 +466,30 @@ func handlePackageRepos(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodDelete:
-		id := r.URL.Query().Get("id")
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			writeJSON(w, http.StatusBadRequest, false, "Thiếu ID kho ứng dụng")
+			return
+		}
 		if id == "repo-openwrt-official" {
 			writeJSON(w, http.StatusBadRequest, false, "Không thể xóa kho gói chính thức của OpenWrt")
 			return
 		}
 		appReposMu.Lock()
 		repos := loadAppReposUnlocked()
-		updated := []AppRepoItem{}
+		updated := make([]AppRepoItem, 0, len(repos))
+		found := false
 		for _, item := range repos {
-			if item.ID != id {
-				updated = append(updated, item)
+			if item.ID == id {
+				found = true
+				continue
 			}
+			updated = append(updated, item)
+		}
+		if !found {
+			appReposMu.Unlock()
+			writeJSON(w, http.StatusNotFound, false, "Không tìm thấy kho ứng dụng cần xóa")
+			return
 		}
 		saveAppReposUnlocked(updated)
 		appReposMu.Unlock()
@@ -538,10 +571,10 @@ func handlePackagesSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. If user typed a search query, also query live `apk search` on the router!
-	if query != "" && safePkgNamePattern.MatchString(query) {
-		apkOut, _ := runCmd(8, "apk", "search", "-v", query)
+	if query != "" && isSafePkgName(query) {
+		apkOut, _ := runCmd(8, "apk", "search", "-v", "--", query)
 		if apkOut == "" {
-			apkOut, _ = runCmd(8, "apk", "info", "-a", "*"+query+"*")
+			apkOut, _ = runCmd(8, "apk", "info", "-a", "--", "*"+query+"*")
 		}
 		for _, line := range strings.Split(apkOut, "\n") {
 			t := strings.TrimSpace(line)
@@ -619,26 +652,57 @@ func handlePackagesUpdateFeeds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := runCmd(35, "apk", "update")
-	repos := loadAppRepos()
-	for i := range repos {
-		if repos[i].Enabled && repos[i].Type == "github" {
-			if owner, repo, ok := parseGitHubOwnerRepo(repos[i].URL); ok {
-				desc, cnt, pkgs := inspectGitHubRepoPackages(owner, repo, repos[i].Branch)
-				repos[i].Description = desc
-				if cnt > 0 {
-					repos[i].PkgCount = cnt
-					repos[i].Packages = pkgs
+	snapshot := loadAppRepos()
+	type repoSyncResult struct {
+		desc       string
+		pkgCount   int
+		pkgs       []OpenWrtPkgApp
+		lastSynced string
+		hasGithub  bool
+	}
+	syncResults := make(map[string]repoSyncResult)
+	for _, repoItem := range snapshot {
+		if repoItem.Enabled && repoItem.Type == "github" {
+			if owner, repo, ok := parseGitHubOwnerRepo(repoItem.URL); ok {
+				desc, cnt, pkgs := inspectGitHubRepoPackages(owner, repo, repoItem.Branch)
+				syncResults[repoItem.ID] = repoSyncResult{
+					desc:       desc,
+					pkgCount:   cnt,
+					pkgs:       pkgs,
+					lastSynced: time.Now().Format("2006-01-02 15:04"),
+					hasGithub:  true,
 				}
-				repos[i].LastSynced = time.Now().Format("2006-01-02 15:04")
 			}
-		} else if repos[i].Enabled {
-			repos[i].LastSynced = time.Now().Format("2006-01-02 15:04")
+		} else if repoItem.Enabled {
+			syncResults[repoItem.ID] = repoSyncResult{
+				lastSynced: time.Now().Format("2006-01-02 15:04"),
+			}
 		}
 	}
-	saveAppRepos(repos)
+	appReposMu.Lock()
+	repos := loadAppReposUnlocked()
+	for i := range repos {
+		if res, ok := syncResults[repos[i].ID]; ok {
+			if res.hasGithub {
+				repos[i].Description = res.desc
+				if res.pkgCount > 0 {
+					repos[i].PkgCount = res.pkgCount
+					repos[i].Packages = res.pkgs
+				}
+			}
+			repos[i].LastSynced = res.lastSynced
+		}
+	}
+	saveAppReposUnlocked(repos)
+	appReposMu.Unlock()
+
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, false, strings.TrimSpace("Đồng bộ OpenWrt APK feeds thất bại: "+err.Error()+"\n"+out))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
-		"updated": err == nil,
+		"updated": true,
 		"output":  out,
 		"repos":   repos,
 		"message": "Đã đồng bộ danh sách gói từ OpenWrt Feeds và các kho GitHub!",
@@ -673,8 +737,9 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Package     string `json:"package"`
-		DownloadURL string `json:"download_url"`
+		Package        string `json:"package"`
+		DownloadURL    string `json:"download_url"`
+		AllowUntrusted bool   `json:"allow_untrusted"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
@@ -697,22 +762,27 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lowerURL := strings.ToLower(dlURL)
-	isDirectBinary := (strings.HasSuffix(lowerURL, ".apk") ||
-		strings.HasSuffix(lowerURL, ".ipk") ||
-		strings.HasSuffix(lowerURL, ".sh") ||
-		strings.Contains(dlURL, "/releases/download/"))
+	parsedDL, parsedErr := url.Parse(dlURL)
+	urlPath := ""
+	fileName := ""
+	if parsedErr == nil {
+		urlPath = strings.ToLower(parsedDL.Path)
+		fileName = filepath.Base(parsedDL.Path)
+	}
+	isDirectBinary := (strings.HasSuffix(urlPath, ".apk") ||
+		strings.HasSuffix(urlPath, ".ipk") ||
+		strings.Contains(urlPath, "/releases/download/"))
 
 	// Case 1: Direct URL installation from GitHub (.apk, .ipk only — shell scripts rejected)
+	if dlURL != "" && (strings.HasSuffix(urlPath, ".sh") || (!isDirectBinary && (strings.HasPrefix(lowerURL, "https://") || strings.HasPrefix(lowerURL, "http://")))) {
+		writeJSON(w, http.StatusBadRequest, false, "Chỉ hỗ trợ cài đặt trực tiếp gói định dạng .apk hoặc .ipk qua URL")
+		return
+	}
 	if dlURL != "" && isDirectBinary && (strings.HasPrefix(lowerURL, "https://") || strings.HasPrefix(lowerURL, "http://")) {
-		if strings.HasSuffix(lowerURL, ".sh") {
-			writeJSON(w, http.StatusBadRequest, false, "Không hỗ trợ thực thi shell script (.sh) trực tiếp từ URL bên ngoài vì lý do bảo mật.")
-			return
-		}
 		if uerr := validateDownloadURL(dlURL); uerr != nil {
 			writeJSON(w, http.StatusBadRequest, false, "URL gói không hợp lệ hoặc bị chặn (SSRF): "+uerr.Error())
 			return
 		}
-		fileName := filepath.Base(dlURL)
 		ext := strings.ToLower(filepath.Ext(fileName))
 		if ext != ".apk" && ext != ".ipk" {
 			writeJSON(w, http.StatusBadRequest, false, "Chỉ hỗ trợ cài đặt trực tiếp gói định dạng .apk hoặc .ipk")
@@ -727,15 +797,23 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 		_ = tmpFile.Close()
 		defer os.Remove(tmpPath)
 
-		dlOut, dlErr := runCmd(60, "curl", "-fsSL", "-o", tmpPath, dlURL)
-		if dlErr != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "Tải gói thất bại: "+dlErr.Error()+" "+dlOut)
+		dlClient := newPublicHTTPClient(publicClientOptions{
+			Timeout:      60 * time.Second,
+			AllowHTTP:    strings.HasPrefix(lowerURL, "http://"),
+			MaxRedirects: 5,
+		})
+		if dlErr := downloadURLToFileLimit(dlClient, dlURL, tmpPath, 32<<20); dlErr != nil {
+			writeJSON(w, http.StatusBadGateway, false, "Tải gói thất bại: "+dlErr.Error())
 			return
 		}
 		var instOut string
 		var instErr error
 		if ext == ".apk" {
-			instOut, instErr = runCmd(60, "apk", "add", "--allow-untrusted", tmpPath)
+			if body.AllowUntrusted {
+				instOut, instErr = runCmd(60, "apk", "add", "--allow-untrusted", "--", tmpPath)
+			} else {
+				instOut, instErr = runCmd(60, "apk", "add", "--", tmpPath)
+			}
 		} else {
 			instOut, instErr = runCmd(60, "opkg", "install", tmpPath)
 		}
@@ -756,15 +834,21 @@ func handlePackagesInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Case 2: Standard OpenWrt APK package install
-	if !safePkgNamePattern.MatchString(pkgName) {
+	if !isSafePkgName(pkgName) {
 		writeJSON(w, http.StatusBadRequest, false, "Tên gói ứng dụng không hợp lệ")
 		return
 	}
 
-	out, err := runCmd(60, "apk", "add", pkgName)
-	if err != nil && (strings.Contains(out, "UNTRUSTED") || strings.Contains(out, "not found") || strings.Contains(out, "unable to select") || strings.Contains(out, "Unable to select")) {
-		_, _ = runCmd(40, "apk", "update")
-		out, err = runCmd(60, "apk", "add", "--allow-untrusted", pkgName)
+	var out string
+	var err error
+	if body.AllowUntrusted {
+		out, err = runCmd(60, "apk", "add", "--allow-untrusted", "--", pkgName)
+	} else {
+		out, err = runCmd(60, "apk", "add", "--", pkgName)
+		if err != nil && (strings.Contains(out, "not found") || strings.Contains(out, "unable to select") || strings.Contains(out, "Unable to select")) {
+			_, _ = runCmd(40, "apk", "update")
+			out, err = runCmd(60, "apk", "add", "--", pkgName)
+		}
 	}
 	_, _ = runCmd(3, "sync")
 	if err != nil {
@@ -814,7 +898,7 @@ func handlePackagesRemove(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !safePkgNamePattern.MatchString(pkgName) {
+	if !isSafePkgName(pkgName) {
 		writeJSON(w, http.StatusBadRequest, false, "Tên gói không hợp lệ")
 		return
 	}
@@ -822,14 +906,14 @@ func handlePackagesRemove(w http.ResponseWriter, r *http.Request) {
 	protected := map[string]bool{
 		"base-files": true, "busybox": true, "dropbear": true, "dnsmasq": true,
 		"firewall4": true, "netifd": true, "procd": true, "ubus": true, "uci": true,
-		"kmod-mt7615e": true, "wpad-basic-mbedtls": true, "apk-tools": true,
+		"kmod-mt7615e": true, "kmod-mt7615-firmware": true, "wpad-basic-mbedtls": true, "apk-tools": true, "r3p-api": true,
 	}
 	if protected[pkgName] {
 		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Gói '%s' là thành phần cốt lõi của hệ điều hành, không được phép gỡ bỏ!", pkgName))
 		return
 	}
 
-	out, err := runCmd(45, "apk", "del", pkgName)
+	out, err := runCmd(45, "apk", "del", "--", pkgName)
 	_, _ = runCmd(3, "sync")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, false, fmt.Sprintf("Gỡ cài đặt '%s' thất bại:\n%s\n%v", pkgName, out, err))

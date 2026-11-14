@@ -1,12 +1,14 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +24,56 @@ import (
 
 var safeHostPattern = regexp.MustCompile(`^[a-zA-Z0-9.-]{1,128}$`)
 var safeTokenKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
-var nasUsersMu sync.Mutex
+
+func isSafeTokenKey(s string) bool {
+	return safeTokenKeyPattern.MatchString(s) && !strings.HasPrefix(s, "-") && !strings.Contains(s, "..")
+}
+
+func isValidIPv4AddrOrWildcard(s string) bool {
+	ip := net.ParseIP(strings.TrimSpace(s))
+	return ip != nil && ip.To4() != nil
+}
+var (
+	nasUsersMu sync.Mutex
+	firewallMu sync.Mutex
+	dhcpMu     sync.Mutex
+	wirelessMu sync.Mutex
+	configMu   sync.Mutex
+	cronMu     sync.Mutex
+	iotMu      sync.Mutex
+	pluginsMu  sync.Mutex
+)
+
+func isAllowedInitAction(act string) bool {
+	switch act {
+	case "start", "stop", "restart", "reload":
+		return true
+	default:
+		return false
+	}
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := fmt.Sprintf("%s.r3ptmp.%d", path, time.Now().UnixNano())
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		if werr != nil {
+			return werr
+		}
+		return cerr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
 
 // ─── 1. Network Diagnostics & Extended Info ───────────────────────────────
 
@@ -31,7 +82,7 @@ func handleNetworkDetails(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
-	ifaces := netRates(400)
+	ifaces := netRatesSnapshot()
 	for _, item := range ifaces {
 		if name, ok := item["iface"].(string); ok {
 			if netIf, err := net.InterfaceByName(name); err == nil {
@@ -206,6 +257,8 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 			SSID         string `json:"ssid"`
 			Encryption   string `json:"encryption"`
 			Key          string `json:"key"`
+			KeyMasked    string `json:"key_masked"`
+			HasKey       bool   `json:"has_key"`
 			Channel      string `json:"channel"`
 			HTMode       string `json:"htmode"`
 			TxPower      string `json:"txpower"`
@@ -247,6 +300,7 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 			if country == "" {
 				country = "VN"
 			}
+			rawKey := uciMap["wireless."+ifaceSec+".key"]
 			return radioInfo{
 				Device:       dev,
 				IfaceSection: ifaceSec,
@@ -255,7 +309,9 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 				Enabled:      !devDisabled && !ifDisabled,
 				SSID:         ssid,
 				Encryption:   enc,
-				Key:          uciMap["wireless."+ifaceSec+".key"],
+				Key:          "",
+				KeyMasked:    maskDDNSToken(rawKey),
+				HasKey:       rawKey != "",
 				Channel:      ch,
 				HTMode:       ht,
 				TxPower:      txp,
@@ -286,6 +342,29 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 			leaseByMAC[strings.ToLower(l.MAC)] = l
 		}
 
+		iwinfoOut, _ := runCmd(4, "iwinfo")
+		ifaceBand := map[string]string{}
+		curIwIface := ""
+		for _, line := range strings.Split(iwinfoOut, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if line[0] != ' ' && line[0] != '\t' {
+				fields := strings.Fields(line)
+				if len(fields) > 0 {
+					curIwIface = fields[0]
+				}
+				continue
+			}
+			if curIwIface != "" && strings.Contains(line, "Channel:") {
+				if strings.Contains(line, "5.") && strings.Contains(line, "GHz") {
+					ifaceBand[curIwIface] = "5GHz"
+				} else if strings.Contains(line, "2.4") && strings.Contains(line, "GHz") {
+					ifaceBand[curIwIface] = "2.4GHz"
+				}
+			}
+		}
+
 		var stations []stationEntry
 		iwDevsOut, _ := runCmd(4, "iw", "dev")
 		var wlanIfaces []string
@@ -310,9 +389,12 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 						mac = strings.ToLower(fields[1])
 					}
 					l := leaseByMAC[mac]
-					band := "2.4GHz"
-					if strings.Contains(wif, "1") {
-						band = "5GHz"
+					band := ifaceBand[wif]
+					if band == "" {
+						band = "2.4GHz"
+						if strings.HasPrefix(wif, "phy1") || strings.HasPrefix(wif, "wlan1") || strings.HasPrefix(wif, "rai") || strings.HasPrefix(wif, "apcli1") {
+							band = "5GHz"
+						}
 					}
 					ip := l.IP
 					if ip == "" {
@@ -349,12 +431,19 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 			stations = []stationEntry{}
 		}
 
-		iwinfoOut, _ := runCmd(4, "iwinfo")
+		safeUCIMap := make(map[string]string, len(uciMap))
+		for k, v := range uciMap {
+			if strings.HasSuffix(k, ".key") && v != "" {
+				safeUCIMap[k] = maskDDNSToken(v)
+			} else {
+				safeUCIMap[k] = v
+			}
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"radios":        radios,
 			"stations":      stations,
 			"station_count": len(stations),
-			"uci_config":    uciMap,
+			"uci_config":    safeUCIMap,
 			"iwinfo_raw":    iwinfoOut,
 		})
 
@@ -380,17 +469,39 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 		}
 		ifaceSec := "default_" + body.Device
 		ssid := strings.TrimSpace(body.SSID)
-		if ssid == "" || len(ssid) > 32 {
-			writeJSON(w, http.StatusBadRequest, false, "SSID must be between 1 and 32 characters")
+		if ssid == "" || len(ssid) > 32 || strings.ContainsAny(ssid, "\r\n\x00") {
+			writeJSON(w, http.StatusBadRequest, false, "SSID must be between 1 and 32 safe characters")
+			return
+		}
+		if strings.ContainsAny(body.Key, "\r\n\x00") {
+			writeJSON(w, http.StatusBadRequest, false, "Wi-Fi key must not contain control characters")
 			return
 		}
 		enc := body.Encryption
 		if enc != "none" && enc != "psk2" && enc != "psk-mixed" && enc != "sae" && enc != "sae-mixed" {
 			enc = "psk2"
 		}
-		if enc != "none" && len(body.Key) > 0 && len(body.Key) < 8 {
-			writeJSON(w, http.StatusBadRequest, false, "Wi-Fi password must be at least 8 characters")
-			return
+		newKey := body.Key
+		if strings.HasPrefix(newKey, "••••") {
+			newKey = ""
+		}
+
+		wirelessMu.Lock()
+		defer wirelessMu.Unlock()
+
+		if enc != "none" {
+			if newKey != "" {
+				if len(newKey) < 8 || len(newKey) > 63 {
+					writeJSON(w, http.StatusBadRequest, false, "Wi-Fi password must be 8–63 characters")
+					return
+				}
+			} else {
+				uciMap := parseUCIConfigMap("wireless")
+				if uciMap["wireless."+ifaceSec+".key"] == "" {
+					writeJSON(w, http.StatusBadRequest, false, "Wi-Fi password is required when enabling encryption")
+					return
+				}
+			}
 		}
 
 		disabledVal := "1"
@@ -401,22 +512,28 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.disabled=%s", ifaceSec, disabledVal))
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.ssid=%s", ifaceSec, ssid))
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.encryption=%s", ifaceSec, enc))
-		if enc != "none" && body.Key != "" {
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.key=%s", ifaceSec, body.Key))
+		if enc == "none" {
+			_, _ = runCmd(4, "uci", "delete", fmt.Sprintf("wireless.%s.key", ifaceSec))
+		} else if newKey != "" {
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.key=%s", ifaceSec, newKey))
 		}
-		if body.Channel != "" && safeTokenKeyPattern.MatchString(body.Channel) {
+		if body.Channel != "" && isSafeTokenKey(body.Channel) {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.channel=%s", body.Device, body.Channel))
 		}
-		if body.HTMode != "" && safeTokenKeyPattern.MatchString(body.HTMode) {
+		if body.HTMode != "" && isSafeTokenKey(body.HTMode) {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.htmode=%s", body.Device, body.HTMode))
 		}
-		if body.TxPower != "" && safeTokenKeyPattern.MatchString(body.TxPower) {
+		if body.TxPower != "" && isSafeTokenKey(body.TxPower) {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.txpower=%s", body.Device, body.TxPower))
 		}
 		if body.Country != "" && len(body.Country) == 2 {
 			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.country=%s", body.Device, strings.ToUpper(body.Country)))
 		}
-		_, _ = runCmd(5, "uci", "commit", "wireless")
+		if out, err := runCmd(5, "uci", "commit", "wireless"); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "wireless")
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit wireless failed: "+out)
+			return
+		}
 		go func() {
 			_, _ = runCmd(10, "wifi", "reload")
 		}()
@@ -437,6 +554,9 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 func handleWirelessRestart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
 		return
 	}
 	out, err := runCmd(12, "wifi", "reload")
@@ -498,13 +618,17 @@ func handleFirewallGet(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	firewallMu.Lock()
+	defer firewallMu.Unlock()
+
 	sections := parseUCISections("firewall")
 
 	defaults := map[string]string{
-		"syn_flood": "1",
-		"input":     "REJECT",
-		"output":    "ACCEPT",
-		"forward":   "REJECT",
+		"synflood_protect": "1",
+		"syn_flood":        "1",
+		"input":            "REJECT",
+		"output":           "ACCEPT",
+		"forward":          "REJECT",
 	}
 	var zones []map[string]interface{}
 	var redirects []map[string]interface{}
@@ -609,11 +733,34 @@ func uciFirewallSectionType(id string) string {
 	return strings.TrimSpace(out)
 }
 
+func snapshotFirewallConfig() ([]byte, os.FileMode, bool) {
+	st, err := os.Stat("/etc/config/firewall")
+	if err != nil {
+		return nil, 0644, false
+	}
+	raw, err := os.ReadFile("/etc/config/firewall")
+	if err != nil {
+		return nil, st.Mode().Perm(), false
+	}
+	return raw, st.Mode().Perm(), true
+}
+
+func rollbackFirewall(snap []byte, perm os.FileMode, hasSnap bool) {
+	_, _ = runCmd(3, "uci", "revert", "firewall")
+	if hasSnap {
+		_ = os.WriteFile("/etc/config/firewall", snap, perm)
+		_, _ = runCmd(5, "/etc/init.d/firewall", "reload")
+	}
+}
+
 // POST / PATCH / DELETE /api/v1/firewall/redirect
 func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	firewallMu.Lock()
+	defer firewallMu.Unlock()
+
 	switch r.Method {
 	case http.MethodPost:
 		var body struct {
@@ -628,8 +775,10 @@ func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := strings.TrimSpace(body.Name)
-		if name == "" || strings.ContainsAny(name, "\r\n") || !isValidPortSpec(body.SrcDport) || net.ParseIP(body.DestIP) == nil {
-			writeJSON(w, http.StatusBadRequest, false, "invalid redirect rule fields (valid name, src_dport, dest_ip required)")
+		destIP := strings.TrimSpace(body.DestIP)
+		parsedDest := net.ParseIP(destIP)
+		if name == "" || len(name) > 64 || strings.ContainsAny(name, "\r\n\x00") || !isValidPortSpec(body.SrcDport) || parsedDest == nil || parsedDest.To4() == nil {
+			writeJSON(w, http.StatusBadRequest, false, "invalid redirect rule fields (valid name, src_dport, IPv4 dest_ip required)")
 			return
 		}
 		if body.DestPort == "" {
@@ -639,29 +788,46 @@ func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		proto := strings.ToLower(strings.TrimSpace(body.Proto))
-		if proto != "tcp" && proto != "udp" && proto != "tcp udp" {
+		if proto == "" {
 			proto = "tcp"
 		}
+		if proto != "tcp" && proto != "udp" && proto != "tcp udp" {
+			writeJSON(w, http.StatusBadRequest, false, "invalid proto: expected tcp, udp, or 'tcp udp'")
+			return
+		}
+		snap, perm, hasSnap := snapshotFirewallConfig()
 		secID, err := runCmd(4, "uci", "add", "firewall", "redirect")
 		if err != nil || secID == "" {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
 			writeJSON(w, http.StatusInternalServerError, false, "failed to create UCI redirect section")
 			return
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.name=%s", secID, name))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.src=wan", secID))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.dest=lan", secID))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.proto=%s", secID, proto))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.src_dport=%s", secID, strings.TrimSpace(body.SrcDport)))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.dest_ip=%s", secID, strings.TrimSpace(body.DestIP)))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.dest_port=%s", secID, strings.TrimSpace(body.DestPort)))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.target=DNAT", secID))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=1", secID))
+		uciOps := []string{
+			fmt.Sprintf("firewall.%s.name=%s", secID, name),
+			fmt.Sprintf("firewall.%s.src=wan", secID),
+			fmt.Sprintf("firewall.%s.dest=lan", secID),
+			fmt.Sprintf("firewall.%s.proto=%s", secID, proto),
+			fmt.Sprintf("firewall.%s.src_dport=%s", secID, strings.TrimSpace(body.SrcDport)),
+			fmt.Sprintf("firewall.%s.dest_ip=%s", secID, parsedDest.To4().String()),
+			fmt.Sprintf("firewall.%s.dest_port=%s", secID, strings.TrimSpace(body.DestPort)),
+			fmt.Sprintf("firewall.%s.target=DNAT", secID),
+			fmt.Sprintf("firewall.%s.enabled=1", secID),
+		}
+		for _, op := range uciOps {
+			if out, opErr := runCmd(4, "uci", "set", op); opErr != nil {
+				_, _ = runCmd(3, "uci", "revert", "firewall")
+				writeJSON(w, http.StatusInternalServerError, false, "uci set failed: "+out)
+				return
+			}
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusCreated, true, map[string]string{"id": secID})
@@ -671,7 +837,7 @@ func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 			ID      string `json:"id"`
 			Enabled bool   `json:"enabled"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || !safeTokenKeyPattern.MatchString(body.ID) {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || !isSafeTokenKey(body.ID) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid request")
 			return
 		}
@@ -679,24 +845,31 @@ func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "section is not a firewall redirect rule")
 			return
 		}
+		snap, perm, hasSnap := snapshotFirewallConfig()
 		val := "0"
 		if body.Enabled {
 			val = "1"
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=%s", body.ID, val))
+		if out, err := runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=%s", body.ID, val)); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
+			writeJSON(w, http.StatusInternalServerError, false, "uci set failed: "+out)
+			return
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"id": body.ID, "enabled": body.Enabled})
 
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
-		if !safeTokenKeyPattern.MatchString(id) {
+		if !isSafeTokenKey(id) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid rule ID")
 			return
 		}
@@ -704,13 +877,20 @@ func handleFirewallRedirect(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "section is not a firewall redirect rule")
 			return
 		}
-		_, _ = runCmd(4, "uci", "delete", "firewall."+id)
+		snap, perm, hasSnap := snapshotFirewallConfig()
+		if out, err := runCmd(4, "uci", "delete", "firewall."+id); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
+			writeJSON(w, http.StatusInternalServerError, false, "uci delete failed: "+out)
+			return
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]string{"deleted": id})
@@ -725,6 +905,9 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	firewallMu.Lock()
+	defer firewallMu.Unlock()
+
 	switch r.Method {
 	case http.MethodPost:
 		var body struct {
@@ -739,7 +922,7 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := strings.TrimSpace(body.Name)
-		if name == "" || strings.ContainsAny(name, "\r\n") {
+		if name == "" || len(name) > 64 || strings.ContainsAny(name, "\r\n\x00") {
 			writeJSON(w, http.StatusBadRequest, false, "valid rule name is required")
 			return
 		}
@@ -747,37 +930,62 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid dest_port")
 			return
 		}
-		target := strings.ToUpper(body.Target)
-		if target != "ACCEPT" && target != "DROP" && target != "REJECT" {
+		target := strings.ToUpper(strings.TrimSpace(body.Target))
+		if target == "" {
 			target = "ACCEPT"
 		}
-		src := body.Src
-		if src != "wan" && src != "lan" {
+		if target != "ACCEPT" && target != "DROP" && target != "REJECT" {
+			writeJSON(w, http.StatusBadRequest, false, "invalid target: must be ACCEPT, DROP, or REJECT")
+			return
+		}
+		src := strings.ToLower(strings.TrimSpace(body.Src))
+		if src == "" {
 			src = "wan"
 		}
-		proto := strings.ToLower(body.Proto)
-		if proto != "tcp" && proto != "udp" && proto != "icmp" && proto != "all" {
+		if src != "wan" && src != "lan" {
+			writeJSON(w, http.StatusBadRequest, false, "invalid src zone: must be wan or lan")
+			return
+		}
+		proto := strings.ToLower(strings.TrimSpace(body.Proto))
+		if proto == "" {
 			proto = "tcp"
 		}
+		if proto != "tcp" && proto != "udp" && proto != "icmp" && proto != "all" {
+			writeJSON(w, http.StatusBadRequest, false, "invalid proto: must be tcp, udp, icmp, or all")
+			return
+		}
+		snap, perm, hasSnap := snapshotFirewallConfig()
 		secID, err := runCmd(4, "uci", "add", "firewall", "rule")
 		if err != nil || secID == "" {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
 			writeJSON(w, http.StatusInternalServerError, false, "failed to add firewall rule")
 			return
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.name=%s", secID, name))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.src=%s", secID, src))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.proto=%s", secID, proto))
-		if strings.TrimSpace(body.DestPort) != "" {
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.dest_port=%s", secID, strings.TrimSpace(body.DestPort)))
+		uciOps := []string{
+			fmt.Sprintf("firewall.%s.name=%s", secID, name),
+			fmt.Sprintf("firewall.%s.src=%s", secID, src),
+			fmt.Sprintf("firewall.%s.proto=%s", secID, proto),
+			fmt.Sprintf("firewall.%s.target=%s", secID, target),
+			fmt.Sprintf("firewall.%s.enabled=1", secID),
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.target=%s", secID, target))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=1", secID))
+		if strings.TrimSpace(body.DestPort) != "" {
+			uciOps = append(uciOps, fmt.Sprintf("firewall.%s.dest_port=%s", secID, strings.TrimSpace(body.DestPort)))
+		}
+		for _, op := range uciOps {
+			if out, opErr := runCmd(4, "uci", "set", op); opErr != nil {
+				_, _ = runCmd(3, "uci", "revert", "firewall")
+				writeJSON(w, http.StatusInternalServerError, false, "uci set failed: "+out)
+				return
+			}
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusCreated, true, map[string]string{"id": secID})
@@ -787,7 +995,7 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 			ID      string `json:"id"`
 			Enabled bool   `json:"enabled"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || !safeTokenKeyPattern.MatchString(body.ID) {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil || !isSafeTokenKey(body.ID) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid request")
 			return
 		}
@@ -795,24 +1003,31 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "section is not a firewall rule")
 			return
 		}
+		snap, perm, hasSnap := snapshotFirewallConfig()
 		val := "0"
 		if body.Enabled {
 			val = "1"
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=%s", body.ID, val))
+		if out, err := runCmd(4, "uci", "set", fmt.Sprintf("firewall.%s.enabled=%s", body.ID, val)); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
+			writeJSON(w, http.StatusInternalServerError, false, "uci set failed: "+out)
+			return
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{"id": body.ID, "enabled": body.Enabled})
 
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
-		if !safeTokenKeyPattern.MatchString(id) {
+		if !isSafeTokenKey(id) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid rule ID")
 			return
 		}
@@ -820,13 +1035,20 @@ func handleFirewallRule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "section is not a firewall rule")
 			return
 		}
-		_, _ = runCmd(4, "uci", "delete", "firewall."+id)
+		snap, perm, hasSnap := snapshotFirewallConfig()
+		if out, err := runCmd(4, "uci", "delete", "firewall."+id); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "firewall")
+			writeJSON(w, http.StatusInternalServerError, false, "uci delete failed: "+out)
+			return
+		}
 		if out, err := runCmd(5, "uci", "commit", "firewall"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit firewall failed (rolled back): "+out)
 			return
 		}
 		if out, err := runCmd(8, "/etc/init.d/firewall", "reload"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed: "+out)
+			rollbackFirewall(snap, perm, hasSnap)
+			writeJSON(w, http.StatusInternalServerError, false, "firewall reload failed (rolled back): "+out)
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]string{"deleted": id})
@@ -854,10 +1076,7 @@ func loadNASShares() []ShareItem {
 	_ = os.MkdirAll("/overlay/share", 0755)
 	_ = os.MkdirAll("/overlay/downloads", 0755)
 	var list []ShareItem
-	data, err := os.ReadFile(sharesConfigFile)
-	if err == nil {
-		_ = json.Unmarshal(data, &list)
-	}
+	settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &list)
 	if len(list) == 0 {
 		list = []ShareItem{
 			{Name: "USB_500G_HDD", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB External HDD Root"},
@@ -889,15 +1108,12 @@ func loadNASShares() []ShareItem {
 }
 
 func saveNASShares(list []ShareItem) {
-	_ = os.MkdirAll("/etc/r3p", 0755)
 	cleanList := make([]ShareItem, len(list))
 	for i, s := range list {
 		s.Password = ""
 		cleanList[i] = s
 	}
-	if b, err := json.MarshalIndent(cleanList, "", "  "); err == nil {
-		_ = os.WriteFile(sharesConfigFile, b, 0644)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "shares", sharesConfigFile, 0644, cleanList)
 	_ = syncSambaConfigFile(list)
 }
 
@@ -1081,6 +1297,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			var body struct {
 				Enabled     *bool  `json:"enabled"`
 				Running     *bool  `json:"running"`
+				Restart     *bool  `json:"restart"`
 				Action      string `json:"action"`
 				Workgroup   string `json:"workgroup"`
 				Description string `json:"description"`
@@ -1090,11 +1307,21 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 				return
 			}
-			if body.Workgroup != "" && safeTokenKeyPattern.MatchString(body.Workgroup) {
+			act := strings.ToLower(strings.TrimSpace(body.Action))
+			if act != "" && !isAllowedInitAction(act) {
+				writeJSON(w, http.StatusBadRequest, false, "invalid Samba service action")
+				return
+			}
+			if body.Workgroup != "" && !isSafeTokenKey(body.Workgroup) {
+				writeJSON(w, http.StatusBadRequest, false, "invalid Samba workgroup name")
+				return
+			}
+			if body.Workgroup != "" {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].workgroup=%s", body.Workgroup))
 			}
 			if body.Description != "" {
-				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].description=%s", body.Description))
+				descClean := strings.ReplaceAll(strings.ReplaceAll(body.Description, "\n", " "), "\r", "")
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].description=%s", descClean))
 			}
 			if body.ExtraTuning != nil {
 				tunVal := "0"
@@ -1115,7 +1342,6 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 
 			_ = syncSambaConfigFile(loadNASShares())
 
-			act := body.Action
 			if act == "" {
 				if body.Running != nil {
 					if *body.Running {
@@ -1123,11 +1349,13 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 					} else {
 						act = "stop"
 					}
-				} else {
+				} else if body.Restart == nil || *body.Restart {
 					act = "restart"
 				}
 			}
-			_, _ = runCmd(8, "/etc/init.d/samba4", act)
+			if act != "" {
+				_, _ = runCmd(8, "/etc/init.d/samba4", act)
+			}
 
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
 				"saved":   true,
@@ -1139,6 +1367,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			var body struct {
 				Enabled         *bool  `json:"enabled"`
 				Running         *bool  `json:"running"`
+				Restart         *bool  `json:"restart"`
 				Action          string `json:"action"`
 				Port            int    `json:"port"`
 				RootDir         string `json:"root_dir"`
@@ -1150,14 +1379,25 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 				return
 			}
-			if body.Port > 0 && body.Port <= 65535 {
+			act := strings.ToLower(strings.TrimSpace(body.Action))
+			if act != "" && !isAllowedInitAction(act) {
+				writeJSON(w, http.StatusBadRequest, false, "invalid FTP service action")
+				return
+			}
+			if body.Port != 0 {
+				if body.Port < 1 || body.Port > 65535 {
+					writeJSON(w, http.StatusBadRequest, false, "FTP port must be between 1 and 65535")
+					return
+				}
 				ftpPort = body.Port
 			}
 			if body.RootDir != "" {
 				validPath, err := validateNASPath(body.RootDir)
-				if err == nil {
-					ftpRootDir = validPath
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, false, "invalid FTP root directory: "+err.Error())
+					return
 				}
+				ftpRootDir = validPath
 			}
 			if body.WriteEnable != nil {
 				ftpWriteEnable = *body.WriteEnable
@@ -1192,7 +1432,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			sb.WriteString(fmt.Sprintf("local_root=%s\n", ftpRootDir))
 			sb.WriteString(fmt.Sprintf("anon_root=%s\n", ftpRootDir))
 
-			_ = os.WriteFile("/etc/vsftpd.conf", []byte(sb.String()), 0644)
+			_ = atomicWriteFile("/etc/vsftpd.conf", []byte(sb.String()), 0644)
 
 			if body.Enabled != nil {
 				if *body.Enabled {
@@ -1202,7 +1442,6 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			act := body.Action
 			if act == "" {
 				if body.Running != nil {
 					if *body.Running {
@@ -1210,11 +1449,13 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 					} else {
 						act = "stop"
 					}
-				} else {
+				} else if body.Restart == nil || *body.Restart {
 					act = "restart"
 				}
 			}
-			_, _ = runCmd(8, "/etc/init.d/vsftpd", act)
+			if act != "" {
+				_, _ = runCmd(8, "/etc/init.d/vsftpd", act)
+			}
 
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
 				"saved":   true,
@@ -1524,14 +1765,27 @@ func handleNASDownloadFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, err.Error())
 		return
 	}
-	info, err := os.Lstat(clean)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+	root, rootErr := os.OpenRoot(parent)
+	if rootErr != nil {
+		writeJSON(w, http.StatusNotFound, false, "file not found")
+		return
+	}
+	defer root.Close()
+	f, openErr := root.Open(filepath.Base(clean))
+	if openErr != nil {
+		writeJSON(w, http.StatusNotFound, false, "file not found")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.IsDir() {
 		writeJSON(w, http.StatusNotFound, false, "file not found")
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", info.Name()))
-	http.ServeFile(w, r, clean)
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // POST / PUT / DELETE /api/v1/nas/shares
@@ -1577,7 +1831,7 @@ func handleNASShares(w http.ResponseWriter, r *http.Request) {
 				if u == "" {
 					continue
 				}
-				if !safeTokenKeyPattern.MatchString(u) {
+				if !isSafeTokenKey(u) {
 					writeJSON(w, http.StatusBadRequest, false, "invalid share username")
 					return
 				}
@@ -1603,12 +1857,23 @@ func handleNASShares(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, true, shares)
 
 	case http.MethodDelete:
-		name := r.URL.Query().Get("name")
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, false, "share name is required")
+			return
+		}
 		updated := []ShareItem{}
+		found := false
 		for _, s := range shares {
 			if s.Name != name {
 				updated = append(updated, s)
+			} else {
+				found = true
 			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, false, "share not found")
+			return
 		}
 		saveNASShares(updated)
 		writeJSON(w, http.StatusOK, true, updated)
@@ -1644,12 +1909,21 @@ func handleUSBStandby(w http.ResponseWriter, r *http.Request) {
 		Minutes int    `json:"minutes"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&body)
+	act := strings.TrimSpace(body.Action)
+	if act == "" {
+		act = "standby_now"
+	}
+	if act != "standby_now" && act != "set_timeout" {
+		writeJSON(w, http.StatusBadRequest, false, "action phải là standby_now hoặc set_timeout")
+		return
+	}
 
-	if body.Action == "set_timeout" {
-		mins := body.Minutes
-		if mins < 0 {
-			mins = 10
+	if act == "set_timeout" {
+		if body.Minutes < 0 || body.Minutes > 1440 {
+			writeJSON(w, http.StatusBadRequest, false, "Thời gian nghỉ phải nằm trong khoảng 0..1440 phút")
+			return
 		}
+		mins := body.Minutes
 		if mins == 0 {
 			_, _ = runCmd(3, "uci", "set", "hd-idle.@hd-idle[0].enabled=0")
 		} else {
@@ -1667,6 +1941,10 @@ func handleUSBStandby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Immediate standby
+	if _, err := os.Stat("/dev/sda"); err != nil {
+		writeJSON(w, http.StatusBadRequest, false, "Không tìm thấy thiết bị USB /dev/sda")
+		return
+	}
 	_, _ = runCmd(3, "sync")
 	out, err := runCmd(4, "hdparm", "-y", "/dev/sda")
 	if err != nil {
@@ -1681,7 +1959,7 @@ func handleUSBStandby(w http.ResponseWriter, r *http.Request) {
 }
 
 func ensureUnixAndSambaUser(u, p string) error {
-	if !safeTokenKeyPattern.MatchString(u) {
+	if !isSafeTokenKey(u) {
 		return fmt.Errorf("invalid username")
 	}
 	if p == "" || strings.ContainsAny(p, "\r\n\x00") {
@@ -1711,29 +1989,25 @@ func ensureUnixAndSambaUser(u, p string) error {
 	}
 	if !found {
 		entry := fmt.Sprintf("%s:x:%d:%d:%s:/var:/bin/false\n", u, maxUID, maxUID, u)
-		f, err := os.OpenFile("/etc/passwd", os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to update /etc/passwd: %w", err)
+		updatedPasswd := string(pContent)
+		if updatedPasswd != "" && !strings.HasSuffix(updatedPasswd, "\n") {
+			updatedPasswd += "\n"
 		}
-		if _, werr := f.WriteString(entry); werr != nil {
-			_ = f.Close()
-			return fmt.Errorf("failed to write /etc/passwd: %w", werr)
-		}
-		if cerr := f.Close(); cerr != nil {
-			return fmt.Errorf("failed to close /etc/passwd: %w", cerr)
+		if err := atomicWriteFile("/etc/passwd", []byte(updatedPasswd+entry), 0644); err != nil {
+			return fmt.Errorf("failed to write /etc/passwd: %w", err)
 		}
 
-		gEntry := fmt.Sprintf("%s:x:%d:\n", u, maxUID)
-		fg, gerr := os.OpenFile("/etc/group", os.O_APPEND|os.O_WRONLY, 0644)
+		gContent, gerr := os.ReadFile("/etc/group")
 		if gerr != nil {
-			return fmt.Errorf("failed to update /etc/group: %w", gerr)
+			return fmt.Errorf("failed to read /etc/group: %w", gerr)
 		}
-		if _, werr := fg.WriteString(gEntry); werr != nil {
-			_ = fg.Close()
-			return fmt.Errorf("failed to write /etc/group: %w", werr)
+		gEntry := fmt.Sprintf("%s:x:%d:\n", u, maxUID)
+		updatedGroup := string(gContent)
+		if updatedGroup != "" && !strings.HasSuffix(updatedGroup, "\n") {
+			updatedGroup += "\n"
 		}
-		if cerr := fg.Close(); cerr != nil {
-			return fmt.Errorf("failed to close /etc/group: %w", cerr)
+		if err := atomicWriteFile("/etc/group", []byte(updatedGroup+gEntry), 0644); err != nil {
+			return fmt.Errorf("failed to write /etc/group: %w", err)
 		}
 	}
 
@@ -1752,7 +2026,7 @@ func ensureUnixAndSambaUser(u, p string) error {
 }
 
 func removeUnixUser(u string) {
-	if u == "" || u == "root" || !safeTokenKeyPattern.MatchString(u) {
+	if u == "" || u == "root" || !isSafeTokenKey(u) {
 		return
 	}
 	nasUsersMu.Lock()
@@ -1766,7 +2040,7 @@ func removeUnixUser(u string) {
 			}
 			newLines = append(newLines, l)
 		}
-		_ = os.WriteFile("/etc/passwd", []byte(strings.Join(newLines, "\n")), 0644)
+		_ = atomicWriteFile("/etc/passwd", []byte(strings.Join(newLines, "\n")), 0644)
 	}
 	if gContent, err := os.ReadFile("/etc/group"); err == nil {
 		lines := strings.Split(string(gContent), "\n")
@@ -1777,7 +2051,7 @@ func removeUnixUser(u string) {
 			}
 			newLines = append(newLines, l)
 		}
-		_ = os.WriteFile("/etc/group", []byte(strings.Join(newLines, "\n")), 0644)
+		_ = atomicWriteFile("/etc/group", []byte(strings.Join(newLines, "\n")), 0644)
 	}
 }
 
@@ -1823,7 +2097,7 @@ func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		u := strings.TrimSpace(body.Username)
 		p := strings.TrimSpace(body.Password)
-		if !safeTokenKeyPattern.MatchString(u) {
+		if !isSafeTokenKey(u) {
 			writeJSON(w, http.StatusBadRequest, false, "Tên tài khoản không hợp lệ (chỉ chữ cái, số, gạch dưới)")
 			return
 		}
@@ -1840,9 +2114,9 @@ func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodDelete:
-		u := r.URL.Query().Get("username")
-		if u == "" || u == "root" {
-			writeJSON(w, http.StatusBadRequest, false, "Không thể xóa tài khoản root")
+		u := strings.TrimSpace(r.URL.Query().Get("username"))
+		if u == "" || u == "root" || !isSafeTokenKey(u) {
+			writeJSON(w, http.StatusBadRequest, false, "Tên tài khoản không hợp lệ hoặc không thể xóa root")
 			return
 		}
 		_, _ = runCmd(3, "smbpasswd", "-x", u)
@@ -1852,87 +2126,6 @@ func handleNASUsers(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
-}
-
-// POST /api/v1/network/speedtest?interface=wwan - Measures bandwidth through chosen interface
-func handleInterfaceSpeedtest(w http.ResponseWriter, r *http.Request) {
-	if !requireOpenWrt(w) {
-		return
-	}
-	iface := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("interface")))
-	if iface == "" {
-		iface = "wwan"
-	}
-	if !safeTokenKeyPattern.MatchString(iface) || strings.HasPrefix(iface, "-") {
-		writeJSON(w, http.StatusBadRequest, false, "invalid network interface")
-		return
-	}
-
-	// Resolve UCI logical interface name (wan/wwan/usbwan) to its active Linux l3_device
-	dev := iface
-	if ubusOut, err := runCmd(3, "ubus", "call", "network.interface."+iface, "status"); err == nil {
-		var ubusData struct {
-			Up       bool   `json:"up"`
-			L3Device string `json:"l3_device"`
-			Device   string `json:"device"`
-		}
-		if json.Unmarshal([]byte(ubusOut), &ubusData) == nil {
-			if ubusData.L3Device != "" && safeTokenKeyPattern.MatchString(ubusData.L3Device) {
-				dev = ubusData.L3Device
-			} else if ubusData.Device != "" && safeTokenKeyPattern.MatchString(ubusData.Device) {
-				dev = ubusData.Device
-			}
-		}
-	}
-
-	parseCurlStats := func(raw string) (float64, float64) {
-		fields := strings.Fields(strings.TrimSpace(raw))
-		if len(fields) == 0 {
-			return 0, 0
-		}
-		bps, _ := strconv.ParseFloat(fields[0], 64)
-		var connectSec float64
-		if len(fields) >= 2 {
-			connectSec, _ = strconv.ParseFloat(fields[1], 64)
-		}
-		return bps, connectSec * 1000.0
-	}
-
-	probeURL := func(targetURL string, maxSecs string) (float64, float64, error) {
-		args := []string{"-fsSL", "-w", "%{speed_download} %{time_connect}", "-o", "/dev/null", "--max-time", maxSecs}
-		if dev != "" {
-			args = append(args, "--interface", dev)
-		}
-		args = append(args, targetURL)
-		out, err := runCmd(12, "curl", args...)
-		bps, latMs := parseCurlStats(out)
-		return bps, latMs, err
-	}
-
-	bytesPerSec, latencyMs, err := probeURL("https://speed.cloudflare.com/__down?bytes=5000000", "8")
-	if err != nil || bytesPerSec <= 0 {
-		bytesPerSec, latencyMs, err = probeURL("http://speedtest.tele2.net/1MB.zip", "8")
-	}
-	if bytesPerSec <= 0 {
-		writeJSON(w, http.StatusBadGateway, false, fmt.Sprintf("Không thể đo băng thông qua cổng %s (%s): kiểm tra kết nối Internet của interface này", strings.ToUpper(iface), dev))
-		return
-	}
-
-	downMbps := (bytesPerSec * 8) / (1024 * 1024)
-	writeJSON(w, http.StatusOK, true, map[string]interface{}{
-		"interface":     iface,
-		"device":        dev,
-		"download_mbps": mathRound(downMbps, 1),
-		"upload_mbps":   0.0,
-		"latency_ms":    mathRound(latencyMs, 1),
-		"tested_at":     time.Now().Format("15:04:05"),
-		"message":       fmt.Sprintf("Đã đo tốc độ cổng %s (%s): ↓ %.1f Mbps (Latency %.1f ms)", strings.ToUpper(iface), dev, mathRound(downMbps, 1), mathRound(latencyMs, 1)),
-	})
-}
-
-func mathRound(val float64, precision int) float64 {
-	ratio := math.Pow(10, float64(precision))
-	return math.Round(val*ratio) / ratio
 }
 
 // ─── 4b. Download Bot & USB Video Storage API ──────────────────────────────
@@ -1958,8 +2151,12 @@ func handleDownloadFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var files []DownloadFileItem
+	truncated := false
 	_ = filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if info.IsDir() {
@@ -1970,6 +2167,10 @@ func handleDownloadFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.HasPrefix(info.Name(), ".") || strings.HasSuffix(info.Name(), ".part") || strings.HasSuffix(info.Name(), ".ytdl") {
 			return nil
+		}
+		if len(files) >= 500 {
+			truncated = true
+			return filepath.SkipAll
 		}
 		rel, _ := filepath.Rel(baseDir, path)
 		cat := "Khác"
@@ -1999,6 +2200,7 @@ func handleDownloadFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"output_directory": baseDir,
 		"total":            len(files),
+		"truncated":        truncated,
 		"files":            files,
 	})
 }
@@ -2024,25 +2226,34 @@ func handleDownloadFileServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subClean := filepath.Clean(filepath.FromSlash(strings.TrimLeft(sub, "/\\")))
-	if strings.Contains(subClean, "..") {
+	if subClean == "." || subClean == ".." || strings.Contains(subClean, "..") || filepath.IsAbs(subClean) {
 		writeJSON(w, http.StatusBadRequest, false, "Invalid path")
 		return
 	}
-	fullPath := filepath.Clean(filepath.Join(cleanBase, subClean))
-	rel, relErr := filepath.Rel(cleanBase, fullPath)
-	if relErr != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		writeJSON(w, http.StatusBadRequest, false, "Invalid path")
+	relSlash := filepath.ToSlash(subClean)
+	root, rootErr := os.OpenRoot(cleanBase)
+	if rootErr != nil {
+		writeJSON(w, http.StatusNotFound, false, "File not found")
 		return
 	}
-	info, err := os.Lstat(fullPath)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+	defer root.Close()
+
+	f, openErr := root.Open(relSlash)
+	if openErr != nil {
+		writeJSON(w, http.StatusNotFound, false, "File not found")
+		return
+	}
+	defer f.Close()
+
+	info, statErr := f.Stat()
+	if statErr != nil || info.IsDir() || !info.Mode().IsRegular() {
 		writeJSON(w, http.StatusNotFound, false, "File not found")
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", info.Name()))
-	http.ServeFile(w, r, fullPath)
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {
@@ -2068,18 +2279,25 @@ func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "Đường dẫn thư mục không được để trống")
 			return
 		}
-		target = filepath.Clean(target)
-		_ = os.MkdirAll(target, 0755)
+		cleanDir, dirErr := validateDownloaderOutputDir(target)
+		if dirErr != nil {
+			writeJSON(w, http.StatusBadRequest, false, dirErr.Error())
+			return
+		}
+		if mkErr := os.MkdirAll(cleanDir, 0755); mkErr != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo thư mục lưu trữ: "+mkErr.Error())
+			return
+		}
 		dlMu.Lock()
-		dlConfig.OutputDirectory = target
+		dlConfig.OutputDirectory = cleanDir
 		saveDownloaderConfig()
 		dlMu.Unlock()
 		syncR3pDownloaderSettings()
 
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"saved":            true,
-			"output_directory": target,
-			"message":          fmt.Sprintf("Đã thay đổi thư mục lưu trữ thành '%s'!", target),
+			"output_directory": cleanDir,
+			"message":          fmt.Sprintf("Đã thay đổi thư mục lưu trữ thành '%s'!", cleanDir),
 		})
 		return
 	}
@@ -2093,20 +2311,26 @@ func handleAccessGet(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
-	dropbearMap := parseUCIConfigMap("dropbear")
+	dropbearSections := parseUCISections("dropbear")
 	dhcpSections := parseUCISections("dhcp")
 
 	sshPort := "22"
 	sshPassAuth := true
 	sshRootAuth := true
-	for k, v := range dropbearMap {
-		if strings.HasSuffix(k, ".Port") {
+	for _, s := range dropbearSections {
+		if s.Type != "dropbear" {
+			continue
+		}
+		if v := strings.TrimSpace(s.Options["Port"]); v != "" {
 			sshPort = v
-		} else if strings.HasSuffix(k, ".PasswordAuth") {
+		}
+		if v, ok := s.Options["PasswordAuth"]; ok {
 			sshPassAuth = v != "off" && v != "0"
-		} else if strings.HasSuffix(k, ".RootPasswordAuth") {
+		}
+		if v, ok := s.Options["RootPasswordAuth"]; ok {
 			sshRootAuth = v != "off" && v != "0"
 		}
+		break
 	}
 
 	dhcpLan := map[string]string{
@@ -2148,13 +2372,16 @@ func handleAccessGet(w http.ResponseWriter, r *http.Request) {
 		"static_leases": staticLeases,
 		"active_leases": leases,
 		"now_unix":      time.Now().Unix(),
-		"ddns":          loadDDNSConfig(),
-		"external_ip":   fetchPublicIPv4(),
+		"ddns":          sanitizePublicDDNS(loadDDNSConfig()),
+		"external_ip":   getCachedPublicIPv4(),
 	})
 }
 
 // PUT /api/v1/access/ssh
 func handleAccessSSH(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
 	if r.Method != http.MethodPut {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
@@ -2168,9 +2395,10 @@ func handleAccessSSH(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 		return
 	}
-	port, err := strconv.Atoi(body.Port)
+	port, err := strconv.Atoi(strings.TrimSpace(body.Port))
 	if err != nil || port < 1 || port > 65535 {
-		port = 22
+		writeJSON(w, http.StatusBadRequest, false, "SSH port phải là số nguyên từ 1 đến 65535")
+		return
 	}
 	pa := "on"
 	if !body.PasswordAuth {
@@ -2180,16 +2408,31 @@ func handleAccessSSH(w http.ResponseWriter, r *http.Request) {
 	if !body.RootPasswordAuth {
 		rpa = "off"
 	}
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dropbear.@dropbear[0].Port=%d", port))
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dropbear.@dropbear[0].PasswordAuth=%s", pa))
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dropbear.@dropbear[0].RootPasswordAuth=%s", rpa))
-	_, _ = runCmd(5, "uci", "commit", "dropbear")
+	for _, op := range []string{
+		fmt.Sprintf("dropbear.@dropbear[0].Port=%d", port),
+		fmt.Sprintf("dropbear.@dropbear[0].PasswordAuth=%s", pa),
+		fmt.Sprintf("dropbear.@dropbear[0].RootPasswordAuth=%s", rpa),
+	} {
+		if out, opErr := runCmd(4, "uci", "set", op); opErr != nil {
+			_, _ = runCmd(3, "uci", "revert", "dropbear")
+			writeJSON(w, http.StatusInternalServerError, false, "uci set dropbear failed: "+out)
+			return
+		}
+	}
+	if out, err := runCmd(5, "uci", "commit", "dropbear"); err != nil {
+		_, _ = runCmd(3, "uci", "revert", "dropbear")
+		writeJSON(w, http.StatusInternalServerError, false, "uci commit dropbear failed: "+out)
+		return
+	}
 	_, _ = runCmd(8, "/etc/init.d/dropbear", "reload")
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{"port": port, "saved": true})
 }
 
 // PUT /api/v1/access/dhcp
 func handleAccessDHCP(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
 	if r.Method != http.MethodPut {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
@@ -2203,26 +2446,49 @@ func handleAccessDHCP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 		return
 	}
-	start, err1 := strconv.Atoi(body.Start)
-	limit, err2 := strconv.Atoi(body.Limit)
+	start, err1 := strconv.Atoi(strings.TrimSpace(body.Start))
+	limit, err2 := strconv.Atoi(strings.TrimSpace(body.Limit))
 	if err1 != nil || err2 != nil || start < 2 || start > 250 || limit < 1 || limit > 250 {
 		writeJSON(w, http.StatusBadRequest, false, "invalid DHCP start or limit range")
 		return
 	}
+	if start+limit > 254 {
+		writeJSON(w, http.StatusBadRequest, false, "DHCP start + limit exceeds 254 address boundary")
+		return
+	}
 	lt := strings.TrimSpace(body.Leasetime)
-	if !safeTokenKeyPattern.MatchString(lt) {
+	if lt == "" {
 		lt = "12h"
 	}
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.start=%d", start))
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.limit=%d", limit))
-	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.lan.leasetime=%s", lt))
-	_, _ = runCmd(5, "uci", "commit", "dhcp")
+	if !isSafeTokenKey(lt) {
+		writeJSON(w, http.StatusBadRequest, false, "invalid DHCP leasetime format")
+		return
+	}
+	for _, op := range []string{
+		fmt.Sprintf("dhcp.lan.start=%d", start),
+		fmt.Sprintf("dhcp.lan.limit=%d", limit),
+		fmt.Sprintf("dhcp.lan.leasetime=%s", lt),
+	} {
+		if out, opErr := runCmd(4, "uci", "set", op); opErr != nil {
+			_, _ = runCmd(3, "uci", "revert", "dhcp")
+			writeJSON(w, http.StatusInternalServerError, false, "uci set dhcp failed: "+out)
+			return
+		}
+	}
+	if out, err := runCmd(5, "uci", "commit", "dhcp"); err != nil {
+		_, _ = runCmd(3, "uci", "revert", "dhcp")
+		writeJSON(w, http.StatusInternalServerError, false, "uci commit dhcp failed: "+out)
+		return
+	}
 	_, _ = runCmd(8, "/etc/init.d/dnsmasq", "reload")
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{"saved": true})
 }
 
 // POST / DELETE /api/v1/access/static-lease
 func handleAccessStaticLease(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		var body struct {
@@ -2234,19 +2500,27 @@ func handleAccessStaticLease(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
 		}
-		if _, err := net.ParseMAC(body.MAC); err != nil || net.ParseIP(body.IP) == nil {
+		macParsed, macErr := net.ParseMAC(strings.TrimSpace(body.MAC))
+		ipParsed := net.ParseIP(strings.TrimSpace(body.IP))
+		if macErr != nil || ipParsed == nil || ipParsed.To4() == nil {
 			writeJSON(w, http.StatusBadRequest, false, "valid MAC and IPv4 address are required")
 			return
 		}
+		hostName := sanitizeFilename(body.Name)
+		if hostName == "" || hostName == "download" {
+			hostName = "device-" + strings.ReplaceAll(strings.ToLower(macParsed.String()), ":", "")[6:]
+		}
 		secID, err := runCmd(4, "uci", "add", "dhcp", "host")
 		if err != nil || secID == "" {
+			_, _ = runCmd(3, "uci", "revert", "dhcp")
 			writeJSON(w, http.StatusInternalServerError, false, "failed to add static lease")
 			return
 		}
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.name=%s", secID, sanitizeFilename(body.Name)))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.mac=%s", secID, strings.ToLower(strings.TrimSpace(body.MAC))))
-		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.ip=%s", secID, strings.TrimSpace(body.IP)))
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.name=%s", secID, hostName))
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.mac=%s", secID, strings.ToLower(macParsed.String())))
+		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("dhcp.%s.ip=%s", secID, ipParsed.To4().String()))
 		if out, err := runCmd(5, "uci", "commit", "dhcp"); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "dhcp")
 			writeJSON(w, http.StatusInternalServerError, false, "uci commit dhcp failed: "+out)
 			return
 		}
@@ -2262,7 +2536,7 @@ func handleAccessStaticLease(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&body)
 			id = strings.TrimSpace(body.ID)
 		}
-		if !safeTokenKeyPattern.MatchString(id) {
+		if !isSafeTokenKey(id) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid ID")
 			return
 		}
@@ -2273,6 +2547,7 @@ func handleAccessStaticLease(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = runCmd(4, "uci", "delete", "dhcp."+id)
 		if out, err := runCmd(5, "uci", "commit", "dhcp"); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "dhcp")
 			writeJSON(w, http.StatusInternalServerError, false, "uci commit dhcp failed: "+out)
 			return
 		}
@@ -2298,12 +2573,11 @@ func handleAccessPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pw := strings.TrimSpace(body.Password)
-	if len(pw) < 4 || len(pw) > 64 || strings.ContainsAny(pw, "\r\n'\"\\") {
-		writeJSON(w, http.StatusBadRequest, false, "password must be 4–64 safe characters")
+	if len(pw) < 4 || len(pw) > 64 || strings.ContainsAny(pw, "\r\n'\"\\\x00") {
+		writeJSON(w, http.StatusBadRequest, false, "password must be 4–64 safe characters without quotes or control bytes")
 		return
 	}
-	if strings.ContainsAny(pw, "\r\n\x00") {
-		writeJSON(w, http.StatusBadRequest, false, "Mật khẩu không được chứa ký tự xuống dòng hoặc NUL")
+	if !requireOpenWrt(w) {
 		return
 	}
 	if _, err := os.Stat("/etc/shadow"); err == nil {
@@ -2317,8 +2591,14 @@ func handleAccessPassword(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = os.MkdirAll("/etc/r3p", 0700)
-	if err := os.WriteFile("/etc/r3p/api-token", []byte(pw+"\n"), 0600); err != nil {
+	tmpToken := "/etc/r3p/api-token.tmp"
+	if err := os.WriteFile(tmpToken, []byte(pw+"\n"), 0600); err != nil {
 		writeJSON(w, http.StatusInternalServerError, false, "Không thể lưu api-token: "+err.Error())
+		return
+	}
+	if err := os.Rename(tmpToken, "/etc/r3p/api-token"); err != nil {
+		_ = os.Remove(tmpToken)
+		writeJSON(w, http.StatusInternalServerError, false, "Không thể ghi nhận api-token: "+err.Error())
 		return
 	}
 	if globalAuth != nil {
@@ -2341,14 +2621,17 @@ type CronEntry struct {
 
 func loadRootCrontab() []CronEntry {
 	_ = os.MkdirAll("/etc/crontabs", 0755)
-	lines := readFileLines(rootCrontabPath, 200)
-	if len(lines) == 0 {
+	rawBytes, readErr := os.ReadFile(rootCrontabPath)
+	var lines []string
+	if os.IsNotExist(readErr) {
 		defaultLines := []string{
 			"0 4 * * * sync; echo 3 > /proc/sys/vm/drop_caches # Daily RAM cache flush",
 			"*/30 * * * * /usr/sbin/ntpd -q -p pool.ntp.org # Periodic NTP time sync",
 		}
-		_ = os.WriteFile(rootCrontabPath, []byte(strings.Join(defaultLines, "\n")+"\n"), 0600)
+		_ = atomicWriteFile(rootCrontabPath, []byte(strings.Join(defaultLines, "\n")+"\n"), 0600)
 		lines = defaultLines
+	} else if readErr == nil {
+		lines = strings.Split(string(rawBytes), "\n")
 	}
 	var res []CronEntry
 	for idx, raw := range lines {
@@ -2374,6 +2657,9 @@ func loadRootCrontab() []CronEntry {
 			continue
 		}
 		sched := strings.Join(fields[:5], " ")
+		if !isValidCronSchedule(sched) {
+			continue
+		}
 		cmd := strings.Join(fields[5:], " ")
 		res = append(res, CronEntry{
 			Index:       idx,
@@ -2389,25 +2675,95 @@ func loadRootCrontab() []CronEntry {
 	return res
 }
 
+func extractCrontabPreservedHeaders(raw string) []string {
+	var kept []string
+	for _, rawLine := range strings.Split(raw, "\n") {
+		t := strings.TrimSpace(rawLine)
+		if t == "" || strings.HasPrefix(t, "#DISABLED#") {
+			continue
+		}
+		if strings.HasPrefix(t, "#") {
+			kept = append(kept, rawLine)
+			continue
+		}
+		fields := strings.Fields(t)
+		if len(fields) > 0 && !isValidCronSchedule(strings.Join(fields[:min(len(fields), 5)], " ")) {
+			// Preserve environment variables such as SHELL= or PATH=
+			if strings.Contains(fields[0], "=") {
+				kept = append(kept, rawLine)
+			}
+		}
+	}
+	return kept
+}
+
 func saveRootCrontab(entries []CronEntry) {
+	var preserved []string
+	if rawBytes, err := os.ReadFile(rootCrontabPath); err == nil {
+		preserved = extractCrontabPreservedHeaders(string(rawBytes))
+	}
 	var lines []string
+	lines = append(lines, preserved...)
 	for _, e := range entries {
 		prefix := ""
 		if !e.Enabled {
 			prefix = "#DISABLED# "
 		}
-		desc := strings.TrimSpace(e.Description)
+		desc := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(e.Description), "\r", ""), "\n", "")
 		if desc == "" {
 			desc = "Scheduled task"
 		}
-		lines = append(lines, fmt.Sprintf("%s%s %s # %s", prefix, e.Schedule, e.Command, desc))
+		cmd := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(e.Command), "\r", ""), "\n", "")
+		lines = append(lines, fmt.Sprintf("%s%s %s # %s", prefix, e.Schedule, cmd, desc))
 	}
 	_ = os.MkdirAll("/etc/crontabs", 0755)
-	_ = os.WriteFile(rootCrontabPath, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+	_ = atomicWriteFile(rootCrontabPath, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 	_, _ = runCmd(5, "/etc/init.d/cron", "reload")
 }
 
 var cronFieldPattern = regexp.MustCompile(`^[0-9*,/-]+$`)
+
+func isValidCronField(field string, minVal, maxVal int) bool {
+	if !cronFieldPattern.MatchString(field) {
+		return false
+	}
+	parts := strings.Split(field, ",")
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		stepParts := strings.Split(part, "/")
+		if len(stepParts) > 2 {
+			return false
+		}
+		if len(stepParts) == 2 {
+			step, err := strconv.Atoi(stepParts[1])
+			if err != nil || step < 1 || step > maxVal {
+				return false
+			}
+		}
+		base := stepParts[0]
+		if base == "*" {
+			continue
+		}
+		rangeParts := strings.Split(base, "-")
+		if len(rangeParts) == 1 {
+			v, err := strconv.Atoi(rangeParts[0])
+			if err != nil || v < minVal || v > maxVal {
+				return false
+			}
+		} else if len(rangeParts) == 2 {
+			a, err1 := strconv.Atoi(rangeParts[0])
+			b, err2 := strconv.Atoi(rangeParts[1])
+			if err1 != nil || err2 != nil || a < minVal || b > maxVal || a > b {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	return true
+}
 
 func isValidCronSchedule(sched string) bool {
 	if strings.ContainsAny(sched, "\r\n#") {
@@ -2417,10 +2773,52 @@ func isValidCronSchedule(sched string) bool {
 	if len(fields) != 5 {
 		return false
 	}
-	for _, f := range fields {
-		if !cronFieldPattern.MatchString(f) {
+	bounds := [5][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
+	for i, f := range fields {
+		if !isValidCronField(f, bounds[i][0], bounds[i][1]) {
 			return false
 		}
+	}
+	return true
+}
+
+func isAllowedCronCommand(cmd string) bool {
+	c := strings.TrimSpace(cmd)
+	if c == "" || strings.ContainsAny(c, "\r\n\x00#") || strings.Contains(c, "..") {
+		return false
+	}
+	switch c {
+	case "sync; echo 3 > /proc/sys/vm/drop_caches",
+		"/usr/sbin/ntpd -q -p pool.ntp.org",
+		"/etc/init.d/dnsmasq reload":
+		return true
+	}
+	if strings.ContainsAny(c, ";|&><$`") {
+		return false
+	}
+	parts := strings.Fields(c)
+	if len(parts) == 0 {
+		return false
+	}
+	bin := parts[0]
+	allowedPrefix := false
+	for _, prefix := range []string{"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/etc/init.d/"} {
+		if strings.HasPrefix(bin, prefix) && len(bin) > len(prefix) {
+			allowedPrefix = true
+			break
+		}
+	}
+	if !allowedPrefix {
+		return false
+	}
+	baseBin := bin
+	if slash := strings.LastIndex(bin, "/"); slash >= 0 {
+		baseBin = strings.ToLower(bin[slash+1:])
+	}
+	switch baseBin {
+	case "sh", "ash", "bash", "dash", "zsh", "csh", "ksh", "busybox", "env", "su", "sudo",
+		"lua", "luajit", "python", "python2", "python3", "perl", "awk", "curl", "wget", "nc", "netcat", "socat":
+		return false
 	}
 	return true
 }
@@ -2445,16 +2843,16 @@ func runSafeSystemPreset(presetID string) (string, string, error) {
 		}
 		return "/etc/init.d/dnsmasq reload", out, err
 	case "dns_reload", "plugin-dns-adblock":
-		_ = os.MkdirAll("/tmp/hosts", 0755)
-		rules := "0.0.0.0 doubleclick.net\n0.0.0.0 googleadservices.com\n0.0.0.0 pagead2.googlesyndication.com\n"
-		if werr := os.WriteFile("/tmp/hosts/r3p-adblock", []byte(rules), 0644); werr != nil {
-			return "adblock hosts update", "", werr
+		_ = os.MkdirAll("/tmp/dnsmasq.d", 0755)
+		rules := "address=/doubleclick.net/#\naddress=/googleadservices.com/#\naddress=/pagead2.googlesyndication.com/#\n"
+		if werr := atomicWriteFile("/tmp/dnsmasq.d/r3p-plugin-adblock.conf", []byte(rules), 0644); werr != nil {
+			return "adblock plugin dnsmasq update", "", werr
 		}
 		out, err := runCmd(8, "/etc/init.d/dnsmasq", "reload")
 		if err == nil {
-			out = strings.TrimSpace("AdBlock hosts active (3 rules loaded)\n" + out)
+			out = strings.TrimSpace("AdBlock plugin rules active (3 domains in /tmp/dnsmasq.d/r3p-plugin-adblock.conf)\n" + out)
 		}
-		return "adblock hosts + dnsmasq reload", out, err
+		return "adblock dnsmasq rules + reload", out, err
 	case "ntp_sync":
 		out, err := runCmd(10, "/usr/sbin/ntpd", "-q", "-p", "pool.ntp.org")
 		return "/usr/sbin/ntpd -q -p pool.ntp.org", out, err
@@ -2489,9 +2887,11 @@ func handleAutomationCron(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
-	entries := loadRootCrontab()
 	switch r.Method {
 	case http.MethodGet:
+		cronMu.Lock()
+		entries := loadRootCrontab()
+		cronMu.Unlock()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"jobs":     entries,
 			"telegram": telegramDownloader.statusSnapshot(),
@@ -2506,14 +2906,18 @@ func handleAutomationCron(w http.ResponseWriter, r *http.Request) {
 		body.Schedule = strings.TrimSpace(body.Schedule)
 		body.Command = strings.TrimSpace(body.Command)
 		body.Description = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(body.Description), "\r", ""), "\n", "")
-		if !isValidCronSchedule(body.Schedule) || body.Command == "" || strings.ContainsAny(body.Command, "\r\n") {
-			writeJSON(w, http.StatusBadRequest, false, "valid 5-field cron schedule and single-line command are required")
+		if !isValidCronSchedule(body.Schedule) || !isAllowedCronCommand(body.Command) {
+			writeJSON(w, http.StatusBadRequest, false, "valid 5-field cron schedule and safe allowlisted single-line command are required")
 			return
 		}
 		body.Enabled = true
+		cronMu.Lock()
+		entries := loadRootCrontab()
 		entries = append(entries, body)
 		saveRootCrontab(entries)
-		writeJSON(w, http.StatusCreated, true, map[string]interface{}{"jobs": loadRootCrontab()})
+		refreshed := loadRootCrontab()
+		cronMu.Unlock()
+		writeJSON(w, http.StatusCreated, true, map[string]interface{}{"jobs": refreshed})
 
 	case http.MethodPatch:
 		var body struct {
@@ -2524,6 +2928,8 @@ func handleAutomationCron(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
 		}
+		cronMu.Lock()
+		entries := loadRootCrontab()
 		matched := false
 		for i := range entries {
 			if entries[i].Index == body.Index {
@@ -2532,11 +2938,14 @@ func handleAutomationCron(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !matched {
+			cronMu.Unlock()
 			writeJSON(w, http.StatusNotFound, false, "cron job index not found")
 			return
 		}
 		saveRootCrontab(entries)
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"jobs": loadRootCrontab()})
+		refreshed := loadRootCrontab()
+		cronMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{"jobs": refreshed})
 
 	case http.MethodDelete:
 		idx, err := strconv.Atoi(r.URL.Query().Get("index"))
@@ -2544,17 +2953,44 @@ func handleAutomationCron(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid index")
 			return
 		}
+		cronMu.Lock()
+		entries := loadRootCrontab()
 		updated := []CronEntry{}
+		found := false
 		for _, e := range entries {
 			if e.Index != idx {
 				updated = append(updated, e)
+			} else {
+				found = true
 			}
 		}
+		if !found {
+			cronMu.Unlock()
+			writeJSON(w, http.StatusNotFound, false, "cron job index not found")
+			return
+		}
 		saveRootCrontab(updated)
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"jobs": loadRootCrontab()})
+		refreshed := loadRootCrontab()
+		cronMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{"jobs": refreshed})
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+	}
+}
+
+func isSupportedSystemPreset(presetID string) bool {
+	switch presetID {
+	case "flush_ram_cache", "ram_flush", "plugin-ram-optimizer",
+		"listening_sockets",
+		"reload_dnsmasq", "dns_reload", "plugin-dns-adblock",
+		"ntp_sync",
+		"lan_probe", "plugin-wan-watchdog",
+		"nand_health", "plugin-nand-health",
+		"disk_usage", "uptime_check":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2574,12 +3010,18 @@ func handleAutomationRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	preset := strings.TrimSpace(body.Preset)
+	var cronExecCmd string
+	var cronExecParts []string
 	if preset == "" && body.CronIndex != nil {
-		for _, entry := range loadRootCrontab() {
+		cronMu.Lock()
+		entries := loadRootCrontab()
+		cronMu.Unlock()
+		for _, entry := range entries {
 			if entry.Index != *body.CronIndex {
 				continue
 			}
-			cmdLower := strings.ToLower(entry.Command)
+			cleanCmd := strings.TrimSpace(strings.SplitN(entry.Command, "#", 2)[0])
+			cmdLower := strings.ToLower(cleanCmd)
 			switch {
 			case strings.Contains(cmdLower, "drop_caches"):
 				preset = "flush_ram_cache"
@@ -2588,30 +3030,43 @@ func handleAutomationRun(w http.ResponseWriter, r *http.Request) {
 			case strings.Contains(cmdLower, "dnsmasq") && strings.Contains(cmdLower, "reload"):
 				preset = "reload_dnsmasq"
 			default:
-				parts := strings.Fields(entry.Command)
-				if len(parts) > 0 && !strings.ContainsAny(entry.Command, ";|&><$`\r\n") &&
-					(strings.HasPrefix(parts[0], "/usr/bin/") || strings.HasPrefix(parts[0], "/usr/sbin/") || strings.HasPrefix(parts[0], "/etc/init.d/")) {
-					if st, serr := os.Stat(parts[0]); serr == nil && !st.IsDir() {
-						out, err := runCmd(10, parts[0], parts[1:]...)
-						errStr := ""
-						if err != nil {
-							errStr = err.Error()
-						}
-						writeJSON(w, http.StatusOK, true, map[string]interface{}{
-							"command": entry.Command,
-							"output":  out,
-							"error":   errStr,
-						})
-						return
-					}
+				parts := strings.Fields(cleanCmd)
+				if len(parts) > 0 && !strings.ContainsAny(cleanCmd, ";|&><$`\r\n") && !strings.Contains(cleanCmd, "..") &&
+					(strings.HasPrefix(parts[0], "/usr/bin/") || strings.HasPrefix(parts[0], "/usr/sbin/") || strings.HasPrefix(parts[0], "/bin/") || strings.HasPrefix(parts[0], "/sbin/") || strings.HasPrefix(parts[0], "/etc/init.d/")) {
+					cronExecCmd = cleanCmd
+					cronExecParts = parts
 				}
 			}
 			break
 		}
 	}
 
+	if len(cronExecParts) > 0 {
+		if !requireOpenWrt(w) {
+			return
+		}
+		if st, serr := os.Stat(cronExecParts[0]); serr == nil && !st.IsDir() {
+			out, err := runCmd(10, cronExecParts[0], cronExecParts[1:]...)
+			writeJSON(w, http.StatusOK, true, map[string]interface{}{
+				"command": cronExecCmd,
+				"output":  out,
+				"error":   errString(err),
+			})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, false, "cron command executable not found")
+		return
+	}
+
 	if preset == "" {
 		writeJSON(w, http.StatusBadRequest, false, "arbitrary shell execution is disabled; use a supported maintenance preset or verified binary cron task")
+		return
+	}
+	if !isSupportedSystemPreset(preset) {
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("unknown or unsupported execution preset %q", preset))
+		return
+	}
+	if !requireOpenWrt(w) {
 		return
 	}
 	cmdLabel, out, err := runSafeSystemPreset(preset)
@@ -2639,11 +3094,17 @@ func handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
 	}
+	if !requireOpenWrt(w) {
+		return
+	}
 	var body struct {
 		BotToken string `json:"bot_token"`
 		ChatID   string `json:"chat_id"`
 	}
-	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+		return
+	}
 	token := strings.TrimSpace(body.BotToken)
 	if token == "" {
 		token = telegramDownloader.currentToken()
@@ -2652,30 +3113,53 @@ func handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 	if chatID == "" {
 		chatID = telegramDownloader.statusSnapshot().ChatID
 	}
+	if strings.TrimSpace(chatID) == "" {
+		writeJSON(w, http.StatusBadRequest, false, "Telegram Chat ID is required to send a test message")
+		return
+	}
 	if err := validateTelegramConfig(token, chatID); err != nil {
 		writeJSON(w, http.StatusBadRequest, false, err.Error())
 		return
 	}
 
+	chatIDs := strings.FieldsFunc(chatID, func(r rune) bool {
+		return r == ',' || r == ' ' || r == ';' || r == '|'
+	})
+	if len(chatIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Telegram Chat ID is required to send a test message")
+		return
+	}
+
 	hostname, _ := os.Hostname()
 	msg := fmt.Sprintf("✅ R3P Home Server OS (%s) — Test notification at %s", hostname, time.Now().Format("15:04:05"))
-	payload, _ := json.Marshal(map[string]string{
-		"chat_id": chatID,
-		"text":    msg,
-	})
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, false, "Telegram request failed (check WAN internet access): "+err.Error())
-		return
+	client := newTelegramHTTPClient(10 * time.Second)
+	for _, cid := range chatIDs {
+		payload, _ := json.Marshal(map[string]string{
+			"chat_id": cid,
+			"text":    msg,
+		})
+		resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, false, "Telegram request failed (check WAN internet access): "+sanitizeTelegramError(token, err))
+			return
+		}
+		var tgErr struct {
+			Description string `json:"description"`
+		}
+		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			_ = json.Unmarshal(rawBody, &tgErr)
+			if tgErr.Description != "" {
+				writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Telegram API HTTP %d (%s): %s", resp.StatusCode, cid, sanitizeTelegramError(token, errors.New(tgErr.Description))))
+			} else {
+				writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Telegram API returned HTTP %d for chat %s", resp.StatusCode, cid))
+			}
+			return
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Telegram API returned HTTP %d", resp.StatusCode))
-		return
-	}
-	writeJSON(w, http.StatusOK, true, map[string]string{"message": "Telegram test notification sent successfully!"})
+	writeJSON(w, http.StatusOK, true, map[string]string{"message": fmt.Sprintf("Telegram test notification sent to %d chat(s)!", len(chatIDs))})
 }
 
 // ─── 7. Applications, Services & Installed APK Packages ───────────────────
@@ -2812,12 +3296,12 @@ func handleServicesControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 		return
 	}
-	if !safeTokenKeyPattern.MatchString(body.Service) {
+	if !isSafeTokenKey(body.Service) {
 		writeJSON(w, http.StatusBadRequest, false, "invalid service name")
 		return
 	}
-	if body.Service == "r3p-api" && (body.Action == "stop" || body.Action == "disable") {
-		writeJSON(w, http.StatusBadRequest, false, "cannot stop or disable r3p-api from the web UI")
+	if body.Service == "r3p-api" && (body.Action == "stop" || body.Action == "disable" || body.Action == "restart" || body.Action == "reload") {
+		writeJSON(w, http.StatusBadRequest, false, "cannot stop, disable, or interrupt r3p-api from the web UI")
 		return
 	}
 	switch body.Action {
@@ -2826,21 +3310,28 @@ func handleServicesControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, false, "unsupported action")
 		return
 	}
+	if !requireOpenWrt(w) {
+		return
+	}
 	initPath := "/etc/init.d/" + body.Service
 	if _, err := os.Stat(initPath); err != nil {
 		writeJSON(w, http.StatusNotFound, false, "init script not found")
 		return
 	}
 	out, err := runCmd(10, initPath, body.Action)
-	errStr := ""
 	if err != nil {
-		errStr = err.Error()
+		msg := fmt.Sprintf("Dịch vụ %s thất bại khi %s: %v", body.Service, body.Action, err)
+		if trimmed := strings.TrimSpace(out); trimmed != "" {
+			msg += " — " + trimmed
+		}
+		writeJSON(w, http.StatusInternalServerError, false, msg)
+		return
 	}
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"service": body.Service,
 		"action":  body.Action,
 		"output":  out,
-		"error":   errStr,
+		"error":   "",
 	})
 }
 
@@ -2904,15 +3395,12 @@ func macShortID(mac string) string {
 }
 
 func loadIoTDevices() []IoTDevice {
-	data, err := os.ReadFile(iotDevicesFile)
-	if err == nil {
-		var list []IoTDevice
-		if json.Unmarshal(data, &list) == nil {
-			if list == nil {
-				return []IoTDevice{}
-			}
-			return list
+	var list []IoTDevice
+	if settingsDBLoadJSON(bucketCollections, "iot_devices", iotDevicesFile, &list) {
+		if list == nil {
+			return []IoTDevice{}
 		}
+		return list
 	}
 	// Auto-seed from current DHCP leases
 	leases := parseDHCPLeases("/tmp/dhcp.leases")
@@ -2925,9 +3413,9 @@ func loadIoTDevices() []IoTDevice {
 			MAC:      l.MAC,
 			Protocol: "ICMP / LAN",
 			Topic:    "r3p/lan/" + l.Hostname,
-			Online:   true,
-			Latency:  "< 1 ms",
-			LastSeen: time.Now().Format("15:04:05"),
+			Online:   false,
+			Latency:  "Chưa kiểm tra",
+			LastSeen: "",
 		})
 	}
 	saveIoTDevices(seeded)
@@ -2938,19 +3426,13 @@ func saveIoTDevices(list []IoTDevice) {
 	if list == nil {
 		list = []IoTDevice{}
 	}
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
-		_ = os.WriteFile(iotDevicesFile, b, 0644)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "iot_devices", iotDevicesFile, 0644, list)
 }
 
 func loadIoTBroker() IoTBrokerConfig {
-	data, err := os.ReadFile(iotBrokerFile)
-	if err == nil {
-		var cfg IoTBrokerConfig
-		if json.Unmarshal(data, &cfg) == nil && cfg.Host != "" {
-			return cfg
-		}
+	var cfg IoTBrokerConfig
+	if settingsDBLoadJSON(bucketSettings, "iot_broker", iotBrokerFile, &cfg) && cfg.Host != "" {
+		return cfg
 	}
 	return IoTBrokerConfig{
 		Host:        getRouterLanIP(),
@@ -2995,19 +3477,67 @@ func probeIoTDevice(ip, protocol string, brokerPort int) (bool, string) {
 	return true, fmt.Sprintf("%d ms", ms)
 }
 
+func isLocalBrokerHost(host string) bool {
+	h := strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if h == "" || h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP != nil && ipNet.IP.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func probeIoTBrokerAlive(cfg IoTBrokerConfig) bool {
+	if !cfg.Enabled || cfg.Host == "" || cfg.Port < 1 || cfg.Port > 65535 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), 700*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return true
+	}
+	if isLocalBrokerHost(cfg.Host) {
+		if entries, rerr := os.ReadDir("/proc"); rerr == nil {
+			for _, e := range entries {
+				if _, aerr := strconv.Atoi(e.Name()); aerr == nil {
+					if cmd := readFile("/proc/" + e.Name() + "/cmdline"); strings.Contains(cmd, "mosquitto") {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // GET / POST / PUT / DELETE /api/v1/iot
 func handleIoT(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	iotMu.Lock()
 	devices := loadIoTDevices()
 	broker := loadIoTBroker()
+	iotMu.Unlock()
 
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
-			"devices": devices,
-			"broker":  broker,
+			"devices":      devices,
+			"broker":       broker,
+			"broker_alive": probeIoTBrokerAlive(broker),
 		})
 
 	case http.MethodPost:
@@ -3018,9 +3548,16 @@ func handleIoT(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Name = strings.TrimSpace(body.Name)
 		body.IP = strings.TrimSpace(body.IP)
-		if body.Name == "" || net.ParseIP(body.IP) == nil {
+		body.MAC = strings.TrimSpace(body.MAC)
+		if body.Name == "" || net.ParseIP(body.IP) == nil || strings.ContainsAny(body.Name+body.Topic+body.Protocol, "\r\n\x00") {
 			writeJSON(w, http.StatusBadRequest, false, "device name and valid IP address are required")
 			return
+		}
+		if body.MAC != "" {
+			if _, err := net.ParseMAC(body.MAC); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, "invalid MAC address format")
+				return
+			}
 		}
 		if body.ID == "" {
 			body.ID = "iot-" + generateGID()[:6]
@@ -3039,9 +3576,14 @@ func handleIoT(w http.ResponseWriter, r *http.Request) {
 		} else {
 			body.Latency = "Offline"
 		}
-		devices = append(devices, body)
+		iotMu.Lock()
+		devices = append(loadIoTDevices(), body)
 		saveIoTDevices(devices)
-		writeJSON(w, http.StatusCreated, true, map[string]interface{}{"devices": devices})
+		iotMu.Unlock()
+		writeJSON(w, http.StatusCreated, true, map[string]interface{}{
+			"devices":      devices,
+			"broker_alive": probeIoTBrokerAlive(broker),
+		})
 
 	case http.MethodPut:
 		var cfg IoTBrokerConfig
@@ -3050,26 +3592,48 @@ func handleIoT(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.Host = strings.TrimSpace(cfg.Host)
+		cfg.Username = strings.TrimSpace(cfg.Username)
+		cfg.TopicPrefix = strings.TrimSpace(cfg.TopicPrefix)
 		if cfg.Host == "" || strings.ContainsAny(cfg.Host+cfg.Username+cfg.TopicPrefix, "\r\n\x00") || cfg.Port < 1 || cfg.Port > 65535 {
 			writeJSON(w, http.StatusBadRequest, false, "invalid broker host or port (1-65535)")
 			return
 		}
-		if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			_ = os.MkdirAll("/etc/r3p", 0755)
-			_ = os.WriteFile(iotBrokerFile, b, 0644)
-		}
-		writeJSON(w, http.StatusOK, true, cfg)
+		iotMu.Lock()
+		_ = settingsDBSaveJSON(bucketSettings, "iot_broker", iotBrokerFile, 0644, cfg)
+		iotMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"broker":       cfg,
+			"broker_alive": probeIoTBrokerAlive(cfg),
+		})
 
 	case http.MethodDelete:
-		id := r.URL.Query().Get("id")
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			writeJSON(w, http.StatusBadRequest, false, "device id is required")
+			return
+		}
+		iotMu.Lock()
+		devices = loadIoTDevices()
 		updated := []IoTDevice{}
+		found := false
 		for _, d := range devices {
 			if d.ID != id {
 				updated = append(updated, d)
+			} else {
+				found = true
 			}
 		}
+		if !found {
+			iotMu.Unlock()
+			writeJSON(w, http.StatusNotFound, false, "IoT device not found")
+			return
+		}
 		saveIoTDevices(updated)
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"devices": updated})
+		iotMu.Unlock()
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"devices":      updated,
+			"broker_alive": probeIoTBrokerAlive(broker),
+		})
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
@@ -3082,21 +3646,80 @@ func handleIoTPing(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
 	}
+	if !requireOpenWrt(w) {
+		return
+	}
+	iotMu.Lock()
 	devices := loadIoTDevices()
 	broker := loadIoTBroker()
+	iotMu.Unlock()
+
+	type probeOutcome struct {
+		online  bool
+		latency string
+	}
+	results := make([]probeOutcome, len(devices))
+	jobs := make(chan int, len(devices))
+	for i := range devices {
+		if net.ParseIP(devices[i].IP) != nil {
+			jobs <- i
+		}
+	}
+	close(jobs)
+
+	workers := 8
+	if len(devices) < workers {
+		workers = len(devices)
+	}
+	var wg sync.WaitGroup
+	for wIdx := 0; wIdx < workers; wIdx++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				ok, lat := probeIoTDevice(devices[idx].IP, devices[idx].Protocol, broker.Port)
+				results[idx] = probeOutcome{online: ok, latency: lat}
+			}
+		}()
+	}
+	wg.Wait()
+
+	outcomeByID := make(map[string]probeOutcome, len(devices))
 	for i := range devices {
 		if net.ParseIP(devices[i].IP) == nil {
 			continue
 		}
-		online, latency := probeIoTDevice(devices[i].IP, devices[i].Protocol, broker.Port)
-		devices[i].Online = online
-		devices[i].Latency = latency
-		if online {
-			devices[i].LastSeen = time.Now().Format("15:04:05")
+		key := devices[i].ID
+		if key == "" {
+			key = devices[i].IP
+		}
+		outcomeByID[key] = results[i]
+	}
+
+	nowStr := time.Now().Format("15:04:05")
+	iotMu.Lock()
+	current := loadIoTDevices()
+	for i := range current {
+		key := current[i].ID
+		if key == "" {
+			key = current[i].IP
+		}
+		res, ok := outcomeByID[key]
+		if !ok {
+			continue
+		}
+		current[i].Online = res.online
+		current[i].Latency = res.latency
+		if res.online {
+			current[i].LastSeen = nowStr
 		}
 	}
-	saveIoTDevices(devices)
-	writeJSON(w, http.StatusOK, true, map[string]interface{}{"devices": devices})
+	saveIoTDevices(current)
+	iotMu.Unlock()
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{
+		"devices":      current,
+		"broker_alive": probeIoTBrokerAlive(broker),
+	})
 }
 
 // ─── 9. Plugins & Extensions System ───────────────────────────────────────
@@ -3116,12 +3739,15 @@ type PluginManifest struct {
 const pluginsFile = "/etc/r3p/plugins.json"
 
 func loadPlugins() []PluginManifest {
-	data, err := os.ReadFile(pluginsFile)
-	if err == nil {
-		var list []PluginManifest
-		if json.Unmarshal(data, &list) == nil && len(list) > 0 {
-			return list
+	var list []PluginManifest
+	if settingsDBLoadJSON(bucketCollections, "plugins", pluginsFile, &list) {
+		if list == nil {
+			return []PluginManifest{}
 		}
+		return list
+	}
+	if _, err := os.Stat(pluginsFile); err == nil {
+		return []PluginManifest{}
 	}
 	defaults := []PluginManifest{
 		{
@@ -3182,10 +3808,17 @@ func savePlugins(list []PluginManifest) {
 	if list == nil {
 		list = []PluginManifest{}
 	}
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
-		_ = os.WriteFile(pluginsFile, b, 0644)
+	_ = settingsDBSaveJSON(bucketCollections, "plugins", pluginsFile, 0644, list)
+}
+
+func cleanupAdblockPluginArtifacts() {
+	_ = os.Remove("/tmp/hosts/r3p-adblock")
+	if matches, err := filepath.Glob("/tmp/dnsmasq.d/r3p-plugin-*"); err == nil {
+		for _, m := range matches {
+			_ = os.Remove(m)
+		}
 	}
+	_, _ = runCmd(5, "/etc/init.d/dnsmasq", "reload")
 }
 
 // GET / POST /api/v1/plugins
@@ -3193,10 +3826,22 @@ func handlePlugins(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	presetKeys := make([]string, 0, len(allowedPluginPresets))
+	for k := range allowedPluginPresets {
+		presetKeys = append(presetKeys, k)
+	}
+	sort.Strings(presetKeys)
+
+	pluginsMu.Lock()
 	plugins := loadPlugins()
+	pluginsMu.Unlock()
+
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"plugins": plugins})
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"plugins":           plugins,
+			"available_presets": presetKeys,
+		})
 
 	case http.MethodPost:
 		var body struct {
@@ -3210,57 +3855,99 @@ func handlePlugins(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
 		}
+		pluginsMu.Lock()
+		plugins = loadPlugins()
 		switch body.Action {
 		case "toggle":
 			found := false
+			disabledAdblock := false
 			for i := range plugins {
 				if plugins[i].ID == body.ID {
 					plugins[i].Enabled = !plugins[i].Enabled
 					found = true
+					if !plugins[i].Enabled && plugins[i].ID == "plugin-dns-adblock" {
+						disabledAdblock = true
+					}
 				}
 			}
 			if !found {
+				pluginsMu.Unlock()
 				writeJSON(w, http.StatusNotFound, false, "plugin not found")
 				return
 			}
 			savePlugins(plugins)
+			pluginsMu.Unlock()
+			if disabledAdblock {
+				cleanupAdblockPluginArtifacts()
+			}
 		case "run":
 			found := false
+			idx := -1
 			for i := range plugins {
-				if plugins[i].ID != body.ID {
-					continue
+				if plugins[i].ID == body.ID {
+					found = true
+					idx = i
+					break
 				}
-				found = true
-				if !plugins[i].Enabled {
-					writeJSON(w, http.StatusBadRequest, false, "plugin is disabled; enable it before running")
-					return
-				}
-				presetKey := strings.TrimSpace(plugins[i].Command)
-				if !allowedPluginPresets[presetKey] {
-					presetKey = plugins[i].ID
-				}
-				_, out, err := runSafeSystemPreset(presetKey)
-				if err != nil {
-					if strings.HasPrefix(err.Error(), "unknown or unsupported") {
-						writeJSON(w, http.StatusBadRequest, false, "plugin uses unsupported shell execution; recreate using a safe preset hook")
-						return
-					}
-					if out == "" {
-						out = err.Error()
-					}
-				}
-				plugins[i].LastOutput = out
-				plugins[i].LastRun = time.Now().Format("15:04:05")
 			}
 			if !found {
+				pluginsMu.Unlock()
 				writeJSON(w, http.StatusNotFound, false, "plugin not found")
 				return
 			}
+			if !plugins[idx].Enabled {
+				pluginsMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, "plugin is disabled; enable it before running")
+				return
+			}
+			presetKey := strings.TrimSpace(plugins[idx].Command)
+			if !allowedPluginPresets[presetKey] {
+				presetKey = plugins[idx].ID
+			}
+			pluginsMu.Unlock()
+			_, out, err := runSafeSystemPreset(presetKey)
+			if err != nil && strings.HasPrefix(err.Error(), "unknown or unsupported") {
+				writeJSON(w, http.StatusBadRequest, false, "plugin uses unsupported shell execution; recreate using a safe preset hook")
+				return
+			}
+			if err != nil && out == "" {
+				out = err.Error()
+			}
+			pluginsMu.Lock()
+			plugins = loadPlugins()
+			for i := range plugins {
+				if plugins[i].ID == body.ID {
+					plugins[i].LastOutput = out
+					plugins[i].LastRun = time.Now().Format("15:04:05")
+				}
+			}
 			savePlugins(plugins)
+			pluginsMu.Unlock()
+			if err != nil {
+				errMsg := strings.TrimSpace(out)
+				if errMsg == "" {
+					errMsg = err.Error()
+				}
+				writeJSON(w, http.StatusInternalServerError, false, errMsg)
+				return
+			}
 		case "create":
-			body.Name = strings.TrimSpace(body.Name)
+			if len(plugins) >= 64 {
+				pluginsMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, "maximum plugin limit (64) reached")
+				return
+			}
+			body.Name = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ", "\x00", "").Replace(body.Name))
+			if runes := []rune(body.Name); len(runes) > 80 {
+				body.Name = string(runes[:80])
+			}
+			body.Description = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ", "\x00", "").Replace(body.Description))
+			if runes := []rune(body.Description); len(runes) > 256 {
+				body.Description = string(runes[:256])
+			}
 			body.Command = strings.TrimSpace(body.Command)
 			if body.Name == "" || !allowedPluginPresets[body.Command] {
+				pluginsMu.Unlock()
 				writeJSON(w, http.StatusBadRequest, false, "name is required and command must be a supported safe preset hook")
 				return
 			}
@@ -3269,25 +3956,52 @@ func handlePlugins(w http.ResponseWriter, r *http.Request) {
 				Name:        body.Name,
 				Version:     "1.0.0",
 				Author:      "Admin",
-				Description: strings.TrimSpace(body.Description),
+				Description: body.Description,
 				Enabled:     true,
 				Command:     body.Command,
 			})
 			savePlugins(plugins)
+			pluginsMu.Unlock()
 		case "delete":
+			delID := strings.TrimSpace(body.ID)
+			if delID == "" {
+				pluginsMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, false, "plugin id is required")
+				return
+			}
 			updated := []PluginManifest{}
+			deletedAdblock := false
+			found := false
 			for _, p := range plugins {
-				if p.ID != body.ID {
+				if p.ID != delID {
 					updated = append(updated, p)
+				} else {
+					found = true
+					if p.ID == "plugin-dns-adblock" {
+						deletedAdblock = true
+					}
 				}
+			}
+			if !found {
+				pluginsMu.Unlock()
+				writeJSON(w, http.StatusNotFound, false, "plugin not found")
+				return
 			}
 			plugins = updated
 			savePlugins(plugins)
+			pluginsMu.Unlock()
+			if deletedAdblock {
+				cleanupAdblockPluginArtifacts()
+			}
 		default:
+			pluginsMu.Unlock()
 			writeJSON(w, http.StatusBadRequest, false, "unsupported plugin action")
 			return
 		}
-		writeJSON(w, http.StatusOK, true, map[string]interface{}{"plugins": plugins})
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"plugins":           plugins,
+			"available_presets": presetKeys,
+		})
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
@@ -3296,11 +4010,123 @@ func handlePlugins(w http.ResponseWriter, r *http.Request) {
 
 // ─── 10. System Backup, Reboot, Settings & Cache Flush ────────────────────
 
+func isExcludedBackupPath(p string) bool {
+	c := filepath.ToSlash(filepath.Clean(p))
+	excluded := []string{
+		"/etc/shadow",
+		"/etc/dropbear",
+		"/etc/r3p/r3p.db",
+		"/etc/r3p/r3p.db.lock",
+		"/etc/r3p/api-token",
+		"/etc/r3p/aria2-rpc-token",
+		"/etc/r3p/sessions.json",
+		"/etc/r3p/ai.json",
+		"/etc/r3p/ai_config.json",
+		"/etc/r3p/ai_sessions.json",
+		"/etc/r3p/ai_memory.json",
+		"/etc/r3p/ddns.json",
+		"/etc/r3p/downloader.json",
+		"/etc/r3p/saved-wifi.json",
+		"/etc/r3p/telegram.json",
+		"/etc/r3p/gdrive.json",
+		"/etc/r3p/gdrive_sync.json",
+		"/overlay/upper/etc/r3p/r3p.db",
+		"/overlay/upper/etc/r3p/r3p.db.lock",
+	}
+	for _, ex := range excluded {
+		if c == ex || strings.HasPrefix(c, ex+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSanitizedConfigTarGz(destPath string) error {
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	roots := []string{"/etc/config", "/etc/crontabs", "/etc/r3p", "/etc/sysupgrade.conf", "/etc/hosts", "/etc/dnsmasq.conf"}
+	seen := make(map[string]struct{})
+	for _, root := range roots {
+		_ = filepath.Walk(root, func(p string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info == nil || info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
+			c := filepath.ToSlash(filepath.Clean(p))
+			if isExcludedBackupPath(c) {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			rel := strings.TrimPrefix(c, "/")
+			if rel == "" {
+				return nil
+			}
+			if _, dup := seen[rel]; dup {
+				return nil
+			}
+			seen[rel] = struct{}{}
+			if info.IsDir() {
+				hdr, err := tar.FileInfoHeader(info, "")
+				if err != nil {
+					return nil
+				}
+				hdr.Name = rel + "/"
+				return tw.WriteHeader(hdr)
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			hdr, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return nil
+			}
+			hdr.Name = rel
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			rf, err := os.Open(c)
+			if err != nil {
+				return nil
+			}
+			_, _ = io.Copy(tw, io.LimitReader(rf, info.Size()))
+			_ = rf.Close()
+			return nil
+		})
+	}
+	if pubDB, dbErr := buildPublicSettingsDBSnapshotJSON(); dbErr == nil && len(pubDB) > 2 {
+		hdr := &tar.Header{
+			Name:    "etc/r3p/r3p-db-sanitized.json",
+			Mode:    0644,
+			Size:    int64(len(pubDB)),
+			ModTime: time.Now(),
+		}
+		if tw.WriteHeader(hdr) == nil {
+			_, _ = tw.Write(pubDB)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		_ = gz.Close()
+		_ = f.Close()
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // GET /api/v1/system/backup
 func handleSystemBackup(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	includeSecrets := r.URL.Query().Get("include_secrets") == "1"
 	// Guarantee /etc/r3p is preserved in sysupgrade.conf
 	if rawConf, err := os.ReadFile("/etc/sysupgrade.conf"); err == nil || os.IsNotExist(err) {
 		lines := strings.Split(string(rawConf), "\n")
@@ -3317,7 +4143,7 @@ func handleSystemBackup(w http.ResponseWriter, r *http.Request) {
 				content += "\n"
 			}
 			content += "/etc/r3p\n"
-			_ = os.WriteFile("/etc/sysupgrade.conf", []byte(content), 0644)
+			_ = atomicWriteFile("/etc/sysupgrade.conf", []byte(content), 0644)
 		}
 	}
 
@@ -3330,10 +4156,17 @@ func handleSystemBackup(w http.ResponseWriter, r *http.Request) {
 	tmpF.Close()
 	defer os.Remove(backupPath)
 
-	if _, err := runCmd(15, "sysupgrade", "-b", backupPath); err != nil {
-		// Fallback tar of /etc/config, /etc/r3p, /etc/crontabs, /etc/passwd, /etc/shadow, /etc/dropbear
-		if out, tarErr := runCmd(10, "tar", "-czf", backupPath, "/etc/config", "/etc/r3p", "/etc/crontabs", "/etc/passwd", "/etc/shadow", "/etc/dropbear"); tarErr != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo gói sao lưu cấu hình: "+out)
+	_ = syncSettingsDB()
+	if includeSecrets {
+		if _, err := runCmd(15, "sysupgrade", "-b", backupPath); err != nil {
+			if out, tarErr := runCmd(10, "tar", "-czf", backupPath, "/etc/config", "/etc/r3p", "/etc/crontabs", "/etc/passwd", "/etc/shadow", "/etc/dropbear"); tarErr != nil {
+				writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo gói sao lưu cấu hình: "+out)
+				return
+			}
+		}
+	} else {
+		if err := buildSanitizedConfigTarGz(backupPath); err != nil {
+			writeJSON(w, http.StatusInternalServerError, false, "Không thể tạo gói sao lưu cấu hình: "+err.Error())
 			return
 		}
 	}
@@ -3417,18 +4250,45 @@ func handleSystemRestore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Verify tar archive safety in pure Go (rejects path traversal, devices, hardlinks, unsafe symlinks)
-	if _, safetyErr := inspectTarGzSafety(restorePath, true, nil); safetyErr != nil {
+	// Verify tar archive safety in pure Go (strictly whitelist allowed config prefixes & disallow unsafe symlinks)
+	allowedRestorePrefixes := []string{
+		"etc/config/",
+		"etc/crontabs/",
+		"etc/r3p/",
+		"etc/dropbear/",
+		"etc/passwd",
+		"etc/shadow",
+		"etc/rc.local",
+		"etc/firewall.user",
+		"etc/sysupgrade.conf",
+		"etc/hosts",
+		"etc/dnsmasq.conf",
+		"etc/samba/",
+		"etc/vsftpd.conf",
+	}
+	if _, safetyErr := inspectTarGzSafety(restorePath, false, allowedRestorePrefixes); safetyErr != nil {
 		writeJSON(w, http.StatusBadRequest, false, "File tải lên không hợp lệ hoặc không an toàn: "+safetyErr.Error())
 		return
 	}
 
-	// Extract to /
+	// Close settings DB handle before overwriting /etc/r3p via tar extract
+	_ = closeSettingsDB()
 	extractOut, extractErr := runCmd(15, "tar", "-xzf", restorePath, "-C", "/")
 	if extractErr != nil {
+		_ = initSettingsDB()
+		resetAIMemoryCaches()
+		loadGDriveConfigFromFile()
 		writeJSON(w, http.StatusInternalServerError, false, "Lỗi khi giải nén khôi phục cấu hình: "+extractOut)
 		return
 	}
+	if dbErr := initSettingsDB(); dbErr == nil {
+		if pubRaw, rErr := os.ReadFile("/etc/r3p/r3p-db-sanitized.json"); rErr == nil {
+			_, _ = importPublicSettingsDBSnapshot(pubRaw)
+			_ = os.Remove("/etc/r3p/r3p-db-sanitized.json")
+		}
+	}
+	resetAIMemoryCaches()
+	loadGDriveConfigFromFile()
 
 	if doReboot {
 		go func() {
@@ -3464,6 +4324,9 @@ func handleSystemReboot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
 	}
+	if !requireOpenWrt(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, true, map[string]string{"status": "rebooting"})
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -3476,6 +4339,9 @@ func handleSystemReboot(w http.ResponseWriter, r *http.Request) {
 func handleSystemSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
 		return
 	}
 	var body struct {
@@ -3513,6 +4379,9 @@ func handleSystemDropCaches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 		return
 	}
+	if !requireOpenWrt(w) {
+		return
+	}
 	_, _ = runCmd(4, "sync")
 	_ = os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0644)
 	writeJSON(w, http.StatusOK, true, map[string]bool{"flushed": true})
@@ -3522,6 +4391,9 @@ func handleSystemDropCaches(w http.ResponseWriter, r *http.Request) {
 func handleSystemLogsClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
+		return
+	}
+	if !requireOpenWrt(w) {
 		return
 	}
 	// Clear both kernel dmesg ringbuffer and restart logd / syslog daemon
@@ -3544,11 +4416,124 @@ var allowedConfigFiles = map[string]bool{
 	"ubihealthd": true,
 }
 
+func isSensitiveUCIOption(opt string) bool {
+	switch strings.ToLower(strings.TrimSpace(opt)) {
+	case "key", "password", "secret", "psk", "private_key", "preshared_key", "sae_password", "auth_secret", "acct_secret":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseUCISectionHeader(trimmed string) (secType, secName string, ok bool) {
+	if !strings.HasPrefix(trimmed, "config ") && !strings.HasPrefix(trimmed, "config\t") {
+		return "", "", false
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) < 2 {
+		return "", "", false
+	}
+	secType = strings.Trim(fields[1], "'\"")
+	if len(fields) >= 3 {
+		secName = strings.Trim(fields[2], "'\"")
+	}
+	return secType, secName, true
+}
+
+func parseUCIOptionLine(line string) (indent, optName, rawVal string, ok bool) {
+	trimmedLeft := strings.TrimLeft(line, " \t")
+	indent = line[:len(line)-len(trimmedLeft)]
+	if !strings.HasPrefix(trimmedLeft, "option ") && !strings.HasPrefix(trimmedLeft, "option\t") {
+		return "", "", "", false
+	}
+	rest := strings.TrimLeft(trimmedLeft[len("option"):], " \t")
+	spaceIdx := strings.IndexAny(rest, " \t")
+	if spaceIdx <= 0 {
+		return "", "", "", false
+	}
+	optName = strings.Trim(rest[:spaceIdx], "'\"")
+	rawVal = strings.TrimSpace(rest[spaceIdx:])
+	return indent, optName, rawVal, true
+}
+
+func maskSensitiveUCIConfig(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		indent, optName, rawVal, ok := parseUCIOptionLine(line)
+		if !ok || !isSensitiveUCIOption(optName) {
+			continue
+		}
+		unquoted := strings.Trim(rawVal, "'\"")
+		if unquoted == "" {
+			continue
+		}
+		lines[i] = indent + "option " + optName + " '••••'"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func unmaskSensitiveUCIConfig(incoming, existing string) string {
+	byName := make(map[string]string)
+	byTypeIdx := make(map[string]string)
+	typeCounts := make(map[string]int)
+	curType, curName, curIdx := "", "", 0
+
+	for _, line := range strings.Split(existing, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if st, sn, ok := parseUCISectionHeader(trimmed); ok {
+			curType = st
+			curName = sn
+			curIdx = typeCounts[st]
+			typeCounts[st] = curIdx + 1
+			continue
+		}
+		_, optName, rawVal, ok := parseUCIOptionLine(line)
+		if !ok || !isSensitiveUCIOption(optName) || curType == "" {
+			continue
+		}
+		byTypeIdx[fmt.Sprintf("%s#%d.%s", curType, curIdx, strings.ToLower(optName))] = rawVal
+		if curName != "" {
+			byName[curName+"."+strings.ToLower(optName)] = rawVal
+		}
+	}
+
+	inLines := strings.Split(incoming, "\n")
+	inCounts := make(map[string]int)
+	curType, curName, curIdx = "", "", 0
+	for i, line := range inLines {
+		trimmed := strings.TrimSpace(line)
+		if st, sn, ok := parseUCISectionHeader(trimmed); ok {
+			curType = st
+			curName = sn
+			curIdx = inCounts[st]
+			inCounts[st] = curIdx + 1
+			continue
+		}
+		indent, optName, rawVal, ok := parseUCIOptionLine(line)
+		if !ok || !isSensitiveUCIOption(optName) || curType == "" {
+			continue
+		}
+		if strings.Trim(rawVal, "'\"") != "••••" {
+			continue
+		}
+		lowerOpt := strings.ToLower(optName)
+		if orig, found := byName[curName+"."+lowerOpt]; found && curName != "" {
+			inLines[i] = indent + "option " + optName + " " + orig
+		} else if orig, found := byTypeIdx[fmt.Sprintf("%s#%d.%s", curType, curIdx, lowerOpt)]; found {
+			inLines[i] = indent + "option " + optName + " " + orig
+		}
+	}
+	return strings.Join(inLines, "\n")
+}
+
 // GET / PUT /api/v1/config
 func handleUCIConfig(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	switch r.Method {
 	case http.MethodGet:
 		name := r.URL.Query().Get("file")
@@ -3559,22 +4544,28 @@ func handleUCIConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "unsupported config file")
 			return
 		}
-		content := readFile("/etc/config/" + name)
+		content := maskSensitiveUCIConfig(readFile("/etc/config/" + name))
 		var available []string
 		for k := range allowedConfigFiles {
 			available = append(available, k)
 		}
 		sort.Strings(available)
+		hasBackup := false
+		if _, err := os.Stat("/etc/r3p/backups/" + name + ".bak"); err == nil {
+			hasBackup = true
+		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
-			"file":      name,
-			"content":   content,
-			"available": available,
+			"file":       name,
+			"content":    content,
+			"available":  available,
+			"has_backup": hasBackup,
 		})
 
 	case http.MethodPut:
 		var body struct {
 			File    string `json:"file"`
 			Content string `json:"content"`
+			Reload  bool   `json:"reload"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
@@ -3588,55 +4579,171 @@ func handleUCIConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "config content cannot be empty")
 			return
 		}
-		targetPath := "/etc/config/" + body.File
-		content := strings.ReplaceAll(body.Content, "\r\n", "\n")
-		if !strings.HasSuffix(content, "\n") {
-			content += "\n"
-		}
-
-		// Validate candidate UCI syntax inside isolated temporary config directory before replacing live /etc/config/*
-		tmpDir, err := os.MkdirTemp("", "r3p-ucicheck-*")
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "failed to create temp validation dir: "+err.Error())
+		existing := readFile("/etc/config/" + body.File)
+		resolvedContent := unmaskSensitiveUCIConfig(body.Content, existing)
+		if err := writeAndCommitUCIConfig(body.File, resolvedContent, true); err != nil {
+			writeJSON(w, http.StatusBadRequest, false, err.Error())
 			return
 		}
-		defer os.RemoveAll(tmpDir)
-		tmpCfg := filepath.Join(tmpDir, body.File)
-		if err := os.WriteFile(tmpCfg, []byte(content), 0600); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "failed to write temp config: "+err.Error())
-			return
+		reloaded := false
+		if body.Reload {
+			reloaded = reloadUCIService(body.File)
 		}
-		if parseOut, parseErr := runCmd(4, "uci", "-c", tmpDir, "show", body.File); parseErr != nil {
-			writeJSON(w, http.StatusBadRequest, false, "Lỗi cú pháp UCI ("+body.File+"): "+strings.TrimSpace(parseOut))
-			return
-		}
-
-		_ = os.MkdirAll("/etc/r3p/backups", 0700)
-		oldBytes, oldErr := os.ReadFile(targetPath)
-		if oldErr == nil {
-			_ = os.WriteFile("/etc/r3p/backups/"+body.File+".bak", oldBytes, 0600)
-		}
-		perm := os.FileMode(0644)
-		if st, stErr := os.Stat(targetPath); stErr == nil {
-			perm = st.Mode().Perm()
-		}
-		if err := os.WriteFile(targetPath, []byte(content), perm); err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "failed to write config: "+err.Error())
-			return
-		}
-		if out, err := runCmd(5, "uci", "commit", body.File); err != nil {
-			if oldErr == nil {
-				_ = os.WriteFile(targetPath, oldBytes, perm)
-			}
-			writeJSON(w, http.StatusInternalServerError, false, "uci commit failed (rolled back): "+strings.TrimSpace(out))
-			return
-		}
-		writeJSON(w, http.StatusOK, true, map[string]string{
-			"file":    body.File,
-			"message": fmt.Sprintf("/etc/config/%s saved and committed cleanly.", body.File),
+		writeJSON(w, http.StatusOK, true, map[string]interface{}{
+			"file":     body.File,
+			"reloaded": reloaded,
+			"message":  fmt.Sprintf("/etc/config/%s saved and committed cleanly.", body.File),
 		})
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, false, "method not allowed")
 	}
+}
+
+func validateUCISyntax(fileName, content string) error {
+	tmpDir, err := os.MkdirTemp("", "r3p-ucicheck-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp validation dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpCfg := filepath.Join(tmpDir, fileName)
+	if err := os.WriteFile(tmpCfg, []byte(content), 0600); err != nil {
+		return fmt.Errorf("failed to write temp config: %w", err)
+	}
+	if parseOut, parseErr := runCmd(4, "uci", "-c", tmpDir, "show", fileName); parseErr != nil {
+		return fmt.Errorf("Lỗi cú pháp UCI (%s): %s", fileName, strings.TrimSpace(parseOut))
+	}
+	return nil
+}
+
+func writeAndCommitUCIConfig(fileName, rawContent string, saveBackup bool) error {
+	targetPath := "/etc/config/" + fileName
+	content := strings.ReplaceAll(rawContent, "\r\n", "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if err := validateUCISyntax(fileName, content); err != nil {
+		return err
+	}
+	_ = os.MkdirAll("/etc/r3p/backups", 0700)
+	oldBytes, oldErr := os.ReadFile(targetPath)
+	if saveBackup && oldErr == nil {
+		_ = os.WriteFile("/etc/r3p/backups/"+fileName+".bak", oldBytes, 0600)
+	}
+	perm := os.FileMode(0644)
+	if st, stErr := os.Stat(targetPath); stErr == nil {
+		perm = st.Mode().Perm()
+	}
+	tmpTarget := targetPath + ".r3ptmp"
+	if err := os.WriteFile(tmpTarget, []byte(content), perm); err != nil {
+		return fmt.Errorf("failed to write staged config: %w", err)
+	}
+	if err := os.Rename(tmpTarget, targetPath); err != nil {
+		_ = os.Remove(tmpTarget)
+		return fmt.Errorf("failed to move config atomically: %w", err)
+	}
+	if out, err := runCmd(5, "uci", "commit", fileName); err != nil {
+		_, _ = runCmd(3, "uci", "revert", fileName)
+		if oldErr == nil {
+			_ = os.WriteFile(targetPath, oldBytes, perm)
+		}
+		return fmt.Errorf("uci commit failed (rolled back): %s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func reloadUCIService(fileName string) bool {
+	switch fileName {
+	case "network":
+		_, err := runCmd(8, "/etc/init.d/network", "reload")
+		return err == nil
+	case "wireless":
+		_, err := runCmd(10, "wifi", "reload")
+		return err == nil
+	case "dhcp":
+		_, err := runCmd(8, "/etc/init.d/dnsmasq", "reload")
+		return err == nil
+	case "firewall":
+		_, err := runCmd(8, "/etc/init.d/firewall", "reload")
+		return err == nil
+	case "dropbear":
+		_, err := runCmd(8, "/etc/init.d/dropbear", "reload")
+		return err == nil
+	case "system", "uhttpd", "ubihealthd":
+		_, err := runCmd(8, "/etc/init.d/"+fileName, "reload")
+		return err == nil
+	default:
+		return false
+	}
+}
+
+// GET /api/v1/config/backups
+func handleUCIConfigBackups(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	type backupInfo struct {
+		File      string `json:"file"`
+		Size      int64  `json:"size"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	backups := make([]backupInfo, 0)
+	for name := range allowedConfigFiles {
+		bakPath := "/etc/r3p/backups/" + name + ".bak"
+		if st, err := os.Stat(bakPath); err == nil && !st.IsDir() {
+			backups = append(backups, backupInfo{
+				File:      name,
+				Size:      st.Size(),
+				UpdatedAt: st.ModTime().Format("2006-01-02 15:04:05"),
+			})
+		}
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].File < backups[j].File })
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{"backups": backups})
+}
+
+// POST /api/v1/config/restore
+func handleUCIConfigRestore(w http.ResponseWriter, r *http.Request) {
+	if !requireOpenWrt(w) {
+		return
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	var body struct {
+		File   string `json:"file"`
+		Reload bool   `json:"reload"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
+		return
+	}
+	name := strings.TrimSpace(body.File)
+	if !allowedConfigFiles[name] {
+		writeJSON(w, http.StatusBadRequest, false, "unsupported config file")
+		return
+	}
+	bakPath := "/etc/r3p/backups/" + name + ".bak"
+	bakBytes, err := os.ReadFile(bakPath)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, false, fmt.Sprintf("Không tìm thấy bản sao lưu .bak cho %s", name))
+		return
+	}
+	if err := writeAndCommitUCIConfig(name, string(bakBytes), false); err != nil {
+		writeJSON(w, http.StatusBadRequest, false, err.Error())
+		return
+	}
+	reloaded := false
+	if body.Reload {
+		reloaded = reloadUCIService(name)
+	}
+	writeJSON(w, http.StatusOK, true, map[string]interface{}{
+		"file":     name,
+		"reloaded": reloaded,
+		"content":  maskSensitiveUCIConfig(readFile("/etc/config/" + name)),
+		"message":  fmt.Sprintf("Đã khôi phục /etc/config/%s từ bản sao lưu .bak!", name),
+	})
 }

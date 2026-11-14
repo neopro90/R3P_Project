@@ -84,14 +84,24 @@ extract_ib() {
 copy_files() {
     log_info "Preparing overlay files..."
 
-    # Copy API binary
-    if [ -f "$OUTPUT_DIR/r3p-api-mipsle" ]; then
+    # Copy API binary and frontend SPA bundle
+    local api_bin="$SCRIPT_DIR/artifacts/r3p-api"
+    [ -f "$api_bin" ] || api_bin="$OUTPUT_DIR/r3p-api-mipsle"
+    if [ -f "$api_bin" ]; then
         mkdir -p "$FILES_DIR/usr/bin"
-        cp "$OUTPUT_DIR/r3p-api-mipsle" "$FILES_DIR/usr/bin/r3p-api"
+        cp "$api_bin" "$FILES_DIR/usr/bin/r3p-api"
         chmod +x "$FILES_DIR/usr/bin/r3p-api"
-        log_info "  ✅ r3p-api binary copied"
+        log_info "  ✅ r3p-api binary copied ($api_bin)"
     else
-        log_warn "  ⚠️  r3p-api-mipsle not found — API will not be in image"
+        log_warn "  ⚠️  r3p-api artifact not found — API will not be in image"
+    fi
+    local dist_dir="$PROJECT_DIR/frontend/dist"
+    [ -f "$dist_dir/index.html" ] || dist_dir="$SCRIPT_DIR/web-static"
+    if [ -f "$dist_dir/index.html" ]; then
+        rm -rf "$FILES_DIR/www/assets"
+        mkdir -p "$FILES_DIR/www"
+        cp -a "$dist_dir/." "$FILES_DIR/www/"
+        log_info "  ✅ Frontend assets synced from $dist_dir"
     fi
 
     # Copy init.d script

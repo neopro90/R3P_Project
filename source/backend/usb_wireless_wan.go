@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -696,8 +698,12 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dev := strings.TrimSpace(body.Device)
-	if !strings.HasPrefix(dev, "/dev/sd") {
-		writeJSON(w, http.StatusBadRequest, false, "Thiết bị không hợp lệ (chỉ hỗ trợ /dev/sd*)")
+	if !regexp.MustCompile(`^/dev/sd[a-z][0-9]*$`).MatchString(dev) {
+		writeJSON(w, http.StatusBadRequest, false, "Thiết bị không hợp lệ (chỉ hỗ trợ /dev/sd[a-z]*)")
+		return
+	}
+	if linfo, lerr := os.Lstat(dev); lerr != nil || linfo.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Thiết bị không tồn tại hoặc là symbolic link")
 		return
 	}
 	devName := strings.TrimPrefix(dev, "/dev/")
@@ -775,15 +781,19 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	if rawDev == "" {
 		rawDev = "/dev/sda1"
 	}
-	if !strings.HasPrefix(rawDev, "/dev/sd") {
-		writeJSON(w, http.StatusBadRequest, false, "Chỉ cho phép Format ổ lưu trữ USB (/dev/sd*)")
+	if !regexp.MustCompile(`^/dev/sd[a-z][0-9]*$`).MatchString(rawDev) {
+		writeJSON(w, http.StatusBadRequest, false, "Chỉ cho phép Format ổ lưu trữ USB (/dev/sd[a-z]*)")
+		return
+	}
+	if linfo, lerr := os.Lstat(rawDev); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Không hỗ trợ Format qua symbolic link")
 		return
 	}
 
 	devBase := strings.TrimPrefix(rawDev, "/dev/")
 	diskName := strings.TrimRight(devBase, "0123456789")
 	diskDev := "/dev/" + diskName
-	if _, err := os.Stat(diskDev); err != nil {
+	if linfo, err := os.Lstat(diskDev); err != nil || linfo.Mode()&os.ModeSymlink != 0 {
 		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Không tìm thấy ổ đĩa USB %s. Hãy kiểm tra cáp USB 3.0!", diskDev))
 		return
 	}
@@ -811,15 +821,23 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 
 	appendLog(fmt.Sprintf("Bắt đầu chuẩn bị Format thiết bị %s (Định dạng: %s, Nhãn: %s)...", rawDev, strings.ToUpper(fsType), label))
 
-	// 1. Unmount all partitions and terminate any processes holding files on this disk
+	// 1. Unmount partitions and terminate processes holding files strictly on this target disk
 	_, _ = runCmd(4, "sync")
-	killCmd := `for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-		if ls -l /proc/$pid/fd 2>/dev/null | grep -q '/mnt/sd'; then
+	mountPrefix := "/mnt/" + diskName
+	killCmd := fmt.Sprintf(`for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+		if ls -l /proc/$pid/fd 2>/dev/null | grep -qE '%s([0-9]+)?(/|$)'; then
 			kill -9 $pid 2>/dev/null
 		fi
-	done`
+	done`, mountPrefix)
 	_, _ = runCmd(5, "sh", "-c", killCmd)
-	_, _ = runCmd(4, "swapoff", "-a")
+	if swapRaw, err := os.ReadFile("/proc/swaps"); err == nil {
+		for _, line := range strings.Split(string(swapRaw), "\n")[1:] {
+			fields := strings.Fields(line)
+			if len(fields) > 0 && (strings.HasPrefix(fields[0], diskDev) || strings.HasPrefix(fields[0], mountPrefix)) {
+				_, _ = runCmd(4, "swapoff", fields[0])
+			}
+		}
+	}
 	for i := 1; i <= 8; i++ {
 		pDev := fmt.Sprintf("/dev/%s%d", diskName, i)
 		pMnt := fmt.Sprintf("/mnt/%s%d", diskName, i)
@@ -835,9 +853,12 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	if body.Repartition || rawDev == diskDev {
 		targetPart = diskDev + "1"
 		appendLog(fmt.Sprintf("Đang tạo lại bảng phân vùng chuẩn trên %s -> %s...", diskDev, targetPart))
-		fdiskCmd := fmt.Sprintf("printf 'o\\nn\\np\\n1\\n\\n\\nw\\n' | fdisk %s", diskDev)
-		out, _ := runCmd(15, "sh", "-c", fdiskCmd)
-		if out != "" {
+		fdiskCtx, fdiskCancel := context.WithTimeout(r.Context(), 15*time.Second)
+		fdiskCmd := exec.CommandContext(fdiskCtx, "fdisk", diskDev)
+		fdiskCmd.Stdin = strings.NewReader("o\nn\np\n1\n\n\nw\n")
+		outBytes, _ := fdiskCmd.CombinedOutput()
+		fdiskCancel()
+		if strings.TrimSpace(string(outBytes)) != "" {
 			appendLog("fdisk: hoàn tất chia 1 phân vùng toàn bộ dung lượng.")
 		}
 		_, _ = runCmd(5, "partprobe", diskDev)
@@ -920,7 +941,7 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(mntPoint, 0755)
 	var mErr error
 	if fsType == "ext4" {
-		_, mErr = runCmd(8, "mount", "-t", "ext4", "-o", "noatime,nodiratime,barrier=0", targetPart, mntPoint)
+		_, mErr = runCmd(8, "mount", "-t", "ext4", "-o", "noatime,nodiratime", targetPart, mntPoint)
 	}
 	if mErr != nil || fsType != "ext4" {
 		_, mErr = runCmd(8, "mount", "-o", "noatime,nodiratime", targetPart, mntPoint)
@@ -989,13 +1010,35 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 		sizeMB = 128
 	}
 
-	info, statErr := os.Stat(targetDir)
-	if statErr != nil || !info.IsDir() {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s chưa được mount. Hãy cắm ổ cứng USB 3.0 trước!", targetDir))
+	info, statErr := os.Lstat(targetDir)
+	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s chưa được mount hoặc không hợp lệ!", targetDir))
+		return
+	}
+	devName, fsType := resolveMountDeviceAndFS(targetDir)
+	if devName == "unknown" || (!strings.HasPrefix(devName, "/dev/sd") && !strings.HasPrefix(devName, "/dev/nvme") && !strings.HasPrefix(devName, "/dev/mmcblk")) {
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s không trỏ tới thiết bị USB đang mount (%s)", targetDir, devName))
 		return
 	}
 
+	if dfOut, dfErr := runCmd(3, "df", "-Pm", targetDir); dfErr == nil {
+		dfLines := strings.Split(strings.TrimSpace(dfOut), "\n")
+		if len(dfLines) >= 2 {
+			f := strings.Fields(dfLines[len(dfLines)-1])
+			if len(f) >= 4 {
+				if availMB, aErr := strconv.Atoi(f[3]); aErr == nil && availMB < sizeMB+32 {
+					writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Không đủ dung lượng trống trên %s (còn %d MB, cần tối thiểu %d MB để kiểm tra an toàn).", targetDir, availMB, sizeMB+32))
+					return
+				}
+			}
+		}
+	}
+
 	testFile := filepath.Join(targetDir, ".r3p_speedtest.bin")
+	if linfo, lerr := os.Lstat(testFile); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		writeJSON(w, http.StatusBadRequest, false, "Phát hiện symlink tại tệp benchmark, hủy kiểm tra")
+		return
+	}
 	_ = os.Remove(testFile)
 	defer os.Remove(testFile)
 
@@ -1025,7 +1068,6 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 	readMBps := float64(sizeMB) / readSec
 
-	devName, fsType := resolveMountDeviceAndFS(targetDir)
 	lastUsbBench = UsbBenchmarkResult{
 		TargetDir:  targetDir,
 		WriteMBps:  float64(int(writeMBps*100)) / 100,
@@ -1114,6 +1156,8 @@ func scanPhyWithIwinfo(phy, rad, band string) string {
 			_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "down")
 			_, _ = runCmd(3, "iw", "dev", tmpIfc, "del")
 		}()
+	} else {
+		return ""
 	}
 	_, _ = runCmd(3, "ip", "link", "set", tmpIfc, "up")
 	// Give MT7615 5GHz RF calibration 700ms to settle when interface just came up
@@ -1131,11 +1175,15 @@ func scanPhyWithIwinfo(phy, rad, band string) string {
 	return out
 }
 
+var wifiScanMu sync.Mutex
+
 // GET /api/v1/wireless/scan?band=all|2.4GHz|5GHz&device=radio0|radio1
 func handleWirelessScan(w http.ResponseWriter, r *http.Request) {
 	if !requireOpenWrt(w) {
 		return
 	}
+	wifiScanMu.Lock()
+	defer wifiScanMu.Unlock()
 	reqDev := r.URL.Query().Get("device")
 	reqBand := r.URL.Query().Get("band")
 	var radiosToScan []string
@@ -1173,11 +1221,14 @@ func handleWirelessScan(w http.ResponseWriter, r *http.Request) {
 						item.BSSID = strings.TrimSpace(parts[1])
 					} else if strings.HasPrefix(t, "ESSID:") {
 						item.SSID = strings.Trim(strings.TrimSpace(strings.TrimPrefix(t, "ESSID:")), "\"")
-					} else if strings.Contains(t, "Channel:") {
-						if strings.Contains(t, "5 GHz") || strings.Contains(t, "Frequency: 5.") {
+					}
+					if strings.Contains(t, "Mode:") || strings.Contains(t, "Channel:") || strings.Contains(t, "Frequency:") {
+						if strings.Contains(t, "5 GHz") || strings.Contains(t, "Frequency: 5.") || strings.Contains(t, "5.1") || strings.Contains(t, "5.2") || strings.Contains(t, "5.7") || strings.Contains(t, "5.8") {
 							item.Band = "5GHz"
 							item.Device = "radio1"
 						}
+					}
+					if strings.Contains(t, "Channel:") {
 						parts := strings.SplitN(t, "Channel:", 2)
 						fields := strings.Fields(strings.TrimSpace(parts[1]))
 						if len(fields) > 0 {
@@ -1335,16 +1386,35 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			body.Device = "radio0"
 		}
 		ssid := strings.TrimSpace(body.SSID)
-		if ssid == "" || len(ssid) > 32 {
-			writeJSON(w, http.StatusBadRequest, false, "SSID is required (1-32 chars)")
+		if ssid == "" || len(ssid) > 32 || strings.ContainsAny(ssid, "\r\n\x00") {
+			writeJSON(w, http.StatusBadRequest, false, "SSID is required (1-32 safe chars)")
+			return
+		}
+		if strings.ContainsAny(body.Key, "\r\n\x00") {
+			writeJSON(w, http.StatusBadRequest, false, "Mật khẩu Wi-Fi không hợp lệ")
 			return
 		}
 		enc := body.Encryption
 		if enc != "none" && enc != "psk2" && enc != "psk-mixed" && enc != "sae" && enc != "sae-mixed" {
 			enc = "psk2"
 		}
-		if enc != "none" && len(body.Key) < 8 {
-			writeJSON(w, http.StatusBadRequest, false, "Mật khẩu Wi-Fi phải có ít nhất 8 ký tự")
+		wifiKey := body.Key
+		if wifiKey == "" || strings.HasPrefix(wifiKey, "••••") {
+			// Preserve stored password when switching DHCP <-> Static IP on an already-configured SSID
+			curUCI := parseUCIConfigMap("wireless")
+			if strings.EqualFold(curUCI["wireless.wwan_sta.ssid"], ssid) && curUCI["wireless.wwan_sta.key"] != "" {
+				wifiKey = curUCI["wireless.wwan_sta.key"]
+			} else {
+				for _, sv := range loadSavedWifiList() {
+					if strings.EqualFold(sv.SSID, ssid) && sv.Key != "" {
+						wifiKey = sv.Key
+						break
+					}
+				}
+			}
+		}
+		if enc != "none" && (len(wifiKey) < 8 || len(wifiKey) > 63) {
+			writeJSON(w, http.StatusBadRequest, false, "Mật khẩu Wi-Fi phải từ 8–63 ký tự")
 			return
 		}
 
@@ -1358,14 +1428,16 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		gw := strings.TrimSpace(body.Gateway)
 		var dnsList []string
 		for _, d := range strings.Fields(strings.ReplaceAll(body.DNS, ",", " ")) {
-			if net.ParseIP(d) == nil {
-				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ DNS không hợp lệ: "+d)
+			parsed := net.ParseIP(d)
+			if parsed == nil || parsed.To4() == nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ DNS IPv4 không hợp lệ: "+d)
 				return
 			}
 			dnsList = append(dnsList, d)
 		}
 		if proto == "static" {
-			if net.ParseIP(staticIP) == nil {
+			parsedIP := net.ParseIP(staticIP)
+			if parsedIP == nil || parsedIP.To4() == nil {
 				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ IPv4 tĩnh không hợp lệ cho WWAN")
 				return
 			}
@@ -1377,9 +1449,32 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if gw != "" && net.ParseIP(gw) == nil {
-			writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway WWAN không hợp lệ")
-			return
+		if gw != "" {
+			parsedGW := net.ParseIP(gw)
+			if parsedGW == nil || parsedGW.To4() == nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway WWAN không hợp lệ")
+				return
+			}
+		}
+		if body.BSSID != "" {
+			if _, err := net.ParseMAC(strings.TrimSpace(body.BSSID)); err != nil {
+				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ BSSID không hợp lệ")
+				return
+			}
+		}
+
+		wirelessMu.Lock()
+		networkConfigMu.Lock()
+		firewallMu.Lock()
+
+		revertAll := func(msg string) {
+			_, _ = runCmd(3, "uci", "revert", "network")
+			_, _ = runCmd(3, "uci", "revert", "wireless")
+			_, _ = runCmd(3, "uci", "revert", "firewall")
+			firewallMu.Unlock()
+			networkConfigMu.Unlock()
+			wirelessMu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, false, msg)
 		}
 
 		_, _ = runCmd(4, "uci", "set", "network.wwan=interface")
@@ -1400,8 +1495,14 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		if len(dnsList) > 0 {
 			_, _ = runCmd(4, "uci", "set", "network.wwan.peerdns=0")
 			_, _ = runCmd(4, "uci", "set", "network.wwan.dns="+strings.Join(dnsList, " "))
+		} else {
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.peerdns")
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.dns")
 		}
-		_, _ = runCmd(4, "uci", "commit", "network")
+		if out, err := runCmd(4, "uci", "commit", "network"); err != nil {
+			revertAll("uci commit network failed: " + out)
+			return
+		}
 		ensureFirewallWanNetwork("wwan")
 
 		// Configure wireless.wwan_sta
@@ -1412,10 +1513,12 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.ssid=%s", ssid))
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.encryption=%s", enc))
 		if enc != "none" {
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.key=%s", body.Key))
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.key=%s", wifiKey))
+		} else {
+			_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta.key")
 		}
-		if body.BSSID != "" && safeWirelessVal.MatchString(body.BSSID) {
-			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.bssid=%s", body.BSSID))
+		if body.BSSID != "" {
+			_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.bssid=%s", strings.TrimSpace(body.BSSID)))
 		} else {
 			_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta.bssid")
 		}
@@ -1428,7 +1531,14 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			disabledVal = "1"
 		}
 		_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.wwan_sta.disabled=%s", disabledVal))
-		_, _ = runCmd(5, "uci", "commit", "wireless")
+		if out, err := runCmd(5, "uci", "commit", "wireless"); err != nil {
+			revertAll("uci commit wireless failed: " + out)
+			return
+		}
+
+		firewallMu.Unlock()
+		networkConfigMu.Unlock()
+		wirelessMu.Unlock()
 
 		bandName := "2.4GHz"
 		if body.Device == "radio1" {
@@ -1436,13 +1546,17 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		}
 		addOrUpdateSavedWifi(SavedWifiNetwork{
 			SSID:       ssid,
-			BSSID:      body.BSSID,
+			BSSID:      strings.TrimSpace(body.BSSID),
 			Device:     body.Device,
 			Band:       bandName,
 			Channel:    body.Channel,
 			Encryption: enc,
-			Key:        body.Key,
+			Key:        wifiKey,
 			Proto:      proto,
+			StaticIP:   staticIP,
+			Netmask:    nm,
+			Gateway:    gw,
+			DNS:        strings.Join(dnsList, " "),
 		})
 
 		go func() {
@@ -1457,14 +1571,21 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			"connected_ssid": ssid,
 			"device":         body.Device,
 			"enabled":        body.Enabled,
-			"saved_list":     loadSavedWifiList(),
+			"saved_list":     sanitizeSavedWifiList(loadSavedWifiList()),
 			"message":        "Đã cấu hình thu sóng Wi-Fi Client (WWAN), lưu mạng và đang kết nối...",
 		})
 
 	case http.MethodDelete:
+		wirelessMu.Lock()
 		_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.disabled=1")
 		_, _ = runCmd(4, "uci", "delete", "wireless.wwan_sta")
-		_, _ = runCmd(5, "uci", "commit", "wireless")
+		if out, err := runCmd(5, "uci", "commit", "wireless"); err != nil {
+			_, _ = runCmd(3, "uci", "revert", "wireless")
+			wirelessMu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, false, "uci commit wireless failed: "+out)
+			return
+		}
+		wirelessMu.Unlock()
 		go func() {
 			_, _ = runCmd(6, "ifdown", "wwan")
 			_, _ = runCmd(10, "wifi", "reload")
@@ -1495,6 +1616,10 @@ type SavedWifiNetwork struct {
 	SavedAt       string `json:"saved_at"`
 	LastConnected string `json:"last_connected,omitempty"`
 	Proto         string `json:"proto,omitempty"`
+	StaticIP      string `json:"static_ip,omitempty"`
+	Netmask       string `json:"netmask,omitempty"`
+	Gateway       string `json:"gateway,omitempty"`
+	DNS           string `json:"dns,omitempty"`
 }
 
 var savedWifiMu sync.Mutex
@@ -1513,9 +1638,7 @@ func loadSavedWifiList() []SavedWifiNetwork {
 	savedWifiMu.Lock()
 	defer savedWifiMu.Unlock()
 	var list []SavedWifiNetwork
-	if b, err := os.ReadFile(savedWifiFile); err == nil {
-		_ = json.Unmarshal(b, &list)
-	}
+	settingsDBLoadJSON(bucketCollections, "saved_wifi", savedWifiFile, &list)
 	if len(list) == 0 {
 		// Populate initial known Wi-Fi client if active in UCI
 		uciMap := parseUCIConfigMap("wireless")
@@ -1542,10 +1665,7 @@ func loadSavedWifiList() []SavedWifiNetwork {
 					Proto:         "dhcp",
 				},
 			}
-			_ = os.MkdirAll("/etc/r3p", 0755)
-			if b, err := json.MarshalIndent(list, "", "  "); err == nil {
-				_ = os.WriteFile(savedWifiFile, b, 0600)
-			}
+			_ = settingsDBSaveJSON(bucketCollections, "saved_wifi", savedWifiFile, 0600, list)
 		}
 	}
 	if list == nil {
@@ -1558,9 +1678,7 @@ func addOrUpdateSavedWifi(net SavedWifiNetwork) {
 	savedWifiMu.Lock()
 	defer savedWifiMu.Unlock()
 	var list []SavedWifiNetwork
-	if b, err := os.ReadFile(savedWifiFile); err == nil {
-		_ = json.Unmarshal(b, &list)
-	}
+	settingsDBLoadJSON(bucketCollections, "saved_wifi", savedWifiFile, &list)
 	idx := -1
 	for i, item := range list {
 		if strings.EqualFold(item.SSID, net.SSID) {
@@ -1580,10 +1698,7 @@ func addOrUpdateSavedWifi(net SavedWifiNetwork) {
 	} else {
 		list = append([]SavedWifiNetwork{net}, list...)
 	}
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(list, "", "  "); err == nil {
-		_ = os.WriteFile(savedWifiFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "saved_wifi", savedWifiFile, 0600, list)
 }
 
 // GET /api/v1/wireless/saved
@@ -1612,9 +1727,7 @@ func handleWirelessSavedForget(w http.ResponseWriter, r *http.Request) {
 
 	savedWifiMu.Lock()
 	var list []SavedWifiNetwork
-	if b, err := os.ReadFile(savedWifiFile); err == nil {
-		_ = json.Unmarshal(b, &list)
-	}
+	settingsDBLoadJSON(bucketCollections, "saved_wifi", savedWifiFile, &list)
 	var kept []SavedWifiNetwork
 	for _, item := range list {
 		if !strings.EqualFold(item.SSID, targetSSID) {
@@ -1624,10 +1737,7 @@ func handleWirelessSavedForget(w http.ResponseWriter, r *http.Request) {
 	if kept == nil {
 		kept = []SavedWifiNetwork{}
 	}
-	_ = os.MkdirAll("/etc/r3p", 0755)
-	if b, err := json.MarshalIndent(kept, "", "  "); err == nil {
-		_ = os.WriteFile(savedWifiFile, b, 0600)
-	}
+	_ = settingsDBSaveJSON(bucketCollections, "saved_wifi", savedWifiFile, 0600, kept)
 	savedWifiMu.Unlock()
 
 	// If the forgotten network is currently configured in UCI wwan_sta, remove it
@@ -1690,10 +1800,57 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wirelessMu.Lock()
+	networkConfigMu.Lock()
+	firewallMu.Lock()
+
+	revertSavedConnect := func(msg string) {
+		_, _ = runCmd(3, "uci", "revert", "network")
+		_, _ = runCmd(3, "uci", "revert", "wireless")
+		_, _ = runCmd(3, "uci", "revert", "firewall")
+		firewallMu.Unlock()
+		networkConfigMu.Unlock()
+		wirelessMu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, false, msg)
+	}
+
 	_, _ = runCmd(4, "uci", "set", "network.wwan=interface")
-	_, _ = runCmd(4, "uci", "set", "network.wwan.proto=dhcp")
+	proto := strings.ToLower(strings.TrimSpace(matched.Proto))
+	if proto != "static" || matched.StaticIP == "" {
+		proto = "dhcp"
+	}
+	_, _ = runCmd(4, "uci", "set", "network.wwan.proto="+proto)
 	_, _ = runCmd(4, "uci", "set", "network.wwan.metric=20")
-	_, _ = runCmd(4, "uci", "commit", "network")
+	if proto == "static" {
+		nm := matched.Netmask
+		if nm == "" {
+			nm = "255.255.255.0"
+		}
+		_, _ = runCmd(4, "uci", "set", "network.wwan.ipaddr="+matched.StaticIP)
+		_, _ = runCmd(4, "uci", "set", "network.wwan.netmask="+nm)
+		if matched.Gateway != "" {
+			_, _ = runCmd(4, "uci", "set", "network.wwan.gateway="+matched.Gateway)
+		} else {
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.gateway")
+		}
+		if matched.DNS != "" {
+			_, _ = runCmd(4, "uci", "set", "network.wwan.peerdns=0")
+			_, _ = runCmd(4, "uci", "set", "network.wwan.dns="+matched.DNS)
+		} else {
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.peerdns")
+			_, _ = runCmd(4, "uci", "delete", "network.wwan.dns")
+		}
+	} else {
+		_, _ = runCmd(4, "uci", "delete", "network.wwan.ipaddr")
+		_, _ = runCmd(4, "uci", "delete", "network.wwan.netmask")
+		_, _ = runCmd(4, "uci", "delete", "network.wwan.gateway")
+		_, _ = runCmd(4, "uci", "delete", "network.wwan.peerdns")
+		_, _ = runCmd(4, "uci", "delete", "network.wwan.dns")
+	}
+	if out, err := runCmd(4, "uci", "commit", "network"); err != nil {
+		revertSavedConnect("uci commit network failed: " + out)
+		return
+	}
 	ensureFirewallWanNetwork("wwan")
 
 	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta=wifi-iface")
@@ -1717,7 +1874,13 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = runCmd(4, "uci", "set", fmt.Sprintf("wireless.%s.disabled=0", dev))
 	_, _ = runCmd(4, "uci", "set", "wireless.wwan_sta.disabled=0")
-	_, _ = runCmd(5, "uci", "commit", "wireless")
+	if out, err := runCmd(5, "uci", "commit", "wireless"); err != nil {
+		revertSavedConnect("uci commit wireless failed: " + out)
+		return
+	}
+	firewallMu.Unlock()
+	networkConfigMu.Unlock()
+	wirelessMu.Unlock()
 
 	go func() {
 		_, _ = runCmd(8, "/etc/init.d/firewall", "reload")
