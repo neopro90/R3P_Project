@@ -232,6 +232,10 @@ func handleSystemNslookup(w http.ResponseWriter, r *http.Request) {
 // into the underlying string value.
 func unquoteUCIValue(raw string) string {
 	s := strings.TrimSpace(raw)
+	// Strip outer escaped-quote patterns e.g. \'Hello\' or \"Hello\"
+	for len(s) >= 4 && ((strings.HasPrefix(s, `\'`) && strings.HasSuffix(s, `\'`)) || (strings.HasPrefix(s, `\"`) && strings.HasSuffix(s, `\"`))) {
+		s = strings.TrimSpace(s[2 : len(s)-2])
+	}
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		inner := s[1 : len(s)-1]
 		var b strings.Builder
@@ -517,7 +521,7 @@ func handleWirelessFull(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ifaceSec := "default_" + body.Device
-		ssid := strings.TrimSpace(body.SSID)
+		ssid := strings.Trim(strings.TrimSpace(body.SSID), "'\"")
 		if ssid == "" || len(ssid) > 32 || strings.ContainsAny(ssid, "\r\n\x00") {
 			writeJSON(w, http.StatusBadRequest, false, "SSID must be between 1 and 32 safe characters")
 			return
@@ -1172,6 +1176,28 @@ func escapeUCIQuote(v string) string {
 	return strings.ReplaceAll(v, "'", "'\\''")
 }
 
+// sanitizeSambaShareName keeps human-friendly SMB share names (spaces, Unicode/Vietnamese)
+// while stripping characters Samba/Windows forbid in share names and control chars.
+func sanitizeSambaShareName(name string) string {
+	const forbidden = "\\/[]:|<>+=;,*?\"%"
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(forbidden, r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	clean := strings.Join(strings.Fields(b.String()), " ")
+	if runes := []rune(clean); len(runes) > 80 {
+		clean = strings.TrimSpace(string(runes[:80]))
+	}
+	switch strings.ToLower(clean) {
+	case "", ".", "..", "global", "homes", "printers", "print$", "ipc$":
+		return ""
+	}
+	return clean
+}
+
 func getServerLanIP() string {
 	return getRouterLanIP()
 }
@@ -1209,7 +1235,7 @@ func syncSambaConfigFile(shares []ShareItem) error {
 	sb.WriteString(fmt.Sprintf("\toption enable_extra_tuning '%s'\n", escapeUCIQuote(tuning)))
 
 	for _, s := range shares {
-		name := sanitizeFilename(s.Name)
+		name := sanitizeSambaShareName(s.Name)
 		if name == "" || s.Path == "" {
 			continue
 		}
@@ -1847,9 +1873,9 @@ func handleNASShares(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, false, "invalid JSON")
 			return
 		}
-		body.Name = sanitizeFilename(body.Name)
+		body.Name = sanitizeSambaShareName(body.Name)
 		if body.Name == "" {
-			writeJSON(w, http.StatusBadRequest, false, "share name is required")
+			writeJSON(w, http.StatusBadRequest, false, "share name is required (không được chứa \\ / [ ] : | < > + = ; , * ? \" % hoặc trùng tên hệ thống)")
 			return
 		}
 		validPath, err := validateNASPath(body.Path)

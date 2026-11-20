@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGDriveValidationAndSecretMasking(t *testing.T) {
@@ -221,3 +222,90 @@ type gdriveTestHTTPError struct {
 }
 
 func (e *gdriveTestHTTPError) Error() string { return e.msg }
+
+func TestSambaShareNameSpacesAndGDriveOAuthFallback(t *testing.T) {
+	// 1. Test sanitizeSambaShareName preserves spaces and Unicode, rejects forbidden chars and reserved names
+	testCases := []struct {
+		in   string
+		want string
+	}{
+		{"New Image", "New Image"},
+		{"Nude AI", "Nude AI"},
+		{"  Thư  Mục   Ảnh   Mới  ", "Thư Mục Ảnh Mới"},
+		{"Media/Movies\\Backup", "MediaMoviesBackup"},
+		{"Share: [Pro] <HQ> *Test? | %100+", "Share Pro HQ Test 100"},
+		{"global", ""},
+		{"homes", ""},
+		{"ipc$", ""},
+		{"..", ""},
+	}
+	for _, tc := range testCases {
+		got := sanitizeSambaShareName(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeSambaShareName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// 2. Test isValidGDriveClientID
+	if !isValidGDriveClientID("123456789-abcdef.apps.googleusercontent.com") {
+		t.Error("expected valid Google client ID to pass")
+	}
+	if isValidGDriveClientID("oauth2.googleapis.com") {
+		t.Error("expected oauth2.googleapis.com to be rejected as Client ID")
+	}
+	if isValidGDriveClientID("https://oauth2.googleapis.com/token") {
+		t.Error("expected URL to be rejected as Client ID")
+	}
+	if isValidGDriveClientID("my-client-id") {
+		t.Error("expected non-Google client ID to be rejected")
+	}
+
+	// 3. Test GDrive token fallback: custom OAuth returns invalid_client -> fallback to Playground succeeds
+	origPG := gdrivePlaygroundRefreshEndpoint
+	origOAuth := gdriveOAuthTokenEndpoint
+	defer func() {
+		gdrivePlaygroundRefreshEndpoint = origPG
+		gdriveOAuthTokenEndpoint = origOAuth
+	}()
+
+	var pgCalled, oauthCalled int32
+	pgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pgCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		b64 := base64.StdEncoding.EncodeToString([]byte(`{"access_token":"ya29.pg_fallback_success","expires_in":3600}`))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"Response": map[string]interface{}{
+				"Status-Code":  200,
+				"message-body": b64,
+			},
+		})
+	}))
+	defer pgServer.Close()
+
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&oauthCalled, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"The OAuth client was not found."}`))
+	}))
+	defer oauthServer.Close()
+
+	gdrivePlaygroundRefreshEndpoint = pgServer.URL
+	gdriveOAuthTokenEndpoint = oauthServer.URL
+
+	// 3a. Hostname as client_id (oauth2.googleapis.com) automatically falls back to Playground
+	authClient := &http.Client{Timeout: 5 * time.Second}
+	res, err := doGDriveTokenRequest(authClient, "1//playground_token", "oauth2.googleapis.com", "dummy_secret")
+	if err != nil || res == nil || res.AccessToken != "ya29.pg_fallback_success" {
+		t.Fatalf("expected playground fallback for hostname client_id, got res=%+v err=%v", res, err)
+	}
+
+	// 3b. Real client ID rejected with invalid_client automatically falls back to Playground
+	res2, err2 := doGDriveTokenRequest(authClient, "1//playground_token", "99999-hash.apps.googleusercontent.com", "dummy_secret")
+	if err2 != nil || res2 == nil || res2.AccessToken != "ya29.pg_fallback_success" {
+		t.Fatalf("expected playground fallback after custom oauth invalid_client, got res=%+v err=%v", res2, err2)
+	}
+	if atomic.LoadInt32(&oauthCalled) == 0 || atomic.LoadInt32(&pgCalled) == 0 {
+		t.Fatalf("expected both oauth and pg servers to be called, got oauth=%d pg=%d", oauthCalled, pgCalled)
+	}
+}

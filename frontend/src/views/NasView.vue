@@ -782,6 +782,28 @@ async function refreshAccessTokenNow() {
   }
 }
 
+function resetCustomOAuth() {
+  gdriveConfig.value.client_id = ''
+  gdriveConfig.value.client_secret = ''
+  showNotice('Đã xóa Client ID và Secret riêng. Hãy nhấn "Cấp Mới Access Token" hoặc "Lưu Cài Đặt" để áp dụng.')
+}
+
+async function resetCustomOAuthAndRefresh() {
+  gdriveConfig.value.client_id = ''
+  gdriveConfig.value.client_secret = ''
+  showNotice('Đang xóa Client ID lỗi và tự động cấp mới lại qua Google Playground…')
+  await refreshAccessTokenNow()
+}
+
+function onSharePathInput() {
+  if (!newShare.value.name && newShare.value.path) {
+    const parts = newShare.value.path.split('/').filter(Boolean)
+    if (parts.length > 0) {
+      newShare.value.name = parts[parts.length - 1]
+    }
+  }
+}
+
 function startGDrivePolling() {
   if (gdrivePollTimer) clearInterval(gdrivePollTimer)
   gdrivePollTimer = setInterval(async () => {
@@ -1331,7 +1353,7 @@ onUnmounted(() => {
                   type="text"
                   required
                   class="pro-input mono w-full"
-                  placeholder="Vi du: Media, Backup, Phim"
+                  placeholder="Ví dụ: Media, New Image, Phim"
                 />
               </div>
 
@@ -1343,6 +1365,7 @@ onUnmounted(() => {
                   required
                   class="pro-input mono w-full"
                   placeholder="/mnt/sda1/media"
+                  @input="onSharePathInput"
                 />
               </div>
 
@@ -1807,9 +1830,20 @@ onUnmounted(() => {
                 </label>
                 <div
                   v-if="gdriveConfig.last_refresh_error"
-                  class="mb-2 p-2 rounded bg-rose-950/50 border border-rose-500/40 text-[11px] text-rose-200 leading-relaxed"
+                  class="mb-2 p-2.5 rounded bg-rose-950/60 border border-rose-500/50 text-[11px] text-rose-200 leading-relaxed flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-sm"
                 >
-                  ⚠️ <strong>Cảnh báo Refresh Token:</strong> {{ gdriveConfig.last_refresh_error }}
+                  <div class="flex-1">
+                    ⚠️ <strong>Cảnh báo Refresh Token:</strong> {{ gdriveConfig.last_refresh_error }}
+                  </div>
+                  <button
+                    v-if="gdriveConfig.client_id || gdriveConfig.client_secret"
+                    type="button"
+                    class="btn-secondary text-[10.5px] py-1 px-2.5 bg-rose-900/60 hover:bg-rose-800 text-rose-100 border-rose-400/50 shrink-0 cursor-pointer self-start sm:self-auto font-semibold"
+                    title="Xóa Client ID / Secret không khớp và tự động cấp mới lại token qua Google Playground"
+                    @click="resetCustomOAuthAndRefresh"
+                  >
+                    🧹 Dùng Google Playground Mặc Định
+                  </button>
                 </div>
                 <div v-else-if="gdriveConfig.token_last_refreshed" class="mb-1.5 text-[10.5px] text-emerald-400/90 mono">
                   ✓ Cấp mới gần nhất: {{ gdriveConfig.token_last_refreshed }}
@@ -1899,6 +1933,14 @@ onUnmounted(() => {
                 </button>
 
                 <div v-if="showAdvancedOAuth" class="mt-2 p-2.5 rounded-lg bg-black/50 border border-white/10 space-y-2">
+                  <div
+                    v-if="gdriveConfig.client_id && !gdriveConfig.client_id.trim().endsWith('.apps.googleusercontent.com')"
+                    class="p-2 rounded bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-300 space-y-1"
+                  >
+                    <div>⚠️ <strong>Định dạng Client ID không hợp lệ:</strong> Google OAuth Client ID bắt buộc phải có đuôi <code>.apps.googleusercontent.com</code> (ví dụ: <code>123456789-xyz.apps.googleusercontent.com</code>).</div>
+                    <div class="text-gray-300">Không điền đường dẫn URL hoặc <code>oauth2.googleapis.com</code> vào trường này.</div>
+                  </div>
+
                   <div>
                     <label class="block text-[10px] text-gray-400 uppercase mb-0.5">Google OAuth Client ID</label>
                     <input
@@ -1916,6 +1958,15 @@ onUnmounted(() => {
                       class="pro-input mono text-xs w-full"
                       placeholder="Để trống để dùng cấu hình mặc định (hoặc nhập Client Secret)"
                     />
+                  </div>
+                  <div v-if="gdriveConfig.client_id || gdriveConfig.client_secret" class="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      class="btn-secondary text-[10.5px] py-1 px-2.5 text-amber-300 hover:text-white border-amber-500/40"
+                      @click="resetCustomOAuth"
+                    >
+                      🧹 Xóa Client ID & Secret (Dùng Google Playground)
+                    </button>
                   </div>
                 </div>
               </div>

@@ -310,6 +310,64 @@ type gdriveTokenRefreshResult struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresIn    int64
+	SourceMode   string // "custom_oauth" or "playground"
+}
+
+// isValidGDriveClientID checks whether clientID matches Google OAuth Client ID format.
+// Google OAuth Client IDs always end in .apps.googleusercontent.com and cannot be hostnames/URLs.
+func isValidGDriveClientID(cid string) bool {
+	cid = strings.TrimSpace(cid)
+	if cid == "" {
+		return false
+	}
+	if strings.Contains(cid, "://") || strings.Contains(cid, "/") || strings.Contains(cid, " ") {
+		return false
+	}
+	return strings.HasSuffix(cid, ".apps.googleusercontent.com")
+}
+
+func doPlaygroundTokenRequest(authClient *http.Client, refreshToken string) (*gdriveTokenRefreshResult, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		payload, _ := json.Marshal(map[string]string{
+			"token_uri":     gdriveOAuthTokenEndpoint,
+			"refresh_token": refreshToken,
+		})
+		req, err := http.NewRequest("POST", gdrivePlaygroundRefreshEndpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Origin", "https://developers.google.com")
+		req.Header.Set("Referer", "https://developers.google.com/oauthplayground/")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+		resp, doErr := authClient.Do(req)
+		if doErr != nil {
+			lastErr = doErr
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		resp.Body.Close()
+
+		parsed, permErr, retryErr := parseGDriveOAuthResponse(resp.StatusCode, bodyBytes, false)
+		if parsed != nil {
+			parsed.SourceMode = "playground"
+			return parsed, nil
+		}
+		if permErr != nil {
+			return nil, permErr
+		}
+		lastErr = retryErr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("không nhận được phản hồi hợp lệ từ Google Playground")
+	}
+	return nil, lastErr
 }
 
 func formatGDriveOAuthError(oauthErr, errDesc string, customOAuth bool) string {
@@ -415,43 +473,39 @@ func parseGDriveOAuthResponse(statusCode int, bodyBytes []byte, customOAuth bool
 }
 
 func doGDriveTokenRequest(authClient *http.Client, refreshToken, clientID, clientSecret string) (*gdriveTokenRefreshResult, error) {
-	customOAuth := clientID != "" && clientSecret != ""
-	var lastErr error
+	hasCustomCredentials := clientID != "" && clientSecret != ""
+	if hasCustomCredentials && !isValidGDriveClientID(clientID) {
+		// User mistook token URL or hostname (e.g. oauth2.googleapis.com) for Client ID.
+		// Fallback to Google Playground first if refresh token is present.
+		if playRes, playErr := doPlaygroundTokenRequest(authClient, refreshToken); playErr == nil && playRes != nil {
+			return playRes, nil
+		} else if playErr != nil {
+			return nil, playErr
+		}
+		return nil, fmt.Errorf("Google Client ID không đúng định dạng: phải kết thúc bằng '.apps.googleusercontent.com' (bạn đã nhập: %q). Hãy kiểm tra lại hoặc để trống để sử dụng Google Playground mặc định", clientID)
+	}
 
+	customOAuth := hasCustomCredentials && isValidGDriveClientID(clientID)
+	if !customOAuth {
+		return doPlaygroundTokenRequest(authClient, refreshToken)
+	}
+
+	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 		}
-		var req *http.Request
-		var err error
-		if customOAuth {
-			form := url.Values{}
-			form.Set("grant_type", "refresh_token")
-			form.Set("refresh_token", refreshToken)
-			form.Set("client_id", clientID)
-			form.Set("client_secret", clientSecret)
-			req, err = http.NewRequest("POST", gdriveOAuthTokenEndpoint, strings.NewReader(form.Encode()))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				req.Header.Set("Accept", "application/json")
-			}
-		} else {
-			payload, _ := json.Marshal(map[string]string{
-				"token_uri":     gdriveOAuthTokenEndpoint,
-				"refresh_token": refreshToken,
-			})
-			req, err = http.NewRequest("POST", gdrivePlaygroundRefreshEndpoint, bytes.NewReader(payload))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("Accept", "application/json")
-				req.Header.Set("Origin", "https://developers.google.com")
-				req.Header.Set("Referer", "https://developers.google.com/oauthplayground/")
-				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-			}
-		}
+		form := url.Values{}
+		form.Set("grant_type", "refresh_token")
+		form.Set("refresh_token", refreshToken)
+		form.Set("client_id", clientID)
+		form.Set("client_secret", clientSecret)
+		req, err := http.NewRequest("POST", gdriveOAuthTokenEndpoint, strings.NewReader(form.Encode()))
 		if err != nil {
 			return nil, err
 		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
 
 		resp, doErr := authClient.Do(req)
 		if doErr != nil {
@@ -463,9 +517,17 @@ func doGDriveTokenRequest(authClient *http.Client, refreshToken, clientID, clien
 
 		parsed, permErr, retryErr := parseGDriveOAuthResponse(resp.StatusCode, bodyBytes, customOAuth)
 		if parsed != nil {
+			parsed.SourceMode = "custom_oauth"
 			return parsed, nil
 		}
 		if permErr != nil {
+			// If custom OAuth returned invalid_client or unauthorized_client (credentials mismatch),
+			// attempt fallback to Google Playground endpoint in case the refresh token was issued by Playground!
+			if strings.Contains(permErr.Error(), "invalid_client") || strings.Contains(permErr.Error(), "unauthorized_client") {
+				if playRes, playErr := doPlaygroundTokenRequest(authClient, refreshToken); playErr == nil && playRes != nil {
+					return playRes, nil
+				}
+			}
 			return nil, permErr
 		}
 		lastErr = retryErr
@@ -534,13 +596,16 @@ func refreshGDriveTokenWithOverride(previousFailedToken string, force bool, over
 	}
 	if hasClientIDOverride {
 		clientID = nextClientIDOverride
+		if clientID == "" {
+			clientSecret = ""
+		}
 	}
 	if hasClientSecretOverride {
 		clientSecret = nextClientSecretOverride
 	}
 
 	authMode := "playground"
-	if clientID != "" && clientSecret != "" {
+	if isValidGDriveClientID(clientID) && clientSecret != "" {
 		authMode = "custom_oauth"
 	}
 
@@ -571,6 +636,11 @@ func refreshGDriveTokenWithOverride(previousFailedToken string, force bool, over
 		expiresIn = 3599
 	}
 
+	actualMode := authMode
+	if res.SourceMode != "" {
+		actualMode = res.SourceMode
+	}
+
 	gdriveConfigLock.Lock()
 	currentGDriveCfg.AccessToken = res.AccessToken
 	if hasRefreshOverride {
@@ -585,15 +655,19 @@ func refreshGDriveTokenWithOverride(previousFailedToken string, force bool, over
 	if hasClientSecretOverride {
 		currentGDriveCfg.ClientSecret = clientSecret
 	}
+	if actualMode == "playground" && (!isValidGDriveClientID(currentGDriveCfg.ClientID) || res.SourceMode == "playground") {
+		currentGDriveCfg.ClientID = ""
+		currentGDriveCfg.ClientSecret = ""
+	}
 	currentGDriveCfg.TokenExpiresAt = time.Now().Unix() + expiresIn
 	currentGDriveCfg.TokenLastRefreshed = getSystemTimeNow().Format("2006-01-02 15:04:05")
-	currentGDriveCfg.TokenAuthMode = authMode
+	currentGDriveCfg.TokenAuthMode = actualMode
 	currentGDriveCfg.LastRefreshError = ""
 	_ = saveGDriveConfigToFileLocked()
 	gdriveConfigLock.Unlock()
 
 	srcLabel := "Google Playground"
-	if authMode == "custom_oauth" {
+	if actualMode == "custom_oauth" {
 		srcLabel = "Custom Google OAuth2"
 	}
 	appendGDriveLog(fmt.Sprintf("🔄 [TOKEN REFRESH] Đã cấp mới Access Token thành công qua %s (hiệu lực ~%d phút).", srcLabel, expiresIn/60))
@@ -1575,15 +1649,19 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(v, "••••") {
 				next.ClientID = v
 				next.LastRefreshError = ""
+				if v == "" {
+					next.ClientSecret = ""
+				}
 			}
 		}
 		if incoming.ClientSecret != nil {
-			if v := strings.TrimSpace(*incoming.ClientSecret); !strings.HasPrefix(v, "••••") {
+			v := strings.TrimSpace(*incoming.ClientSecret)
+			if !strings.HasPrefix(v, "••••") {
 				next.ClientSecret = v
 				next.LastRefreshError = ""
 			}
 		}
-		if strings.TrimSpace(next.ClientID) != "" && strings.TrimSpace(next.ClientSecret) != "" {
+		if isValidGDriveClientID(next.ClientID) && strings.TrimSpace(next.ClientSecret) != "" {
 			next.TokenAuthMode = "custom_oauth"
 		} else if strings.TrimSpace(next.RefreshToken) != "" {
 			next.TokenAuthMode = "playground"
