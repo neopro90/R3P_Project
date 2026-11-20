@@ -509,13 +509,13 @@ onUnmounted(() => {
       <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-[13px]">
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
           <div class="flex items-center justify-between font-bold text-gray-100">
-            <span>🌐 R3P Local Runtime (Cục Bộ)</span>
+            <span>⚡ Dịch Vụ Tải (R3P Downloader)</span>
             <span class="badge" :class="debugResult?.service_online !== false ? 'badge-green' : 'badge-red'">
-              {{ debugResult?.service_online !== false ? `HTTPS :${debugResult?.https_port || 8443} OK` : 'DỊCH VỤ LỖI' }}
+              {{ debugResult?.service_online !== false ? 'HOẠT ĐỘNG' : 'DỊCH VỤ LỖI' }}
             </span>
           </div>
-          <div class="text-gray-300">LAN IP: <span class="mono text-gray-100 font-bold">{{ debugResult?.lan_ip || '192.168.2.1' }}</span></div>
-          <div class="text-gray-300 truncate">URL: <span class="mono text-sky-400 font-semibold">{{ debugResult?.service_url || `https://${debugResult?.lan_ip || '192.168.2.1'}:8443/downloads` }}</span></div>
+          <div class="text-gray-300">Giao thức: <span class="mono text-gray-100 font-bold">HTTPS Cổng {{ debugResult?.https_port || 8443 }}</span></div>
+          <div class="text-gray-300">Động cơ: <span class="mono text-sky-400 font-semibold">Native Core + yt-dlp</span></div>
         </div>
 
         <div class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
