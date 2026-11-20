@@ -360,7 +360,7 @@ func ensureUsbNASShares() {
 	}
 	if !hasUsbShare {
 		shares = append([]ShareItem{
-			{Name: "USB_HDD_500G", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB High-Speed HDD Share"},
+			{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 High-Speed Storage Share"},
 			{Name: "R3P_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Local Auto-Downloader Media Library"},
 		}, shares...)
 		saveNASShares(shares)
@@ -769,7 +769,7 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Device      string `json:"device"`      // e.g. /dev/sda or /dev/sda1
 		Filesystem  string `json:"filesystem"`  // ext4, exfat, vfat, ntfs
-		Label       string `json:"label"`       // e.g. R3P_HDD_500G
+		Label       string `json:"label"`       // e.g. R3P_Storage
 		Repartition bool   `json:"repartition"` // Create fresh partition table + 1 primary partition
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {

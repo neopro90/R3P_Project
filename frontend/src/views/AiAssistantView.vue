@@ -124,7 +124,7 @@ const defaultQuickCommands: Record<string, QuickCommandItem[]> = {
   ],
   storage: [
     { label: '💾 Chi tiết ổ đĩa USB 3.0 & Phân vùng', cmd: '!lsblk -o NAME,FSTYPE,SIZE,MOUNTPOINT,LABEL' },
-    { label: '🚀 Tốc độ I/O ổ đĩa HDD 500GB', cmd: '!dd if=/dev/sda1 of=/dev/null bs=1M count=100 2>&1' },
+    { label: '🚀 Tốc độ I/O ổ lưu trữ ngoài (Storage)', cmd: '!dd if=/dev/sda1 of=/dev/null bs=1M count=100 2>&1' },
     { label: '📁 Xem file trong ổ cứng USB', cmd: '!ls -lah /mnt/sda1' },
     { label: '⚡ Thông số tinh chỉnh USB Queue', cmd: '!cat /sys/block/sda/queue/read_ahead_kb; cat /sys/block/sda/queue/max_sectors_kb' },
   ],
@@ -1389,7 +1389,7 @@ onMounted(async () => {
             v-model="newMemoryContent"
             rows="4"
             class="w-full bg-[#070b12] text-gray-200 text-xs p-2.5 rounded-lg border border-white/10 focus:border-sky-500 focus:outline-none"
-            placeholder="Ví dụ: Ổ cứng USB gắn ngoài là 500GB ext4 dùng lưu media tải về..."
+            placeholder="Ví dụ: Ổ lưu trữ ngoài USB (Storage) là ext4 dùng lưu media tải về..."
           ></textarea>
         </div>
 

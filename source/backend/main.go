@@ -1887,6 +1887,7 @@ func shouldSkipGzipPath(urlPath string) bool {
 		"/api/v1/files/download",
 		"/api/v1/files/preview",
 		"/api/v1/system/backup",
+		"/api/v1/system/autobackup/file",
 		"/api/v1/explorer/raw":
 		return true
 	default:
@@ -2008,13 +2009,35 @@ func main() {
 	log.SetPrefix("[r3p-api] ")
 
 	if len(os.Args) > 1 {
-		if len(os.Args) != 4 || os.Args[1] != "generate-cert" {
-			log.Fatal("usage: r3p-api [generate-cert CERT_PATH KEY_PATH]")
+		if len(os.Args) == 4 && os.Args[1] == "generate-cert" {
+			if err := generateSelfSignedCertificate(os.Args[2], os.Args[3]); err != nil {
+				log.Fatalf("generate TLS certificate: %v", err)
+			}
+			return
 		}
-		if err := generateSelfSignedCertificate(os.Args[2], os.Args[3]); err != nil {
-			log.Fatalf("generate TLS certificate: %v", err)
+		if os.Args[1] == "backup" {
+			bType := "full"
+			if len(os.Args) >= 3 && os.Args[2] != "" {
+				bType = os.Args[2]
+			}
+			tDir := defaultBackupDir
+			if len(os.Args) >= 4 && os.Args[3] != "" {
+				tDir = os.Args[3]
+			}
+			retDays := 14
+			if len(os.Args) >= 5 {
+				if d, err := strconv.Atoi(os.Args[4]); err == nil && d >= 0 {
+					retDays = d
+				}
+			}
+			created, err := executeAutoBackup(bType, tDir, retDays)
+			if err != nil {
+				log.Fatalf("auto backup failed: %v", err)
+			}
+			fmt.Printf("Auto backup succeeded: %s\n", created)
+			return
 		}
-		return
+		log.Fatal("usage: r3p-api [generate-cert CERT_PATH KEY_PATH | backup [TYPE] [DIR] [RETENTION_DAYS]]")
 	}
 
 	apiToken, tokenErr := loadAPIToken()
@@ -2067,6 +2090,9 @@ func main() {
 	mux.HandleFunc("/api/v1/system/ping", cors(handleSystemPing, "GET"))
 	mux.HandleFunc("/api/v1/system/nslookup", cors(handleSystemNslookup, "GET"))
 	mux.HandleFunc("/api/v1/system/backup", cors(handleSystemBackup, "GET"))
+	mux.HandleFunc("/api/v1/system/autobackup", cors(handleSystemAutoBackup, "GET", "POST"))
+	mux.HandleFunc("/api/v1/system/autobackup/run", cors(handleSystemAutoBackupRun, "POST"))
+	mux.HandleFunc("/api/v1/system/autobackup/file", cors(handleSystemAutoBackupFile, "GET", "DELETE"))
 	mux.HandleFunc("/api/v1/system/restore", cors(handleSystemRestore, "POST"))
 	mux.HandleFunc("/api/v1/system/reboot", cors(handleSystemReboot, "POST"))
 	mux.HandleFunc("/api/v1/system/settings", cors(handleSystemSettings, "PUT"))

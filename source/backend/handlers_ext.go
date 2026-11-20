@@ -1132,7 +1132,7 @@ func loadNASShares() []ShareItem {
 	settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &list)
 	if len(list) == 0 {
 		list = []ShareItem{
-			{Name: "USB_500G_HDD", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB External HDD Root"},
+			{Name: "USB_Storage", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
 			{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true, Comment: "Persistent NAND Shared Storage"},
 			{Name: "Downloads", Path: "/overlay/downloads", ReadOnly: false, GuestOk: true, Comment: "NAND Download Folder"},
@@ -1151,7 +1151,7 @@ func loadNASShares() []ShareItem {
 	if !hasUSB {
 		if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
 			list = append([]ShareItem{
-				{Name: "USB_500G_HDD", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 500GB External HDD Root"},
+				{Name: "USB_Storage", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
 				{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			}, list...)
 			saveNASShares(list)
@@ -2684,7 +2684,7 @@ func handleAccessPassword(w http.ResponseWriter, r *http.Request) {
 
 // ─── 6. Automation & Cron (/etc/crontabs/root) ────────────────────────────
 
-const rootCrontabPath = "/etc/crontabs/root"
+var rootCrontabPath = "/etc/crontabs/root"
 
 type CronEntry struct {
 	Index       int    `json:"index"`

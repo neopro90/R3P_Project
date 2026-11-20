@@ -469,6 +469,157 @@ async function syncSettingsDatabase() {
   }
 }
 
+interface AutoBackupConfig {
+  enabled: boolean
+  schedule: string
+  backup_type: 'full' | 'config' | 'db'
+  target_dir: string
+  retention_days: number
+  last_run?: string
+  last_status?: string
+  last_file?: string
+  last_output?: string
+}
+
+interface BackupFileItem {
+  name: string
+  path: string
+  size_bytes: number
+  mod_time: string
+  type: string
+}
+
+const dbActiveTab = ref<'overview' | 'autobackup'>('overview')
+const autoBackupConfig = ref<AutoBackupConfig>({
+  enabled: false,
+  schedule: '0 2 * * *',
+  backup_type: 'full',
+  target_dir: '/mnt/sda1/backups',
+  retention_days: 14,
+})
+const existingBackups = ref<BackupFileItem[]>([])
+const loadingAutoBackup = ref(false)
+const savingAutoBackup = ref(false)
+const runningAutoBackup = ref(false)
+const deletingBackupFile = ref<string | null>(null)
+const customScheduleInput = ref('')
+const selectedSchedulePreset = ref('0 2 * * *')
+
+function onSchedulePresetChange() {
+  if (selectedSchedulePreset.value !== 'custom') {
+    autoBackupConfig.value.schedule = selectedSchedulePreset.value
+  } else if (customScheduleInput.value) {
+    autoBackupConfig.value.schedule = customScheduleInput.value
+  }
+}
+
+function onCustomScheduleInput() {
+  if (selectedSchedulePreset.value === 'custom') {
+    autoBackupConfig.value.schedule = customScheduleInput.value.trim()
+  }
+}
+
+async function fetchAutoBackup() {
+  loadingAutoBackup.value = true
+  try {
+    const res = await apiRequest<{ config: AutoBackupConfig; backups: BackupFileItem[] }>('/system/autobackup')
+    if (res?.config) {
+      autoBackupConfig.value = res.config
+      if (['0 2 * * *', '0 3 * * *', '0 4 * * *', '0 */12 * * *', '0 2 * * 0'].includes(res.config.schedule)) {
+        selectedSchedulePreset.value = res.config.schedule
+      } else {
+        selectedSchedulePreset.value = 'custom'
+        customScheduleInput.value = res.config.schedule
+      }
+    }
+    if (res?.backups) {
+      existingBackups.value = res.backups
+    }
+  } catch {
+    // dev mode fallback
+  } finally {
+    loadingAutoBackup.value = false
+  }
+}
+
+async function saveAutoBackup() {
+  savingAutoBackup.value = true
+  errorMsg.value = null
+  try {
+    if (selectedSchedulePreset.value === 'custom' && customScheduleInput.value) {
+      autoBackupConfig.value.schedule = customScheduleInput.value.trim()
+    }
+    const res = await apiRequest<{ message: string; config: AutoBackupConfig; backups: BackupFileItem[] }>('/system/autobackup', {
+      method: 'POST',
+      body: JSON.stringify(autoBackupConfig.value),
+    })
+    if (res?.config) autoBackupConfig.value = res.config
+    if (res?.backups) existingBackups.value = res.backups
+    notice.value = res?.message || 'Đã lưu cài đặt tự động sao lưu và đồng bộ sang /etc/crontabs/root!'
+    setTimeout(() => { notice.value = null }, 4000)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi lưu tự động sao lưu: ' + (err?.message || err)
+  } finally {
+    savingAutoBackup.value = false
+  }
+}
+
+async function runAutoBackupNow() {
+  runningAutoBackup.value = true
+  errorMsg.value = null
+  try {
+    const res = await apiRequest<{ message: string; created_file: string; config: AutoBackupConfig; backups: BackupFileItem[] }>('/system/autobackup/run', {
+      method: 'POST',
+    })
+    if (res?.config) autoBackupConfig.value = res.config
+    if (res?.backups) existingBackups.value = res.backups
+    notice.value = res?.message || `Đã tạo bản sao lưu ${res?.created_file || ''} thành công!`
+    setTimeout(() => { notice.value = null }, 4500)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi khi chạy sao lưu ngay: ' + (err?.message || err)
+  } finally {
+    runningAutoBackup.value = false
+  }
+}
+
+async function downloadBackupItem(file: BackupFileItem) {
+  try {
+    const token = localStorage.getItem('r3p_token') || ''
+    const resp = await fetch(`/api/v1/system/autobackup/file?file=${encodeURIComponent(file.name)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi tải bản sao lưu: ' + (err?.message || err)
+  }
+}
+
+async function deleteBackupItem(file: BackupFileItem) {
+  if (!confirm(`Bạn có chắc chắn muốn xóa bản sao lưu "${file.name}"?`)) return
+  deletingBackupFile.value = file.name
+  try {
+    const res = await apiRequest<{ message: string; backups: BackupFileItem[] }>(`/api/v1/system/autobackup/file?file=${encodeURIComponent(file.name)}`, {
+      method: 'DELETE',
+    })
+    if (res?.backups) existingBackups.value = res.backups
+    notice.value = res?.message || `Đã xóa ${file.name} thành công!`
+    setTimeout(() => { notice.value = null }, 3500)
+  } catch (err: any) {
+    errorMsg.value = 'Lỗi xóa bản sao lưu: ' + (err?.message || err)
+  } finally {
+    deletingBackupFile.value = null
+  }
+}
+
 onMounted(async () => {
   await system.refresh()
   if (system.hostname && system.hostname !== '—') {
@@ -477,7 +628,7 @@ onMounted(async () => {
   if (system.timezone) {
     editTimezone.value = system.timezone
   }
-  await Promise.all([fetchFirmwareStatus(), fetchLogs(), fetchDbSummary()])
+  await Promise.all([fetchFirmwareStatus(), fetchLogs(), fetchDbSummary(), fetchAutoBackup()])
 })
 </script>
 
@@ -777,45 +928,298 @@ onMounted(async () => {
       </form>
     </div>
 
-    <!-- 2.5 Embedded Firmware Settings Database -->
-    <div v-if="dbSummary" class="pro-card">
-      <div class="pro-card-header">
+    <!-- 2.5 Embedded Firmware Settings Database & Auto Backup -->
+    <div class="pro-card">
+      <div class="pro-card-header flex-wrap gap-2">
         <div class="flex items-center gap-2">
-          <span class="pro-card-title">Firmware Settings Database</span>
-          <span class="badge badge-green mono text-[10px]">{{ dbSummary.engine.toUpperCase() }} v{{ dbSummary.schema_version }}</span>
+          <span class="pro-card-title">Firmware Settings Database &amp; Auto Backup</span>
+          <span v-if="dbSummary" class="badge badge-green mono text-[10px]">{{ dbSummary.engine.toUpperCase() }} v{{ dbSummary.schema_version }}</span>
+          <span v-if="autoBackupConfig.enabled" class="badge badge-blue text-[10px]">⏰ Auto Backup ON</span>
         </div>
-        <button type="button" class="btn-secondary text-[11px] py-1 px-2.5" :disabled="syncingDb" @click="syncSettingsDatabase">
-          {{ syncingDb ? 'Đang đồng bộ…' : 'Sync & Migrate DB ↻' }}
+        <div class="flex items-center gap-1.5">
+          <button
+            v-if="dbActiveTab === 'overview'"
+            type="button"
+            class="btn-secondary text-[11px] py-1 px-2.5"
+            :disabled="syncingDb"
+            @click="syncSettingsDatabase"
+          >
+            {{ syncingDb ? 'Đang đồng bộ…' : 'Sync & Migrate DB ↻' }}
+          </button>
+          <button
+            v-if="dbActiveTab === 'autobackup'"
+            type="button"
+            class="btn-secondary text-[11px] py-1 px-2.5 text-sky-400 hover:text-white"
+            :disabled="runningAutoBackup"
+            @click="runAutoBackupNow"
+          >
+            {{ runningAutoBackup ? '⏳ Đang sao lưu…' : '▶ Chạy Sao Lưu Ngay' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Thin horizontal tabs: Database Overview | Auto Backup -->
+      <div class="flex items-center gap-1.5 border-b border-white/10 mb-3 pb-1">
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-t text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+          :class="dbActiveTab === 'overview'
+            ? 'border-b-2 border-sky-400 text-sky-300 bg-sky-950/30'
+            : 'text-gray-400 hover:text-gray-200'"
+          @click="dbActiveTab = 'overview'"
+        >
+          <span>📊 Tổng Quan CSDL BoltDB</span>
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-t text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+          :class="dbActiveTab === 'autobackup'
+            ? 'border-b-2 border-sky-400 text-sky-300 bg-sky-950/30'
+            : 'text-gray-400 hover:text-gray-200'"
+          @click="dbActiveTab = 'autobackup'"
+        >
+          <span>⏰ Tự Động Sao Lưu (Auto Backup)</span>
+          <span
+            v-if="autoBackupConfig.enabled"
+            class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"
+            title="Đang bật lịch tự động sao lưu"
+          ></span>
         </button>
       </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11.5px] mb-2">
-        <div class="p-2 rounded bg-black/40 border border-white/5">
-          <div class="text-gray-400 text-[10px] uppercase">Tệp CSDL</div>
-          <div class="mono text-sky-300 font-semibold truncate" :title="dbSummary.path">{{ dbSummary.path || '—' }}</div>
-        </div>
-        <div class="p-2 rounded bg-black/40 border border-white/5">
-          <div class="text-gray-400 text-[10px] uppercase">Dung Lượng</div>
-          <div class="mono text-emerald-400 font-bold">{{ (dbSummary.size_bytes / 1024).toFixed(1) }} KB</div>
-        </div>
-        <div class="p-2 rounded bg-black/40 border border-white/5">
-          <div class="text-gray-400 text-[10px] uppercase">Tổng Tham Số</div>
-          <div class="mono text-amber-300 font-bold">{{ dbSummary.total_keys }} keys</div>
-        </div>
-        <div class="p-2 rounded bg-black/40 border border-white/5">
-          <div class="text-gray-400 text-[10px] uppercase">Di Trú JSON Cũ</div>
-          <div class="mono text-gray-200 truncate" :title="dbSummary.migrated_at || 'Chưa chạy'">
-            {{ dbSummary.migrated_at ? dbSummary.migrated_at.slice(0, 19).replace('T', ' ') : 'Đã sẵn sàng' }}
+
+      <!-- Tab 1: Database Overview -->
+      <div v-if="dbActiveTab === 'overview' && dbSummary" class="space-y-2">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11.5px] mb-2">
+          <div class="p-2 rounded bg-black/40 border border-white/5">
+            <div class="text-gray-400 text-[10px] uppercase">Tệp CSDL</div>
+            <div class="mono text-sky-300 font-semibold truncate" :title="dbSummary.path">{{ dbSummary.path || '—' }}</div>
+          </div>
+          <div class="p-2 rounded bg-black/40 border border-white/5">
+            <div class="text-gray-400 text-[10px] uppercase">Dung Lượng</div>
+            <div class="mono text-emerald-400 font-bold">{{ (dbSummary.size_bytes / 1024).toFixed(1) }} KB</div>
+          </div>
+          <div class="p-2 rounded bg-black/40 border border-white/5">
+            <div class="text-gray-400 text-[10px] uppercase">Tổng Tham Số</div>
+            <div class="mono text-amber-300 font-bold">{{ dbSummary.total_keys }} keys</div>
+          </div>
+          <div class="p-2 rounded bg-black/40 border border-white/5">
+            <div class="text-gray-400 text-[10px] uppercase">Di Trú JSON Cũ</div>
+            <div class="mono text-gray-200 truncate" :title="dbSummary.migrated_at || 'Chưa chạy'">
+              {{ dbSummary.migrated_at ? dbSummary.migrated_at.slice(0, 19).replace('T', ' ') : 'Đã sẵn sàng' }}
+            </div>
           </div>
         </div>
+        <div class="flex flex-wrap gap-1.5 text-[10.5px]">
+          <span
+            v-for="(cnt, bkt) in dbSummary.buckets"
+            :key="bkt"
+            class="px-2 py-0.5 rounded bg-white/5 border border-white/10 mono text-gray-300"
+          >
+            {{ bkt }}: <strong class="text-sky-300">{{ cnt }}</strong>
+          </span>
+        </div>
       </div>
-      <div class="flex flex-wrap gap-1.5 text-[10.5px]">
-        <span
-          v-for="(cnt, bkt) in dbSummary.buckets"
-          :key="bkt"
-          class="px-2 py-0.5 rounded bg-white/5 border border-white/10 mono text-gray-300"
-        >
-          {{ bkt }}: <strong class="text-sky-300">{{ cnt }}</strong>
-        </span>
+
+      <!-- Tab 2: Auto Backup Configuration & History -->
+      <div v-else-if="dbActiveTab === 'autobackup'" class="space-y-3 text-xs">
+        <div class="p-3 rounded-lg bg-[#0c1322] border border-sky-500/25 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+            <div class="flex items-center gap-2">
+              <label class="flex items-center gap-2 cursor-pointer font-bold text-sky-300 text-xs">
+                <input v-model="autoBackupConfig.enabled" type="checkbox" class="rounded accent-sky-500 w-4 h-4 cursor-pointer" />
+                <span>Bật Tự Động Sao Lưu Theo Lịch Hệ Thống (Auto Backup)</span>
+              </label>
+            </div>
+            <RouterLink to="/automation" class="text-[11px] text-sky-400 hover:underline font-semibold flex items-center gap-1">
+              <span>Xem tại tab Lịch Tự Động Hóa Cron (/etc/crontabs/root) →</span>
+            </RouterLink>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            <!-- 1. Schedule -->
+            <div>
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1 font-semibold">1. Lịch Chạy Cron</label>
+              <select
+                v-model="selectedSchedulePreset"
+                class="pro-input mono text-xs w-full mb-1"
+                @change="onSchedulePresetChange"
+              >
+                <option value="0 2 * * *">Hàng ngày lúc 02:00 sáng (Khuyên dùng)</option>
+                <option value="0 3 * * *">Hàng ngày lúc 03:00 sáng</option>
+                <option value="0 4 * * *">Hàng ngày lúc 04:00 sáng</option>
+                <option value="0 */12 * * *">Mỗi 12 giờ một lần</option>
+                <option value="0 2 * * 0">Hàng tuần (Chủ Nhật lúc 02:00)</option>
+                <option value="custom">-- Tùy chỉnh biểu thức Cron --</option>
+              </select>
+              <div v-if="selectedSchedulePreset === 'custom'" class="mt-1">
+                <input
+                  v-model="customScheduleInput"
+                  type="text"
+                  class="pro-input mono text-xs w-full"
+                  placeholder="Ví dụ: 30 1 * * *"
+                  @input="onCustomScheduleInput"
+                />
+                <span class="text-[10px] text-gray-400">Chuẩn 5 trường: phút giờ ngày tháng thứ</span>
+              </div>
+            </div>
+
+            <!-- 2. Backup Type -->
+            <div>
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1 font-semibold">2. Loại Sao Lưu</label>
+              <select v-model="autoBackupConfig.backup_type" class="pro-input text-xs w-full">
+                <option value="full">📦 Toàn Hệ Thống (sysupgrade -b kèm mật khẩu/ssh)</option>
+                <option value="config">🛡️ Cấu Hình An Toàn (Đã lọc bỏ mật khẩu nhạy cảm)</option>
+                <option value="db">💾 Chỉ Cơ Sở Dữ Liệu BoltDB (settings.db snapshot)</option>
+              </select>
+            </div>
+
+            <!-- 3. Target Directory (Ưu tiên /mnt/sda1/) -->
+            <div>
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1 font-semibold">3. Thư Mục Lưu Trữ</label>
+              <input
+                v-model="autoBackupConfig.target_dir"
+                type="text"
+                class="pro-input mono text-xs w-full mb-1"
+                placeholder="/mnt/sda1/backups"
+              />
+              <div class="flex items-center gap-1 flex-wrap text-[10px]">
+                <span class="text-gray-400">Gợi ý:</span>
+                <button
+                  type="button"
+                  class="text-sky-400 hover:underline cursor-pointer"
+                  @click="autoBackupConfig.target_dir = '/mnt/sda1/backups'"
+                >
+                  /mnt/sda1/backups
+                </button>
+                <span class="text-gray-600">|</span>
+                <button
+                  type="button"
+                  class="text-sky-400 hover:underline cursor-pointer"
+                  @click="autoBackupConfig.target_dir = '/mnt/sda1/backup/router'"
+                >
+                  /mnt/sda1/backup/router
+                </button>
+                <span class="text-gray-600">|</span>
+                <button
+                  type="button"
+                  class="text-sky-400 hover:underline cursor-pointer"
+                  @click="autoBackupConfig.target_dir = '/overlay/backups'"
+                >
+                  /overlay/backups
+                </button>
+              </div>
+            </div>
+
+            <!-- 4. Retention Days -->
+            <div>
+              <label class="block text-[10.5px] text-gray-400 uppercase mb-1 font-semibold">4. Thời Gian Lưu Tối Đa</label>
+              <select v-model.number="autoBackupConfig.retention_days" class="pro-input text-xs w-full">
+                <option :value="7">Giữ trong 7 ngày (Tự xóa bản cũ)</option>
+                <option :value="14">Giữ trong 14 ngày</option>
+                <option :value="30">Giữ trong 30 ngày (Khuyên dùng)</option>
+                <option :value="60">Giữ trong 60 ngày</option>
+                <option :value="90">Giữ trong 90 ngày</option>
+                <option :value="0">Không giới hạn (Không tự xóa)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10 text-[11px]">
+            <div class="text-gray-400">
+              <span v-if="autoBackupConfig.last_run">
+                Lần chạy gần nhất: <strong class="text-emerald-400 mono">{{ autoBackupConfig.last_run }}</strong>
+                ({{ autoBackupConfig.last_status }})
+              </span>
+              <span v-else>Chưa có lịch sử sao lưu tự động.</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="btn-primary text-xs py-1.5 px-4 font-bold shadow"
+                :disabled="savingAutoBackup"
+                @click="saveAutoBackup"
+              >
+                {{ savingAutoBackup ? '⏳ Đang lưu & đồng bộ cron…' : '💾 Lưu Cài Đặt Tự Động Sao Lưu' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Backups List Table in target_dir -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-gray-300 text-xs flex items-center gap-1.5">
+              <span>📁 Danh Sách Bản Sao Lưu Trong</span>
+              <code class="text-emerald-400 text-[11px] mono">{{ autoBackupConfig.target_dir }}</code>
+              <span class="badge badge-purple mono text-[10px]">{{ existingBackups.length }} files</span>
+            </span>
+            <button
+              type="button"
+              class="btn-secondary text-[10px] py-0.5 px-2 cursor-pointer"
+              :disabled="loadingAutoBackup"
+              @click="fetchAutoBackup"
+            >
+              Làm mới ↻
+            </button>
+          </div>
+
+          <div class="overflow-x-auto rounded border border-white/10">
+            <table class="pro-table text-xs">
+              <thead>
+                <tr>
+                  <th>Tên Bản Sao Lưu</th>
+                  <th>Loại</th>
+                  <th>Dung Lượng</th>
+                  <th>Thời Gian Tạo</th>
+                  <th class="text-right">Thao Tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!existingBackups.length">
+                  <td colspan="5" class="text-center text-gray-500 py-3">
+                    Chưa có file sao lưu nào trong thư mục <code>{{ autoBackupConfig.target_dir }}</code>. Nhấn "▶ Chạy Sao Lưu Ngay" để tạo bản đầu tiên!
+                  </td>
+                </tr>
+                <tr v-for="b in existingBackups" :key="b.name">
+                  <td class="mono font-semibold text-sky-300 truncate max-w-[280px]" :title="b.name">
+                    {{ b.name }}
+                  </td>
+                  <td>
+                    <span
+                      class="badge"
+                      :class="b.type === 'full' ? 'badge-blue' : (b.type === 'config' ? 'badge-green' : 'badge-orange')"
+                    >
+                      {{ b.type === 'full' ? 'Toàn Diện' : (b.type === 'config' ? 'Cấu Hình' : 'BoltDB') }}
+                    </span>
+                  </td>
+                  <td class="mono text-emerald-400">
+                    {{ b.size_bytes > 1048576 ? (b.size_bytes / 1048576).toFixed(2) + ' MB' : (b.size_bytes / 1024).toFixed(1) + ' KB' }}
+                  </td>
+                  <td class="mono text-gray-300">{{ b.mod_time }}</td>
+                  <td class="text-right space-x-1.5">
+                    <button
+                      type="button"
+                      class="btn-secondary text-[10.5px] py-0.5 px-2"
+                      title="Tải file sao lưu này về máy tính"
+                      @click="downloadBackupItem(b)"
+                    >
+                      ↓ Tải Về
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-danger text-[10.5px] py-0.5 px-2"
+                      :disabled="deletingBackupFile === b.name"
+                      title="Xóa file sao lưu này khỏi ổ đĩa"
+                      @click="deleteBackupItem(b)"
+                    >
+                      {{ deletingBackupFile === b.name ? 'Đang xóa…' : 'Xóa' }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 

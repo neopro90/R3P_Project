@@ -125,7 +125,7 @@ const formatLog = ref('')
 const formatForm = ref({
   device: '/dev/sda1',
   filesystem: 'ext4',
-  label: 'R3P_HDD_500G',
+  label: 'R3P_Storage',
   repartition: true,
 })
 
@@ -220,7 +220,8 @@ const clearingLog = ref(false)
 const showRefreshToken = ref(false)
 const showAccessToken = ref(false)
 const showAdvancedOAuth = ref(false)
-const gdriveGuideTab = ref<'permanent' | 'quick'>('permanent')
+const showGDriveTokenGuide = ref(false)
+const gdriveGuideTab = ref<'quick' | 'permanent'>('quick')
 let gdrivePollTimer: any = null
 const showAddShare = ref(false)
 const newShare = ref<ShareItem>({
@@ -968,7 +969,7 @@ onUnmounted(() => {
                 maxlength="16"
                 required
                 class="w-full pro-input mono"
-                placeholder="R3P_HDD_500G"
+                placeholder="R3P_Storage"
               />
             </div>
 
@@ -2003,96 +2004,108 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Comprehensive Token Helper Guide Card -->
-          <div class="p-3.5 rounded-lg bg-sky-950/30 border border-sky-500/25 text-[11px] text-gray-300 space-y-2.5">
-            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
-              <div class="font-bold text-sky-300 flex items-center gap-1.5 text-xs">
-                <span>💡 Hướng dẫn cấu hình Google Drive Token chuẩn xác:</span>
-              </div>
-              <div class="flex items-center gap-1 bg-black/40 p-0.5 rounded border border-white/10 text-[10.5px]">
-                <button
-                  type="button"
-                  class="px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer"
-                  :class="gdriveGuideTab === 'permanent' ? 'bg-sky-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'"
-                  @click="gdriveGuideTab = 'permanent'"
-                >
-                  ⭐ Cách 1: Vĩnh Viễn Trọn Đời (Khuyên dùng)
-                </button>
-                <button
-                  type="button"
-                  class="px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer"
-                  :class="gdriveGuideTab === 'quick' ? 'bg-amber-600/80 text-white shadow-sm' : 'text-gray-400 hover:text-white'"
-                  @click="gdriveGuideTab = 'quick'"
-                >
-                  ⚡ Cách 2: Dùng Nhanh (Hạn 24h - 7 ngày)
-                </button>
-              </div>
-            </div>
+          <!-- Collapsible Google Drive Token Helper Guide -->
+          <div class="pt-0.5">
+            <button
+              type="button"
+              class="text-[11px] text-sky-400 hover:text-sky-300 underline font-semibold cursor-pointer flex items-center gap-1.5"
+              @click="showGDriveTokenGuide = !showGDriveTokenGuide"
+            >
+              <span>{{ showGDriveTokenGuide ? '▼ Ẩn hướng dẫn cấu hình Token' : '▶ 💡 Hướng dẫn lấy Token Google Drive' }}</span>
+              <span class="text-[10px] text-amber-300/90 font-normal">(Cách 1: Lấy key tạm | Cách 2: Lấy key vĩnh viễn)</span>
+            </button>
 
-            <!-- Tab 1: Vĩnh viễn qua GCP -->
-            <div v-if="gdriveGuideTab === 'permanent'" class="space-y-2 leading-relaxed text-gray-300">
-              <div class="p-2 rounded bg-sky-900/20 border border-sky-500/20 text-sky-200 text-[10.5px]">
-                🛡️ <strong>Lợi ích:</strong> Token gắn liền với ứng dụng riêng của bạn, hoạt động ổn định 24/7 và <strong>không bao giờ bị Google tự thu hồi</strong>.
+            <!-- Expanded Guide Card -->
+            <div v-if="showGDriveTokenGuide" class="mt-2.5 p-3.5 rounded-lg bg-sky-950/30 border border-sky-500/25 text-[11px] text-gray-300 space-y-2.5 shadow-md">
+              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+                <div class="font-bold text-sky-300 flex items-center gap-1.5 text-xs">
+                  <span>💡 Hướng dẫn cấu hình Google Drive Token chuẩn xác:</span>
+                </div>
+                <div class="flex items-center gap-1 bg-black/40 p-0.5 rounded border border-white/10 text-[10.5px]">
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer"
+                    :class="gdriveGuideTab === 'quick' ? 'bg-amber-600/80 text-white shadow-sm' : 'text-gray-400 hover:text-white'"
+                    @click="gdriveGuideTab = 'quick'"
+                  >
+                    ⚡ Cách 1: Lấy key tạm (Hạn 24h - 7 ngày)
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer"
+                    :class="gdriveGuideTab === 'permanent' ? 'bg-sky-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'"
+                    @click="gdriveGuideTab = 'permanent'"
+                  >
+                    ⭐ Cách 2: Lấy key vĩnh viễn (Khuyên dùng)
+                  </button>
+                </div>
               </div>
-              <ol class="list-decimal list-inside space-y-1.5 pl-0.5">
-                <li>
-                  <strong>Tạo OAuth Credentials trên Google Cloud:</strong> Vào <a href="https://console.cloud.google.com/" target="_blank" class="text-sky-400 underline font-semibold">Google Cloud Console</a> ➜ Tạo Project mới (hoặc chọn project có sẵn) ➜ Vào <b>APIs &amp; Services &gt; Library</b> ➜ Tìm và bật <b>Google Drive API</b>.
-                </li>
-                <li>
-                  <strong>Cấu hình màn hình đồng ý:</strong> Vào <b>OAuth consent screen</b> ➜ Chọn User Type là <i>External</i> ➜ Điền Tên App &amp; Email ➜ Tại mục Publishing status bấm <b>Publish App</b> (chuyển sang trạng thái <i>In production</i> để token không bị giới hạn 7 ngày).
-                </li>
-                <li>
-                  <strong>Tạo Client ID:</strong> Vào <b>Credentials &gt; + Create Credentials &gt; OAuth client ID</b>:
-                  <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
-                    <li>Application type: Chọn <b>Web application</b>.</li>
-                    <li>Authorized redirect URIs: Thêm chính xác <code class="text-amber-300">https://developers.google.com/oauthplayground</code></li>
-                    <li>Bấm <b>Create</b> ➜ Lưu lại cặp <b>Client ID</b> (dạng <code class="text-emerald-300">*.apps.googleusercontent.com</code>) và <b>Client Secret</b> (dạng <code class="text-emerald-300">GOCSPX-...</code>).</li>
-                  </ul>
-                </li>
-                <li>
-                  <strong>Ủy quyền qua Playground:</strong> Mở <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>:
-                  <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
-                    <li>Bấm biểu tượng bánh răng <b>⚙️ (OAuth 2.0 configuration)</b> góc trên bên phải.</li>
-                    <li>Tích chọn <b>☑ Use your own OAuth credentials</b> ➜ Dán <b>Client ID</b> và <b>Client Secret</b> vừa tạo vào.</li>
-                    <li>Tại <b>Step 1</b>: Chọn <code class="text-amber-300">Drive API v3</code> &gt; tick <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; bấm <b>Authorize APIs</b> và cấp quyền tài khoản Google.</li>
-                    <li>Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b> ➜ Sao chép chuỗi <code class="text-emerald-300 font-bold">Refresh token</code> (<code class="text-emerald-300">1//...</code>).</li>
-                  </ul>
-                </li>
-                <li>
-                  <strong>Dán vào Router R3P:</strong>
-                  <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
-                    <li>Dán <code class="text-emerald-300">Refresh token</code> vào ô <b>số 2</b> ở trên.</li>
-                    <li>Mở mục <b>"▶ ⚙️ Cài đặt OAuth Client riêng"</b> ở trên ➜ Dán đúng cặp <b>Client ID</b> và <b>Client Secret</b> của bạn vào (<i>Lưu ý: Không nhập oauth2.googleapis.com vào ô Client ID</i>).</li>
-                    <li>Bấm <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>.</li>
-                  </ul>
-                </li>
-              </ol>
-            </div>
 
-            <!-- Tab 2: Dùng nhanh Playground -->
-            <div v-else class="space-y-2 leading-relaxed text-gray-300">
-              <div class="p-2 rounded bg-amber-900/25 border border-amber-500/25 text-amber-200 text-[10.5px]">
-                ⚠️ <strong>Lưu ý:</strong> Cách này dùng Client mặc định của Google Playground. Token sẽ <strong>tự động hết hạn sau 24 giờ đến tối đa 7 ngày</strong> (theo chính sách của Google Sandbox). Thích hợp thử nghiệm kiểm tra tính năng.
+              <!-- Tab 1: Dùng nhanh Playground (Cách 1) -->
+              <div v-if="gdriveGuideTab === 'quick'" class="space-y-2 leading-relaxed text-gray-300">
+                <div class="p-2 rounded bg-amber-900/25 border border-amber-500/25 text-amber-200 text-[10.5px]">
+                  ⚠️ <strong>Lưu ý:</strong> Cách này dùng Client mặc định của Google Playground. Token sẽ <strong>tự động hết hạn sau 24 giờ đến tối đa 7 ngày</strong> (theo chính sách của Google Sandbox). Thích hợp thử nghiệm kiểm tra tính năng nhanh chóng.
+                </div>
+                <ol class="list-decimal list-inside space-y-1.5 pl-0.5">
+                  <li>
+                    Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a> <i>(giữ nguyên mặc định, không cần chỉnh biểu tượng bánh răng ⚙️)</i>.
+                  </li>
+                  <li>
+                    Tại <b>Step 1</b>: Chọn <code class="text-amber-300">Drive API v3</code> &gt; tick <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; bấm <b>Authorize APIs</b> và đăng nhập.
+                  </li>
+                  <li>
+                    Tại <b>Step 2</b>: Bấm nút xanh <b>Exchange authorization code for tokens</b> ➜ Sao chép chuỗi <code class="text-emerald-300 font-bold">Refresh token</code> (<code class="text-emerald-300">1//...</code>).
+                  </li>
+                  <li>
+                    <strong>Dán vào Router R3P:</strong>
+                    <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
+                      <li>Dán <code class="text-emerald-300">Refresh token</code> vào ô <b>số 2</b> ở trên.</li>
+                      <li><strong>Mục "Cài đặt OAuth Client riêng":</strong> BẮT BUỘC ĐỂ TRỐNG (nếu đang có chữ, bấm nút <i>🧹 Xóa Client ID &amp; Secret</i>). Không điền <code>oauth2.googleapis.com</code> hay Client ID của Playground vào ô này.</li>
+                      <li>Bấm <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>.</li>
+                    </ul>
+                  </li>
+                </ol>
               </div>
-              <ol class="list-decimal list-inside space-y-1.5 pl-0.5">
-                <li>
-                  Mở trình duyệt vào <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a> <i>(giữ nguyên mặc định, không cần chỉnh biểu tượng bánh răng ⚙️)</i>.
-                </li>
-                <li>
-                  Tại <b>Step 1</b>: Chọn <code class="text-amber-300">Drive API v3</code> &gt; tick <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; bấm <b>Authorize APIs</b> và đăng nhập.
-                </li>
-                <li>
-                  Tại <b>Step 2</b>: Bấm nút xanh <b>Exchange authorization code for tokens</b> ➜ Sao chép chuỗi <code class="text-emerald-300 font-bold">Refresh token</code> (<code class="text-emerald-300">1//...</code>).
-                </li>
-                <li>
-                  <strong>Dán vào Router R3P:</strong>
-                  <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
-                    <li>Dán <code class="text-emerald-300">Refresh token</code> vào ô <b>số 2</b> ở trên.</li>
-                    <li><strong>Mục "Cài đặt OAuth Client riêng":</strong> BẮT BUỘC ĐỂ TRỐNG (nếu đang có chữ, bấm nút <i>🧹 Xóa Client ID &amp; Secret</i>).</li>
-                    <li>Bấm <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>.</li>
-                  </ul>
-                </li>
-              </ol>
+
+              <!-- Tab 2: Vĩnh viễn qua GCP (Cách 2) -->
+              <div v-else class="space-y-2 leading-relaxed text-gray-300">
+                <div class="p-2 rounded bg-sky-900/20 border border-sky-500/20 text-sky-200 text-[10.5px]">
+                  🛡️ <strong>Lợi ích:</strong> Token gắn liền với ứng dụng riêng của bạn, hoạt động ổn định 24/7 và <strong>không bao giờ bị Google tự thu hồi</strong>.
+                </div>
+                <ol class="list-decimal list-inside space-y-1.5 pl-0.5">
+                  <li>
+                    <strong>Tạo OAuth Credentials trên Google Cloud:</strong> Vào <a href="https://console.cloud.google.com/" target="_blank" class="text-sky-400 underline font-semibold">Google Cloud Console</a> ➜ Tạo Project mới (hoặc chọn project có sẵn) ➜ Vào <b>APIs &amp; Services &gt; Library</b> ➜ Tìm và bật <b>Google Drive API</b>.
+                  </li>
+                  <li>
+                    <strong>Cấu hình màn hình đồng ý:</strong> Vào <b>OAuth consent screen</b> ➜ Chọn User Type là <i>External</i> ➜ Điền Tên App &amp; Email ➜ Tại mục Publishing status bấm <b>Publish App</b> (chuyển sang trạng thái <i>In production</i> để token không bị giới hạn 7 ngày).
+                  </li>
+                  <li>
+                    <strong>Tạo Client ID:</strong> Vào <b>Credentials &gt; + Create Credentials &gt; OAuth client ID</b>:
+                    <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
+                      <li>Application type: Chọn <b>Web application</b>.</li>
+                      <li>Authorized redirect URIs: Thêm chính xác <code class="text-amber-300">https://developers.google.com/oauthplayground</code></li>
+                      <li>Bấm <b>Create</b> ➜ Lưu lại cặp <b>Client ID</b> (dạng <code class="text-emerald-300">*.apps.googleusercontent.com</code>) và <b>Client Secret</b> (dạng <code class="text-emerald-300">GOCSPX-...</code>).</li>
+                    </ul>
+                  </li>
+                  <li>
+                    <strong>Ủy quyền qua Playground:</strong> Mở <a href="https://developers.google.com/oauthplayground" target="_blank" class="text-sky-400 underline font-semibold">Google OAuth 2.0 Playground</a>:
+                    <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
+                      <li>Bấm biểu tượng bánh răng <b>⚙️ (OAuth 2.0 configuration)</b> góc trên bên phải.</li>
+                      <li>Tích chọn <b>☑ Use your own OAuth credentials</b> ➜ Dán <b>Client ID</b> và <b>Client Secret</b> vừa tạo vào.</li>
+                      <li>Tại <b>Step 1</b>: Chọn <code class="text-amber-300">Drive API v3</code> &gt; tick <code class="text-amber-300">https://www.googleapis.com/auth/drive</code> &gt; bấm <b>Authorize APIs</b> và cấp quyền tài khoản Google.</li>
+                      <li>Tại <b>Step 2</b>: Bấm <b>Exchange authorization code for tokens</b> ➜ Sao chép chuỗi <code class="text-emerald-300 font-bold">Refresh token</code> (<code class="text-emerald-300">1//...</code>).</li>
+                    </ul>
+                  </li>
+                  <li>
+                    <strong>Dán vào Router R3P:</strong>
+                    <ul class="list-disc list-inside pl-4 text-gray-400 space-y-0.5 mt-0.5">
+                      <li>Dán <code class="text-emerald-300">Refresh token</code> vào ô <b>số 2</b> ở trên.</li>
+                      <li>Mở mục <b>"▶ ⚙️ Cài đặt OAuth Client riêng"</b> ở trên ➜ Dán đúng cặp <b>Client ID</b> và <b>Client Secret</b> của bạn vào (<i>Lưu ý: Không nhập oauth2.googleapis.com vào ô Client ID</i>).</li>
+                      <li>Bấm <b class="text-emerald-400">⚡ Cấp Mới Access Token</b> rồi bấm <b class="text-sky-400">💾 Lưu Cài Đặt Đồng Bộ</b>.</li>
+                    </ul>
+                  </li>
+                </ol>
+              </div>
             </div>
           </div>
 

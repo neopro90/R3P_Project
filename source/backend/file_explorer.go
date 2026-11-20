@@ -217,8 +217,25 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 
 	st, err := os.Stat(targetPath)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, false, "Đường dẫn không tồn tại: "+err.Error())
-		return
+		if os.IsNotExist(err) {
+			dlMu.Lock()
+			configuredDl := strings.TrimSpace(dlConfig.OutputDirectory)
+			dlMu.Unlock()
+			if configuredDl == "" {
+				configuredDl = getDefaultDownloadOutputDir()
+			}
+			if configuredDl != "" && filepath.Clean(targetPath) == filepath.Clean(configuredDl) {
+				if parentSt, pErr := os.Stat(filepath.Dir(targetPath)); pErr == nil && parentSt.IsDir() {
+					if mkErr := os.MkdirAll(targetPath, 0755); mkErr == nil {
+						st, err = os.Stat(targetPath)
+					}
+				}
+			}
+		}
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, false, "Đường dẫn không tồn tại: "+err.Error())
+			return
+		}
 	}
 	if !st.IsDir() {
 		targetPath = filepath.Dir(targetPath)
@@ -272,13 +289,29 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 
+	dlDir := "/mnt/sda1/downloads"
+	dlMu.Lock()
+	if strings.TrimSpace(dlConfig.OutputDirectory) != "" {
+		dlDir = strings.TrimSpace(dlConfig.OutputDirectory)
+	} else if def := getDefaultDownloadOutputDir(); def != "" {
+		dlDir = def
+	}
+	dlMu.Unlock()
+	if stat, err := os.Stat(filepath.Dir(dlDir)); err == nil && stat.IsDir() {
+		_ = os.MkdirAll(dlDir, 0755)
+	}
+	dlLabel := "Tải Về (" + filepath.Base(dlDir) + ")"
+	if filepath.Base(dlDir) == "downloads" {
+		dlLabel = "Tải Về /downloads"
+	}
+
 	quickFolders := []ExplorerQuickFolder{
-		{Label: "USB HDD 500GB", Path: "/mnt/sda1", Icon: "💾", Desc: "Ổ lưu trữ ngoài USB 3.0 tốc độ cao"},
+		{Label: "Storage", Path: "/mnt/sda1", Icon: "💾", Desc: "Ổ lưu trữ ngoài USB 3.0 tốc độ cao"},
 		{Label: "NAND /overlay", Path: "/overlay", Icon: "⚡", Desc: "Bộ nhớ bền vững SLC Flash của hệ thống"},
 		{Label: "Cấu Hình /etc", Path: "/etc", Icon: "⚙️", Desc: "Cấu hình OpenWrt UCI, init scripts và daemon"},
 		{Label: "Dữ Liệu R3P", Path: "/etc/r3p", Icon: "🛡️", Desc: "Blueprint, AI Memory, Sessions và AdBlock"},
 		{Label: "Bộ Nhớ RAM /tmp", Path: "/tmp", Icon: "🚀", Desc: "RAM tmpfs tạm thời của Router"},
-		{Label: "Tải Về /downloads", Path: "/mnt/sda1/downloads", Icon: "📥", Desc: "Thư mục tải video yt-dlp và media"},
+		{Label: dlLabel, Path: dlDir, Icon: "📥", Desc: "Thư mục tải video yt-dlp và media đã cấu hình"},
 		{Label: "Giao Diện Web /www", Path: "/www", Icon: "🌐", Desc: "Mã nguồn frontend Vue 3 Dashboard"},
 		{Label: "Thư Mục /root", Path: "/root", Icon: "👤", Desc: "Thư mục cá nhân của tài khoản root"},
 	}
