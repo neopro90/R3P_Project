@@ -54,13 +54,29 @@ func defaultSpeedtestEnv() speedtestEnv {
 				DialTimeout:        5 * time.Second,
 				LocalIP:            localIP,
 				DisableCompression: true,
+				AllowHTTP:          true,
+				AllowInsecureTLS:   true,
 			})
 		},
 		targets: []speedtestTarget{
 			{
-				Name:         "Cloudflare Edge",
+				Name:         "VNPT-NET (TP.HCM)",
+				LatencyURL:   "http://speedtest3.vtn.com.vn:8080/speedtest/latency.txt",
+				DownloadURL:  "http://speedtest3.vtn.com.vn:8080/speedtest/random4000x4000.jpg",
+				UploadURL:    "http://speedtest3.vtn.com.vn:8080/speedtest/upload.php",
+				UploadServer: "VNPT-NET (TP.HCM)",
+			},
+			{
+				Name:         "Viettel Network (TP.HCM)",
+				LatencyURL:   "http://speedtestkv3b.viettel.vn:8080/speedtest/latency.txt",
+				DownloadURL:  "http://speedtestkv3b.viettel.vn:8080/speedtest/random4000x4000.jpg",
+				UploadURL:    "http://speedtestkv3b.viettel.vn:8080/speedtest/upload.php",
+				UploadServer: "Viettel Network (TP.HCM)",
+			},
+			{
+				Name:         "Cloudflare Edge (Quốc Tế)",
 				LatencyURL:   "https://speed.cloudflare.com/__down?bytes=0",
-				DownloadURL:  "https://speed.cloudflare.com/__down?bytes=10000000",
+				DownloadURL:  "https://speed.cloudflare.com/__down?bytes=25000000",
 				UploadURL:    "https://speed.cloudflare.com/__up",
 				UploadServer: "Cloudflare Edge",
 			},
@@ -210,16 +226,31 @@ func handleInterfaceSpeedtestWithEnv(w http.ResponseWriter, r *http.Request, env
 	startTotal := time.Now()
 	parentCtx := r.Context()
 
+	requestedServer := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("server")))
+	targetsToTest := env.targets
+	if requestedServer != "" && requestedServer != "auto" {
+		var filtered []speedtestTarget
+		for _, t := range env.targets {
+			tName := strings.ToLower(t.Name)
+			if strings.Contains(tName, requestedServer) {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) > 0 {
+			targetsToTest = filtered
+		}
+	}
+
 	var selected speedtestTarget
 	var latencyMs, jitterMs float64
 	var downMbps float64
 	var dlBytes int64
 	var dlSuccess bool
 
-	// Reused 32KB sink buffer per test
-	sinkBuf := make([]byte, 32*1024)
+	// Reused 128KB sink buffer per test to minimize syscall context switching on MT7621
+	sinkBuf := make([]byte, 128*1024)
 
-	for _, target := range env.targets {
+	for _, target := range targetsToTest {
 		if parentCtx.Err() != nil {
 			writeJSON(w, http.StatusRequestTimeout, false, "Đã huỷ phép đo tốc độ")
 			return
@@ -301,27 +332,27 @@ func handleInterfaceSpeedtestWithEnv(w http.ResponseWriter, r *http.Request, env
 		uploadURL = env.targets[0].UploadURL
 	}
 	if uploadURL != "" && parentCtx.Err() == nil {
-		// Target ~2.5s of upload based on conservative 40% of downMbps (or 1MB default)
-		estBytes := int64(downMbps * 125_000 * 0.4 * 2.5)
-		if estBytes < 512*1024 {
-			estBytes = 512 * 1024
+		// Target ~2.5s of upload based on conservative 50% of downMbps (or 1MB default, up to 16MB)
+		estBytes := int64(downMbps * 125_000 * 0.5 * 2.5)
+		if estBytes < 1024*1024 {
+			estBytes = 1024 * 1024
 		}
-		if estBytes > 6*1024*1024 {
-			estBytes = 6 * 1024 * 1024
+		if estBytes > 16*1024*1024 {
+			estBytes = 16 * 1024 * 1024
 		}
 
-		// Try adaptive upload, falling back to 512KB if asymmetric WAN times out
-		for idx, trySize := range []int64{estBytes, 512 * 1024} {
-			if idx > 0 && estBytes <= 512*1024 {
+		// Try adaptive upload, falling back to 1MB if asymmetric WAN times out
+		for idx, trySize := range []int64{estBytes, 1024 * 1024} {
+			if idx > 0 && estBytes <= 1024*1024 {
 				break
 			}
 			ulCtx, ulCancel := context.WithTimeout(parentCtx, 8*time.Second)
 			ulClient := env.newClient(localIP, 9*time.Second)
-			// Pre-warm TCP+TLS connection to upload host before measuring payload transmission
+			// Pre-warm TCP connection to upload host before measuring payload transmission
 			warmupURL := ""
 			if strings.Contains(uploadURL, "speed.cloudflare.com") {
 				warmupURL = "https://speed.cloudflare.com/__down?bytes=0"
-			} else if selected.LatencyURL != "" && strings.Contains(selected.LatencyURL, "bytes=0") {
+			} else if selected.LatencyURL != "" {
 				warmupURL = selected.LatencyURL
 			}
 			if warmupURL != "" {
@@ -407,7 +438,7 @@ func handleInterfaceSpeedtestWithEnv(w http.ResponseWriter, r *http.Request, env
 }
 
 func measureLatencyAndJitter(parent context.Context, client *http.Client, targetURL string) (float64, float64) {
-	useRangeByteProbe := !strings.Contains(targetURL, "bytes=0")
+	useRangeByteProbe := !strings.Contains(targetURL, "bytes=0") && !strings.Contains(targetURL, "latency.txt")
 	var samples []float64
 	// 1 warmup + 4 measured probes
 	for i := 0; i < 5; i++ {

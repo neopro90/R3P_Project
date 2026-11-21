@@ -106,6 +106,7 @@ const dnsRunning = ref(false)
 const dnsOutput = ref('')
 
 const selectedSpeedTestIface = ref('wwan')
+const selectedSpeedServer = ref('auto')
 const speedDown = ref<number | null>(null)
 const speedUp = ref<number | null>(null)
 const speedLatency = ref<number | null>(null)
@@ -176,7 +177,7 @@ async function runInterfaceSpeedtest() {
       jitter_ms: number
       tested_at: string
       message: string
-    }>(`/network/speedtest?interface=${encodeURIComponent(selectedSpeedTestIface.value)}`, {
+    }>(`/network/speedtest?interface=${encodeURIComponent(selectedSpeedTestIface.value)}&server=${encodeURIComponent(selectedSpeedServer.value)}`, {
       method: 'POST',
       signal: speedAbort.signal,
     })
@@ -528,11 +529,29 @@ onMounted(() => {
             </select>
           </div>
 
+          <!-- Server Selector -->
+          <div class="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-lg px-2 py-1">
+            <span class="text-[11px] text-gray-300">Server:</span>
+            <select
+              v-model="selectedSpeedServer"
+              :disabled="testingSpeed"
+              class="bg-transparent text-emerald-400 font-bold text-xs mono focus:outline-none cursor-pointer"
+            >
+              <option value="auto" class="bg-gray-900 text-white">⚡ Tự Động (VNPT/Viettel)</option>
+              <option value="vnpt" class="bg-gray-900 text-white">🇻🇳 VNPT-NET TP.HCM</option>
+              <option value="viettel" class="bg-gray-900 text-white">🇻🇳 Viettel Network TP.HCM</option>
+              <option value="cloudflare" class="bg-gray-900 text-white">🌐 Cloudflare Edge (Quốc Tế)</option>
+            </select>
+          </div>
+
           <!-- Speed Display Label -->
           <div
             class="flex flex-wrap items-center gap-2 bg-black/50 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-xs mono"
             :title="speedServer ? `Server: ${speedServer} lúc ${speedTestedAt}` : 'Chưa đo'"
           >
+            <span v-if="speedServer" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-sans font-bold">
+              {{ speedServer.split(' ')[0] }}
+            </span>
             <span class="text-emerald-400 font-extrabold">
               ↓ {{ speedDown !== null ? speedDown.toFixed(1) : '—' }} Mbps
             </span>
