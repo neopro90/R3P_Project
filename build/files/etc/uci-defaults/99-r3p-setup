@@ -43,6 +43,67 @@ uci set dropbear.@dropbear[0].RootPasswordAuth='on'
 uci -q delete dropbear.@dropbear[0].Interface
 uci commit dropbear
 
+# Ensure NAS base directories and compatibility symlinks (/mnt/sda <-> /mnt/sda1, Share <-> share)
+mkdir -p /mnt/sda1/share /mnt/sda1/downloads /overlay/share /overlay/downloads
+# World-writable so SMB clients can write regardless of auth mode or FS mount options
+chmod 777 /mnt/sda1/share /mnt/sda1/downloads /overlay/share /overlay/downloads 2>/dev/null || true
+ln -sfn /mnt/sda1 /mnt/sda 2>/dev/null
+ln -sfn /mnt/sda1/share /mnt/sda1/Share 2>/dev/null
+
+# Clean up default OpenWrt ksmbd testshare/share and configure canonical R3P shares
+if [ -f /etc/config/ksmbd ]; then
+    while uci -q delete ksmbd.@share[0]; do :; done
+    uci set ksmbd.@globals[0].workgroup='WORKGROUP'
+    uci set ksmbd.@globals[0].description='R3P Mini Server NAS'
+    uci set ksmbd.@globals[0].interface='lan'
+    uci set ksmbd.@globals[0].allow_guest_ipc='1'
+
+    uci add ksmbd share >/dev/null
+    uci set ksmbd.@share[-1].name='USB_Storage'
+    uci set ksmbd.@share[-1].path='/mnt/sda1/share'
+    uci set ksmbd.@share[-1].read_only='no'
+    uci set ksmbd.@share[-1].guest_ok='yes'
+    uci set ksmbd.@share[-1].create_mask='0666'
+    uci set ksmbd.@share[-1].dir_mask='0777'
+    uci set ksmbd.@share[-1].force_root='1'
+    uci set ksmbd.@share[-1].browseable='yes'
+
+    uci add ksmbd share >/dev/null
+    uci set ksmbd.@share[-1].name='USB_Downloads'
+    uci set ksmbd.@share[-1].path='/mnt/sda1/downloads'
+    uci set ksmbd.@share[-1].read_only='no'
+    uci set ksmbd.@share[-1].guest_ok='yes'
+    uci set ksmbd.@share[-1].create_mask='0666'
+    uci set ksmbd.@share[-1].dir_mask='0777'
+    uci set ksmbd.@share[-1].force_root='1'
+    uci set ksmbd.@share[-1].browseable='yes'
+
+    uci add ksmbd share >/dev/null
+    uci set ksmbd.@share[-1].name='NAND_Share'
+    uci set ksmbd.@share[-1].path='/overlay/share'
+    uci set ksmbd.@share[-1].read_only='no'
+    uci set ksmbd.@share[-1].guest_ok='yes'
+    uci set ksmbd.@share[-1].create_mask='0666'
+    uci set ksmbd.@share[-1].dir_mask='0777'
+    uci set ksmbd.@share[-1].force_root='1'
+    uci set ksmbd.@share[-1].browseable='yes'
+
+    uci commit ksmbd
+fi
+
+# Provision ksmbd SMB users (ksmbd has its own user DB, separate from Linux shadow)
+# Add root user with password 'root' so Windows clients can authenticate
+if command -v ksmbd.useradd >/dev/null 2>&1; then
+    ksmbd.useradd -a root -p root 2>/dev/null || ksmbd.useradd root -p root 2>/dev/null || true
+fi
+# Also set up samba4 passdb for compatibility (ignored if smbpasswd not installed)
+(echo root; echo root) | smbpasswd -a -s root 2>/dev/null || true
+
+[ -x /etc/init.d/ksmbd ] && {
+    /etc/init.d/ksmbd enable
+    /etc/init.d/ksmbd restart 2>/dev/null || true
+}
+
 # Ensure /etc/r3p configs and AI blueprints are preserved during sysupgrade & backups
 grep -q '^/etc/r3p' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/r3p' >> /etc/sysupgrade.conf
 

@@ -40,7 +40,8 @@ func isSda1Mounted() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(b), "/mnt/sda1")
+	s := string(b)
+	return strings.Contains(s, "/mnt/sda1") || strings.Contains(s, "/mnt/sda ")
 }
 
 func getDefaultDownloadOutputDir() string {
@@ -366,6 +367,12 @@ func resolveMountAndSubdir(dir string) (string, string) {
 		return "/mnt/sda1", strings.TrimPrefix(cleaned, "/mnt/sda1/")
 	}
 	if cleaned == "/mnt/sda1" {
+		return "/mnt/sda1", ""
+	}
+	if strings.HasPrefix(cleaned, "/mnt/sda/") {
+		return "/mnt/sda1", strings.TrimPrefix(cleaned, "/mnt/sda/")
+	}
+	if cleaned == "/mnt/sda" {
 		return "/mnt/sda1", ""
 	}
 	if strings.HasPrefix(cleaned, "/overlay/") {

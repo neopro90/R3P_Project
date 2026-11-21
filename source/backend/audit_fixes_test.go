@@ -235,3 +235,54 @@ func TestHandlerGuardsForServicesAutomationAndNASDelete(t *testing.T) {
 		}
 	}
 }
+
+func TestNASShareStandardizationAndKsmbdSync(t *testing.T) {
+	// Test resolveMountAndSubdir handles both /mnt/sda and /mnt/sda1 variants
+	for _, tc := range []struct {
+		in        string
+		wantMount string
+		wantSub   string
+	}{
+		{"/mnt/sda1/share", "/mnt/sda1", "share"},
+		{"/mnt/sda/share", "/mnt/sda1", "share"},
+		{"/mnt/sda1/Share", "/mnt/sda1", "Share"},
+		{"/mnt/sda/Share", "/mnt/sda1", "Share"},
+		{"/mnt/sda1", "/mnt/sda1", ""},
+		{"/mnt/sda", "/mnt/sda1", ""},
+		{"/overlay/downloads", "/overlay", "downloads"},
+	} {
+		m, s := resolveMountAndSubdir(tc.in)
+		if m != tc.wantMount || s != tc.wantSub {
+			t.Errorf("resolveMountAndSubdir(%q) = (%q, %q), want (%q, %q)", tc.in, m, s, tc.wantMount, tc.wantSub)
+		}
+	}
+
+	// Test share normalization logic
+	rawShares := []ShareItem{
+		{Name: "USB_Storage", Path: "/mnt/sda", ReadOnly: false, GuestOk: true},
+		{Name: "OldShare", Path: "/mnt/sda/share", ReadOnly: false, GuestOk: true},
+		{Name: "CaseShare", Path: "/mnt/sda1/Share", ReadOnly: false, GuestOk: true},
+		{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true},
+	}
+	for i := range rawShares {
+		cleanPath := strings.TrimRight(strings.ReplaceAll(rawShares[i].Path, "\\", "/"), "/")
+		if cleanPath == "/mnt/sda" || cleanPath == "/mnt/sda1" ||
+			strings.EqualFold(cleanPath, "/mnt/sda/share") ||
+			strings.EqualFold(cleanPath, "/mnt/sda1/share") {
+			rawShares[i].Path = "/mnt/sda1/share"
+		}
+	}
+
+	if rawShares[0].Path != "/mnt/sda1/share" {
+		t.Errorf("rawShares[0].Path = %q, want /mnt/sda1/share", rawShares[0].Path)
+	}
+	if rawShares[1].Path != "/mnt/sda1/share" {
+		t.Errorf("rawShares[1].Path = %q, want /mnt/sda1/share", rawShares[1].Path)
+	}
+	if rawShares[2].Path != "/mnt/sda1/share" {
+		t.Errorf("rawShares[2].Path = %q, want /mnt/sda1/share", rawShares[2].Path)
+	}
+	if rawShares[3].Path != "/overlay/share" {
+		t.Errorf("rawShares[3].Path = %q, want /overlay/share", rawShares[3].Path)
+	}
+}

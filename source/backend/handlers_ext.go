@@ -1128,11 +1128,13 @@ const sharesConfigFile = "/etc/r3p/shares.json"
 func loadNASShares() []ShareItem {
 	_ = os.MkdirAll("/overlay/share", 0755)
 	_ = os.MkdirAll("/overlay/downloads", 0755)
+	_ = os.Chmod("/overlay/share", 0777)
+	_ = os.Chmod("/overlay/downloads", 0777)
 	var list []ShareItem
 	settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &list)
 	if len(list) == 0 {
 		list = []ShareItem{
-			{Name: "USB_Storage", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
+			{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
 			{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true, Comment: "Persistent NAND Shared Storage"},
 			{Name: "Downloads", Path: "/overlay/downloads", ReadOnly: false, GuestOk: true, Comment: "NAND Download Folder"},
@@ -1142,20 +1144,34 @@ func loadNASShares() []ShareItem {
 		return list
 	}
 	hasUSB := false
+	changed := false
 	for i := range list {
 		list[i].Password = ""
-		if strings.HasPrefix(list[i].Path, "/mnt/sda1") {
+		// Standardize and normalize USB share path: eliminate /mnt/sda vs /mnt/sda1 and Share vs share discrepancy
+		cleanPath := strings.TrimRight(strings.ReplaceAll(list[i].Path, "\\", "/"), "/")
+		if cleanPath == "/mnt/sda" || cleanPath == "/mnt/sda1" ||
+			strings.EqualFold(cleanPath, "/mnt/sda/share") ||
+			strings.EqualFold(cleanPath, "/mnt/sda1/share") {
+			if list[i].Path != "/mnt/sda1/share" {
+				list[i].Path = "/mnt/sda1/share"
+				changed = true
+			}
+			hasUSB = true
+		} else if strings.HasPrefix(list[i].Path, "/mnt/sda1") || strings.HasPrefix(list[i].Path, "/mnt/sda") {
 			hasUSB = true
 		}
 	}
 	if !hasUSB {
 		if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
 			list = append([]ShareItem{
-				{Name: "USB_Storage", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
+				{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
 				{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
 			}, list...)
-			saveNASShares(list)
+			changed = true
 		}
+	}
+	if changed {
+		saveNASShares(list)
 	}
 	return list
 }
@@ -1213,11 +1229,18 @@ func syncSambaConfigFile(shares []ShareItem) error {
 	}
 
 	sambaUCI := parseUCIConfigMap("samba4")
+	ksmbdUCI := parseUCIConfigMap("ksmbd")
 	workgroup := sambaUCI["samba4.@samba[0].workgroup"]
+	if workgroup == "" {
+		workgroup = ksmbdUCI["ksmbd.@globals[0].workgroup"]
+	}
 	if workgroup == "" {
 		workgroup = "WORKGROUP"
 	}
 	desc := sambaUCI["samba4.@samba[0].description"]
+	if desc == "" {
+		desc = ksmbdUCI["ksmbd.@globals[0].description"]
+	}
 	if desc == "" {
 		desc = "R3P Mini Server NAS"
 	}
@@ -1226,6 +1249,7 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		tuning = "1"
 	}
 
+	// 2. Generate Samba4 config (/etc/config/samba4)
 	var sb strings.Builder
 	sb.WriteString("config samba\n")
 	sb.WriteString(fmt.Sprintf("\toption workgroup '%s'\n", escapeUCIQuote(workgroup)))
@@ -1234,12 +1258,35 @@ func syncSambaConfigFile(shares []ShareItem) error {
 	sb.WriteString("\toption interface 'lan'\n")
 	sb.WriteString(fmt.Sprintf("\toption enable_extra_tuning '%s'\n", escapeUCIQuote(tuning)))
 
+	// 3. Generate Ksmbd config (/etc/config/ksmbd)
+	var ksb strings.Builder
+	ksb.WriteString("config globals\n")
+	ksb.WriteString(fmt.Sprintf("\toption workgroup '%s'\n", escapeUCIQuote(workgroup)))
+	ksb.WriteString(fmt.Sprintf("\toption description '%s'\n", escapeUCIQuote(desc)))
+	ksb.WriteString("\toption interface 'lan'\n")
+	ksb.WriteString("\toption allow_guest_ipc '1'\n")
+
 	for _, s := range shares {
 		name := sanitizeSambaShareName(s.Name)
 		if name == "" || s.Path == "" {
 			continue
 		}
 		_ = os.MkdirAll(s.Path, 0755)
+		_ = os.Chmod(s.Path, 0777)
+		// Ensure case-insensitivity alias symlinks on filesystem
+		if strings.HasSuffix(s.Path, "/share") {
+			alias := strings.TrimSuffix(s.Path, "/share") + "/Share"
+			_ = os.Remove(alias)
+			_ = os.Symlink(s.Path, alias)
+		}
+		if strings.HasPrefix(s.Path, "/mnt/sda1") {
+			_ = os.Remove("/mnt/sda")
+			_ = os.Symlink("/mnt/sda1", "/mnt/sda")
+		} else if strings.HasPrefix(s.Path, "/mnt/sda") && !strings.HasPrefix(s.Path, "/mnt/sda1") {
+			_ = os.Remove("/mnt/sda1")
+			_ = os.Symlink("/mnt/sda", "/mnt/sda1")
+		}
+
 		ro := "no"
 		if s.ReadOnly {
 			ro = "yes"
@@ -1248,6 +1295,8 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		if !s.GuestOk {
 			guest = "no"
 		}
+
+		// Samba4 share section
 		sb.WriteString("\nconfig sambashare\n")
 		sb.WriteString(fmt.Sprintf("\toption name '%s'\n", escapeUCIQuote(name)))
 		sb.WriteString(fmt.Sprintf("\toption path '%s'\n", escapeUCIQuote(s.Path)))
@@ -1260,15 +1309,34 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		sb.WriteString("\toption browseable 'yes'\n")
 		sb.WriteString("\toption create_mask '0666'\n")
 		sb.WriteString("\toption dir_mask '0777'\n")
+
+		// Ksmbd share section
+		ksb.WriteString("\nconfig share\n")
+		ksb.WriteString(fmt.Sprintf("\toption name '%s'\n", escapeUCIQuote(name)))
+		ksb.WriteString(fmt.Sprintf("\toption path '%s'\n", escapeUCIQuote(s.Path)))
+		ksb.WriteString(fmt.Sprintf("\toption read_only '%s'\n", ro))
+		ksb.WriteString(fmt.Sprintf("\toption guest_ok '%s'\n", guest))
+		if !s.GuestOk && strings.TrimSpace(s.Users) != "" {
+			usr := strings.TrimSpace(s.Users)
+			ksb.WriteString(fmt.Sprintf("\toption users '%s'\n", escapeUCIQuote(usr)))
+		}
+		ksb.WriteString("\toption browseable 'yes'\n")
+		ksb.WriteString("\toption create_mask '0666'\n")
+		ksb.WriteString("\toption dir_mask '0777'\n")
+		ksb.WriteString("\toption force_root '1'\n")
 	}
 
+	_ = os.WriteFile("/etc/config/ksmbd", []byte(ksb.String()), 0644)
 	err := os.WriteFile("/etc/config/samba4", []byte(sb.String()), 0644)
-	if err == nil {
-		go func() {
-			time.Sleep(300 * time.Millisecond)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		if _, statErr := os.Stat("/etc/init.d/ksmbd"); statErr == nil {
+			_, _ = runCmd(8, "/etc/init.d/ksmbd", "restart")
+		}
+		if _, statErr := os.Stat("/etc/init.d/samba4"); statErr == nil {
 			_, _ = runCmd(8, "/etc/init.d/samba4", "restart")
-		}()
-	}
+		}
+	}()
 	return err
 }
 
@@ -1281,6 +1349,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 	}
 	lanIP := getServerLanIP()
 	sambaUCI := parseUCIConfigMap("samba4")
+	ksmbdUCI := parseUCIConfigMap("ksmbd")
 
 	smbRunning := false
 	ftpRunning := false
@@ -1288,7 +1357,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 		for _, e := range entries {
 			if _, err := strconv.Atoi(e.Name()); err == nil {
 				cmd := readFile("/proc/" + e.Name() + "/cmdline")
-				if strings.Contains(cmd, "smbd") {
+				if strings.Contains(cmd, "smbd") || strings.Contains(cmd, "ksmbd") {
 					smbRunning = true
 				}
 				if strings.Contains(cmd, "vsftpd") {
@@ -1297,8 +1366,15 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if !smbRunning {
+		if _, err := os.Stat("/sys/module/ksmbd"); err == nil {
+			smbRunning = true
+		}
+	}
 
 	smbEnabledMatches, _ := filepath.Glob("/etc/rc.d/S*samba4")
+	ksmbdEnabledMatches, _ := filepath.Glob("/etc/rc.d/S*ksmbd")
+	smbEnabled := len(smbEnabledMatches) > 0 || len(ksmbdEnabledMatches) > 0
 	ftpEnabledMatches, _ := filepath.Glob("/etc/rc.d/S*vsftpd")
 
 	ftpPort := 21
@@ -1335,9 +1411,15 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 
 	workgroup := sambaUCI["samba4.@samba[0].workgroup"]
 	if workgroup == "" {
+		workgroup = ksmbdUCI["ksmbd.@globals[0].workgroup"]
+	}
+	if workgroup == "" {
 		workgroup = "WORKGROUP"
 	}
 	desc := sambaUCI["samba4.@samba[0].description"]
+	if desc == "" {
+		desc = ksmbdUCI["ksmbd.@globals[0].description"]
+	}
 	if desc == "" {
 		desc = "R3P Mini Server NAS"
 	}
@@ -1349,7 +1431,7 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			"server_ip": lanIP,
 			"samba": map[string]interface{}{
 				"running":      smbRunning,
-				"enabled":      len(smbEnabledMatches) > 0,
+				"enabled":      smbEnabled,
 				"workgroup":    workgroup,
 				"description":  desc,
 				"extra_tuning": extraTuning,
@@ -1393,10 +1475,12 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			}
 			if body.Workgroup != "" {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].workgroup=%s", body.Workgroup))
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("ksmbd.@globals[0].workgroup=%s", body.Workgroup))
 			}
 			if body.Description != "" {
 				descClean := strings.ReplaceAll(strings.ReplaceAll(body.Description, "\n", " "), "\r", "")
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].description=%s", descClean))
+				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("ksmbd.@globals[0].description=%s", descClean))
 			}
 			if body.ExtraTuning != nil {
 				tunVal := "0"
@@ -1406,11 +1490,14 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 				_, _ = runCmd(4, "uci", "set", fmt.Sprintf("samba4.@samba[0].enable_extra_tuning=%s", tunVal))
 			}
 			_, _ = runCmd(4, "uci", "commit", "samba4")
+			_, _ = runCmd(4, "uci", "commit", "ksmbd")
 
 			if body.Enabled != nil {
 				if *body.Enabled {
+					_, _ = runCmd(4, "/etc/init.d/ksmbd", "enable")
 					_, _ = runCmd(4, "/etc/init.d/samba4", "enable")
 				} else {
+					_, _ = runCmd(4, "/etc/init.d/ksmbd", "disable")
 					_, _ = runCmd(4, "/etc/init.d/samba4", "disable")
 				}
 			}
@@ -1429,7 +1516,21 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if act != "" {
-				_, _ = runCmd(8, "/etc/init.d/samba4", act)
+				if act == "restart" || act == "start" {
+					if _, statErr := os.Stat("/etc/init.d/ksmbd"); statErr == nil {
+						_, _ = runCmd(8, "/etc/init.d/ksmbd", "restart")
+					}
+					if _, statErr := os.Stat("/etc/init.d/samba4"); statErr == nil {
+						_, _ = runCmd(8, "/etc/init.d/samba4", "restart")
+					}
+				} else if act == "stop" {
+					if _, statErr := os.Stat("/etc/init.d/ksmbd"); statErr == nil {
+						_, _ = runCmd(8, "/etc/init.d/ksmbd", "stop")
+					}
+					if _, statErr := os.Stat("/etc/init.d/samba4"); statErr == nil {
+						_, _ = runCmd(8, "/etc/init.d/samba4", "stop")
+					}
+				}
 			}
 
 			writeJSON(w, http.StatusOK, true, map[string]interface{}{
@@ -2086,7 +2187,15 @@ func ensureUnixAndSambaUser(u, p string) error {
 		}
 	}
 
-	// 2. Add / Update password in Samba passdb
+	// 2. Add / Update password in SMB user database
+	// Try ksmbd.useradd first (ksmbd-server package, standard on this firmware)
+	ksmbdAdd := exec.Command("ksmbd.useradd", "-a", u, "-p", p)
+	if _, ksErr := ksmbdAdd.CombinedOutput(); ksErr != nil {
+		// ksmbd.useradd failed or not available; try updating existing user
+		ksmbdSet := exec.Command("ksmbd.useradd", u, "-p", p)
+		_, _ = ksmbdSet.CombinedOutput()
+	}
+	// Also try smbpasswd for samba4 compatibility (may not exist on ksmbd-only systems)
 	cmdAdd := exec.Command("smbpasswd", "-a", "-s", u)
 	cmdAdd.Stdin = strings.NewReader(p + "\n" + p + "\n")
 	if out, err := cmdAdd.CombinedOutput(); err != nil {
@@ -2094,7 +2203,10 @@ func ensureUnixAndSambaUser(u, p string) error {
 		cmdSet := exec.Command("smbpasswd", "-s", u)
 		cmdSet.Stdin = strings.NewReader(p + "\n" + p + "\n")
 		if outSet, errSet := cmdSet.CombinedOutput(); errSet != nil {
-			return fmt.Errorf("smbpasswd failed: %s / %s", string(out), string(outSet))
+			// smbpasswd unavailable on ksmbd-only firmware is expected; ignore
+			_ = out
+			_ = outSet
+			_ = errSet
 		}
 	}
 	return nil

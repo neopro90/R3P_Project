@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// ─── 1. Live Internet Connectivity & External IP Monitor ───────────────────
+// â”€â”€â”€ 1. Live Internet Connectivity & External IP Monitor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type InternetStatus struct {
 	Online     bool    `json:"online"`
@@ -38,7 +38,7 @@ var (
 	internetCached = InternetStatus{
 		Online:     false,
 		LatencyMs:  0,
-		ExternalIP: "—",
+		ExternalIP: "â€”",
 		WanIface:   "wan",
 		WanMode:    "Disconnected",
 		WanModeKey: "offline",
@@ -125,7 +125,7 @@ func refreshInternetStatus(forceExtIP bool) InternetStatus {
 	if !online {
 		extIP = "Offline"
 		isp = ""
-	} else if forceExtIP || extIP == "" || extIP == "—" || extIP == "Offline" || time.Since(lastExtIPFetch) > 90*time.Second {
+	} else if forceExtIP || extIP == "" || extIP == "â€”" || extIP == "Offline" || time.Since(lastExtIPFetch) > 90*time.Second {
 		client := &http.Client{Timeout: 3500 * time.Millisecond}
 		resp, err := client.Get("https://ipwho.is/?fields=ip,country_code,connection.isp,success")
 		if err == nil {
@@ -145,7 +145,7 @@ func refreshInternetStatus(forceExtIP bool) InternetStatus {
 				lastExtIPFetch = time.Now()
 			}
 		}
-		if extIP == "" || extIP == "—" || extIP == "Offline" {
+		if extIP == "" || extIP == "â€”" || extIP == "Offline" {
 			if out, err := runCmd(4, "curl", "-fsS", "--max-time", "3", "https://api.ipify.org"); err == nil && netParseIP(strings.TrimSpace(out)) {
 				extIP = strings.TrimSpace(out)
 				lastExtIPFetch = time.Now()
@@ -196,7 +196,7 @@ func handleInternetStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, true, getInternetStatusSnapshot())
 }
 
-// ─── 2. Dual-Role USB 3.0 Port (Storage + Format + USB Tethering / 4G WAN) ─
+// â”€â”€â”€ 2. Dual-Role USB 3.0 Port (Storage + Format + USB Tethering / 4G WAN) â”€
 
 type UsbBenchmarkResult struct {
 	TargetDir   string  `json:"target_dir"`
@@ -227,7 +227,7 @@ func ensureUSBHotplugAndTuning() {
 
 	// 1. Block Hotplug Script: Auto-tune and mount USB Storage drives
 	blockScript := `#!/bin/sh
-# R3P Dual-Role USB 3.0 — Auto Storage Mount & High-Speed Queue Tuning
+# R3P Dual-Role USB 3.0 â€” Auto Storage Mount & High-Speed Queue Tuning
 case "$DEVNAME" in
     sd[a-z])
         if [ "$ACTION" = "add" ] && [ -d "/sys/block/$DEVNAME/queue" ]; then
@@ -254,6 +254,13 @@ case "$DEVNAME" in
             if mountpoint -q "$MNT"; then
                 ln -sfn "$MNT" /mnt/usb
                 mkdir -p "$MNT/downloads" "$MNT/share"
+                chmod 777 "$MNT/downloads" "$MNT/share" 2>/dev/null
+                ln -sfn "$MNT/share" "$MNT/Share" 2>/dev/null
+                if [ "$DEVNAME" = "sda1" ]; then
+                    ln -sfn /mnt/sda1 /mnt/sda 2>/dev/null
+                elif [ "$DEVNAME" = "sda" ]; then
+                    ln -sfn /mnt/sda /mnt/sda1 2>/dev/null
+                fi
                 logger -t r3p-usb "Mounted USB 3.0 storage /dev/$DEVNAME at $MNT"
             fi
         elif [ "$ACTION" = "remove" ]; then
@@ -266,7 +273,7 @@ esac
 
 	// 2. Net Hotplug Script: Auto-configure USB Tethering (Android/iOS) & 4G USB Modems as WAN
 	netScript := `#!/bin/sh
-# R3P Dual-Role USB 3.0 — Auto USB Tethering & 4G Modem WAN Uplink
+# R3P Dual-Role USB 3.0 â€” Auto USB Tethering & 4G Modem WAN Uplink
 case "$INTERFACE" in
     usb[0-9]*|wwan[0-9]*|eth[1-9]*|enx*)
         if [ "$ACTION" = "add" ] || [ "$ACTION" = "register" ]; then
@@ -314,8 +321,14 @@ esac
 		}
 		_ = os.Remove("/mnt/usb")
 		_ = os.Symlink("/mnt/sda1", "/mnt/usb")
+		_ = os.Remove("/mnt/sda")
+		_ = os.Symlink("/mnt/sda1", "/mnt/sda")
 		_ = os.MkdirAll("/mnt/sda1/downloads", 0755)
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
+		_ = os.Chmod("/mnt/sda1/downloads", 0777)
+		_ = os.Chmod("/mnt/sda1/share", 0777)
+		_ = os.Remove("/mnt/sda1/Share")
+		_ = os.Symlink("/mnt/sda1/share", "/mnt/sda1/Share")
 		ensureUsbNASShares()
 	}
 }
@@ -353,7 +366,8 @@ func ensureUsbNASShares() {
 	shares := loadNASShares()
 	hasUsbShare := false
 	for _, s := range shares {
-		if strings.HasPrefix(s.Path, "/mnt/sda1") {
+		clean := strings.TrimRight(strings.ReplaceAll(s.Path, "\\", "/"), "/")
+		if clean == "/mnt/sda1/share" || clean == "/mnt/sda1" || clean == "/mnt/sda/share" || clean == "/mnt/sda" {
 			hasUsbShare = true
 			break
 		}
@@ -626,9 +640,9 @@ func handleUSBStatus(w http.ResponseWriter, r *http.Request) {
 	if storageMounted && tetherActive {
 		activeMode = "Dual Active (Storage + USB Tether WAN)"
 	} else if storageMounted {
-		activeMode = fmt.Sprintf("USB 3.0 Storage (%s · %s)", storageDevices[0].Device, storageDevices[0].MountPoint)
+		activeMode = fmt.Sprintf("USB 3.0 Storage (%s Â· %s)", storageDevices[0].Device, storageDevices[0].MountPoint)
 	} else if len(storageDevices) > 0 {
-		activeMode = fmt.Sprintf("USB Disk Detected (%s · Unmounted)", storageDevices[0].Device)
+		activeMode = fmt.Sprintf("USB Disk Detected (%s Â· Unmounted)", storageDevices[0].Device)
 	} else if tetherActive {
 		activeMode = "USB Tethering / 4G WAN (" + tetherIface + ")"
 	}
@@ -699,31 +713,47 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 	}
 	dev := strings.TrimSpace(body.Device)
 	if !regexp.MustCompile(`^/dev/sd[a-z][0-9]*$`).MatchString(dev) {
-		writeJSON(w, http.StatusBadRequest, false, "Thiết bị không hợp lệ (chỉ hỗ trợ /dev/sd[a-z]*)")
+		writeJSON(w, http.StatusBadRequest, false, "Thiáº¿t bá»‹ khÃ´ng há»£p lá»‡ (chá»‰ há»— trá»£ /dev/sd[a-z]*)")
 		return
 	}
 	if linfo, lerr := os.Lstat(dev); lerr != nil || linfo.Mode()&os.ModeSymlink != 0 {
-		writeJSON(w, http.StatusBadRequest, false, "Thiết bị không tồn tại hoặc là symbolic link")
+		writeJSON(w, http.StatusBadRequest, false, "Thiáº¿t bá»‹ khÃ´ng tá»“n táº¡i hoáº·c lÃ  symbolic link")
 		return
 	}
 	devName := strings.TrimPrefix(dev, "/dev/")
+	targetDev := dev
 	mntPoint := "/mnt/" + devName
+	// If dev is raw disk /dev/sda and partition /dev/sda1 exists, prefer /dev/sda1
+	if regexp.MustCompile(`^sd[a-z]$`).MatchString(devName) {
+		if _, pErr := os.Stat(dev + "1"); pErr == nil {
+			targetDev = dev + "1"
+			devName = devName + "1"
+			mntPoint = "/mnt/" + devName
+		}
+	}
+	// Standardize mount point to /mnt/sda1 for primary storage
+	if mntPoint == "/mnt/sda" {
+		mntPoint = "/mnt/sda1"
+	}
 
 	if body.Action == "unmount" {
 		_, _ = runCmd(4, "sync")
-		out, err := runCmd(8, "umount", dev)
+		out, err := runCmd(8, "umount", targetDev)
+		if err != nil && targetDev != dev {
+			_, _ = runCmd(8, "umount", dev)
+		}
 		if err != nil {
 			out, err = runCmd(8, "umount", "-l", mntPoint)
 		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, false, "Không thể unmount thiết bị: "+out+" "+err.Error())
+			writeJSON(w, http.StatusInternalServerError, false, "KhÃ´ng thá»ƒ unmount thiáº¿t bá»‹: "+out+" "+err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"mounted":         false,
-			"device":          dev,
+			"device":          targetDev,
 			"storage_devices": scanUSBStorageDevices(),
-			"message":         fmt.Sprintf("Đã tháo (unmount) an toàn %s!", dev),
+			"message":         fmt.Sprintf("ÄÃ£ thÃ¡o (unmount) an toÃ n %s!", targetDev),
 		})
 		return
 	}
@@ -732,25 +762,37 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(mntPoint, 0755)
 	diskName := strings.TrimRight(devName, "0123456789")
 	tuneBlockQueue(diskName)
-	out, err := runCmd(8, "mount", "-o", "noatime,nodiratime", dev, mntPoint)
+	out, err := runCmd(8, "mount", "-o", "noatime,nodiratime", targetDev, mntPoint)
 	if err != nil {
-		out, err = runCmd(8, "mount", dev, mntPoint)
+		out, err = runCmd(8, "mount", targetDev, mntPoint)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, false, "Mount thất bại: "+out+" "+err.Error())
+		writeJSON(w, http.StatusInternalServerError, false, "Mount tháº¥t báº¡i: "+out+" "+err.Error())
 		return
 	}
 	_ = os.Remove("/mnt/usb")
 	_ = os.Symlink(mntPoint, "/mnt/usb")
 	_ = os.MkdirAll(mntPoint+"/downloads", 0755)
 	_ = os.MkdirAll(mntPoint+"/share", 0755)
+	_ = os.Chmod(mntPoint+"/downloads", 0777)
+	_ = os.Chmod(mntPoint+"/share", 0777)
+	_ = os.Remove(mntPoint + "/Share")
+	_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+	if mntPoint == "/mnt/sda1" {
+		_ = os.Remove("/mnt/sda")
+		_ = os.Symlink("/mnt/sda1", "/mnt/sda")
+	} else if mntPoint == "/mnt/sda" {
+		_ = os.Remove("/mnt/sda1")
+		_ = os.Symlink("/mnt/sda", "/mnt/sda1")
+	}
+	ensureUsbNASShares()
 
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"mounted":         true,
-		"device":          dev,
+		"device":          targetDev,
 		"mount_point":     mntPoint,
 		"storage_devices": scanUSBStorageDevices(),
-		"message":         fmt.Sprintf("Đã mount %s vào %s thành công!", dev, mntPoint),
+		"message":         fmt.Sprintf("ÄÃ£ mount %s vÃ o %s thÃ nh cÃ´ng!", targetDev, mntPoint),
 	})
 }
 
@@ -782,11 +824,11 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		rawDev = "/dev/sda1"
 	}
 	if !regexp.MustCompile(`^/dev/sd[a-z][0-9]*$`).MatchString(rawDev) {
-		writeJSON(w, http.StatusBadRequest, false, "Chỉ cho phép Format ổ lưu trữ USB (/dev/sd[a-z]*)")
+		writeJSON(w, http.StatusBadRequest, false, "Chá»‰ cho phÃ©p Format á»• lÆ°u trá»¯ USB (/dev/sd[a-z]*)")
 		return
 	}
 	if linfo, lerr := os.Lstat(rawDev); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
-		writeJSON(w, http.StatusBadRequest, false, "Không hỗ trợ Format qua symbolic link")
+		writeJSON(w, http.StatusBadRequest, false, "KhÃ´ng há»— trá»£ Format qua symbolic link")
 		return
 	}
 
@@ -794,7 +836,7 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	diskName := strings.TrimRight(devBase, "0123456789")
 	diskDev := "/dev/" + diskName
 	if linfo, err := os.Lstat(diskDev); err != nil || linfo.Mode()&os.ModeSymlink != 0 {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Không tìm thấy ổ đĩa USB %s. Hãy kiểm tra cáp USB 3.0!", diskDev))
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("KhÃ´ng tÃ¬m tháº¥y á»• Ä‘Ä©a USB %s. HÃ£y kiá»ƒm tra cÃ¡p USB 3.0!", diskDev))
 		return
 	}
 
@@ -819,7 +861,7 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		logLines = append(logLines, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg))
 	}
 
-	appendLog(fmt.Sprintf("Bắt đầu chuẩn bị Format thiết bị %s (Định dạng: %s, Nhãn: %s)...", rawDev, strings.ToUpper(fsType), label))
+	appendLog(fmt.Sprintf("Báº¯t Ä‘áº§u chuáº©n bá»‹ Format thiáº¿t bá»‹ %s (Äá»‹nh dáº¡ng: %s, NhÃ£n: %s)...", rawDev, strings.ToUpper(fsType), label))
 
 	// 1. Unmount partitions and terminate processes holding files strictly on this target disk
 	_, _ = runCmd(4, "sync")
@@ -847,19 +889,19 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = runCmd(5, "umount", "-f", diskDev)
 	_, _ = runCmd(5, "umount", "-l", diskDev)
-	appendLog("Đã ngắt kết nối (unmount) các phân vùng đang sử dụng.")
+	appendLog("ÄÃ£ ngáº¯t káº¿t ná»‘i (unmount) cÃ¡c phÃ¢n vÃ¹ng Ä‘ang sá»­ dá»¥ng.")
 
 	targetPart := rawDev
 	if body.Repartition || rawDev == diskDev {
 		targetPart = diskDev + "1"
-		appendLog(fmt.Sprintf("Đang tạo lại bảng phân vùng chuẩn trên %s -> %s...", diskDev, targetPart))
+		appendLog(fmt.Sprintf("Äang táº¡o láº¡i báº£ng phÃ¢n vÃ¹ng chuáº©n trÃªn %s -> %s...", diskDev, targetPart))
 		fdiskCtx, fdiskCancel := context.WithTimeout(r.Context(), 15*time.Second)
 		fdiskCmd := exec.CommandContext(fdiskCtx, "fdisk", diskDev)
 		fdiskCmd.Stdin = strings.NewReader("o\nn\np\n1\n\n\nw\n")
 		outBytes, _ := fdiskCmd.CombinedOutput()
 		fdiskCancel()
 		if strings.TrimSpace(string(outBytes)) != "" {
-			appendLog("fdisk: hoàn tất chia 1 phân vùng toàn bộ dung lượng.")
+			appendLog("fdisk: hoÃ n táº¥t chia 1 phÃ¢n vÃ¹ng toÃ n bá»™ dung lÆ°á»£ng.")
 		}
 		_, _ = runCmd(5, "partprobe", diskDev)
 		_, _ = runCmd(5, "blockdev", "--rereadpt", diskDev)
@@ -892,52 +934,55 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 	var fmtErr error
 	switch fsType {
 	case "ext4":
-		appendLog(fmt.Sprintf("Đang chạy mkfs.ext4 tốc độ cao (no-journal, extent, dir_index) trên %s...", targetPart))
+		appendLog(fmt.Sprintf("Äang cháº¡y mkfs.ext4 tá»‘c Ä‘á»™ cao (no-journal, extent, dir_index) trÃªn %s...", targetPart))
 		fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
 	case "exfat":
-		appendLog(fmt.Sprintf("Đang chạy mkfs.exfat trên %s...", targetPart))
+		appendLog(fmt.Sprintf("Äang cháº¡y mkfs.exfat trÃªn %s...", targetPart))
 		if _, err := os.Stat("/usr/sbin/mkfs.exfat"); err != nil {
 			_, _ = runCmd(25, "apk", "add", "--no-cache", "exfat-mkfs")
 		}
 		fmtOut, fmtErr = runCmd(90, "mkfs.exfat", "-L", label, targetPart)
 		if fmtErr != nil {
 			// Fallback to ext4 if exfat-mkfs unavailable
-			appendLog("mkfs.exfat không khả dụng, chuyển sang mkfs.ext4 tối ưu...")
+			appendLog("mkfs.exfat khÃ´ng kháº£ dá»¥ng, chuyá»ƒn sang mkfs.ext4 tá»‘i Æ°u...")
 			fsType = "ext4"
 			fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
 		}
 	case "vfat":
-		appendLog(fmt.Sprintf("Đang chạy mkfs.vfat (FAT32) trên %s...", targetPart))
+		appendLog(fmt.Sprintf("Äang cháº¡y mkfs.vfat (FAT32) trÃªn %s...", targetPart))
 		if _, err := os.Stat("/usr/sbin/mkfs.vfat"); err != nil && fileMissing("/sbin/mkfs.vfat") {
 			_, _ = runCmd(25, "apk", "add", "--no-cache", "dosfstools")
 		}
 		fmtOut, fmtErr = runCmd(90, "mkfs.vfat", "-F", "32", "-n", label, targetPart)
 		if fmtErr != nil {
-			appendLog("mkfs.vfat lỗi, chuyển sang mkfs.ext4...")
+			appendLog("mkfs.vfat lá»—i, chuyá»ƒn sang mkfs.ext4...")
 			fsType = "ext4"
 			fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
 		}
 	case "ntfs":
-		appendLog(fmt.Sprintf("Đang định dạng trên %s...", targetPart))
+		appendLog(fmt.Sprintf("Äang Ä‘á»‹nh dáº¡ng trÃªn %s...", targetPart))
 		fmtOut, fmtErr = runCmd(120, "mkfs.ntfs", "-Q", "-F", "-L", label, targetPart)
 		if fmtErr != nil {
-			appendLog("mkfs.ntfs không cài đặt, định dạng sang ext4 tốc độ cao...")
+			appendLog("mkfs.ntfs khÃ´ng cÃ i Ä‘áº·t, Ä‘á»‹nh dáº¡ng sang ext4 tá»‘c Ä‘á»™ cao...")
 			fsType = "ext4"
 			fmtOut, fmtErr = runCmd(120, "mkfs.ext4", "-F", "-O", "^has_journal,extent,dir_index", "-m", "0", "-L", label, targetPart)
 		}
 	}
 
 	if fmtErr != nil {
-		appendLog("LỖI FORMAT: " + fmtErr.Error() + " | " + fmtOut)
+		appendLog("Lá»–I FORMAT: " + fmtErr.Error() + " | " + fmtOut)
 		writeJSON(w, http.StatusInternalServerError, false, strings.Join(logLines, "\n"))
 		return
 	}
-	appendLog(fmt.Sprintf("Format %s (%s) hoàn tất thành công!", targetPart, strings.ToUpper(fsType)))
+	appendLog(fmt.Sprintf("Format %s (%s) hoÃ n táº¥t thÃ nh cÃ´ng!", targetPart, strings.ToUpper(fsType)))
 
 	// 3. Tune Queue & Mount
 	tuneBlockQueue(diskName)
 	partBase := strings.TrimPrefix(targetPart, "/dev/")
 	mntPoint := "/mnt/" + partBase
+	if mntPoint == "/mnt/sda" {
+		mntPoint = "/mnt/sda1"
+	}
 	_ = os.MkdirAll(mntPoint, 0755)
 	var mErr error
 	if fsType == "ext4" {
@@ -954,10 +999,21 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		_ = os.Symlink(mntPoint, "/mnt/usb")
 		_ = os.MkdirAll(mntPoint+"/downloads", 0755)
 		_ = os.MkdirAll(mntPoint+"/share", 0755)
+		_ = os.Chmod(mntPoint+"/downloads", 0777)
+		_ = os.Chmod(mntPoint+"/share", 0777)
+		_ = os.Remove(mntPoint + "/Share")
+		_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+		if mntPoint == "/mnt/sda1" {
+			_ = os.Remove("/mnt/sda")
+			_ = os.Symlink("/mnt/sda1", "/mnt/sda")
+		} else if mntPoint == "/mnt/sda" {
+			_ = os.Remove("/mnt/sda1")
+			_ = os.Symlink("/mnt/sda", "/mnt/sda1")
+		}
 		ensureUsbNASShares()
-		appendLog(fmt.Sprintf("Đã tự động mount %s vào %s và khởi tạo thư mục NAS / R3P_Downloads!", targetPart, mntPoint))
+		appendLog(fmt.Sprintf("ÄÃ£ tá»± Ä‘á»™ng mount %s vÃ o %s vÃ  khá»Ÿi táº¡o thÆ° má»¥c NAS / R3P_Downloads!", targetPart, mntPoint))
 	} else {
-		appendLog("Cảnh báo mount: " + mErr.Error())
+		appendLog("Cáº£nh bÃ¡o mount: " + mErr.Error())
 	}
 
 	_, _ = runCmd(4, "sync")
@@ -970,7 +1026,7 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		"label":           label,
 		"log":             strings.Join(logLines, "\n"),
 		"storage_devices": scanUSBStorageDevices(),
-		"message":         fmt.Sprintf("Đã Format %s sang chuẩn %s (Nhãn: %s) và mount vào %s thành công!", targetPart, strings.ToUpper(fsType), label, mntPoint),
+		"message":         fmt.Sprintf("ÄÃ£ Format %s sang chuáº©n %s (NhÃ£n: %s) vÃ  mount vÃ o %s thÃ nh cÃ´ng!", targetPart, strings.ToUpper(fsType), label, mntPoint),
 	})
 }
 
@@ -1012,12 +1068,12 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 
 	info, statErr := os.Lstat(targetDir)
 	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s chưa được mount hoặc không hợp lệ!", targetDir))
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("ThÆ° má»¥c %s chÆ°a Ä‘Æ°á»£c mount hoáº·c khÃ´ng há»£p lá»‡!", targetDir))
 		return
 	}
 	devName, fsType := resolveMountDeviceAndFS(targetDir)
 	if devName == "unknown" || (!strings.HasPrefix(devName, "/dev/sd") && !strings.HasPrefix(devName, "/dev/nvme") && !strings.HasPrefix(devName, "/dev/mmcblk")) {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Thư mục %s không trỏ tới thiết bị USB đang mount (%s)", targetDir, devName))
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("ThÆ° má»¥c %s khÃ´ng trá» tá»›i thiáº¿t bá»‹ USB Ä‘ang mount (%s)", targetDir, devName))
 		return
 	}
 
@@ -1027,7 +1083,7 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 			f := strings.Fields(dfLines[len(dfLines)-1])
 			if len(f) >= 4 {
 				if availMB, aErr := strconv.Atoi(f[3]); aErr == nil && availMB < sizeMB+32 {
-					writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Không đủ dung lượng trống trên %s (còn %d MB, cần tối thiểu %d MB để kiểm tra an toàn).", targetDir, availMB, sizeMB+32))
+					writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("KhÃ´ng Ä‘á»§ dung lÆ°á»£ng trá»‘ng trÃªn %s (cÃ²n %d MB, cáº§n tá»‘i thiá»ƒu %d MB Ä‘á»ƒ kiá»ƒm tra an toÃ n).", targetDir, availMB, sizeMB+32))
 					return
 				}
 			}
@@ -1036,7 +1092,7 @@ func handleUSBBenchmark(w http.ResponseWriter, r *http.Request) {
 
 	testFile := filepath.Join(targetDir, ".r3p_speedtest.bin")
 	if linfo, lerr := os.Lstat(testFile); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
-		writeJSON(w, http.StatusBadRequest, false, "Phát hiện symlink tại tệp benchmark, hủy kiểm tra")
+		writeJSON(w, http.StatusBadRequest, false, "PhÃ¡t hiá»‡n symlink táº¡i tá»‡p benchmark, há»§y kiá»ƒm tra")
 		return
 	}
 	_ = os.Remove(testFile)
@@ -1107,7 +1163,7 @@ func resolveMountDeviceAndFS(targetDir string) (string, string) {
 	return bestDev, bestFS
 }
 
-// ─── 3. Wireless Client / WISP Mode (Scan & Connect as STA Client) ─────────
+// â”€â”€â”€ 3. Wireless Client / WISP Mode (Scan & Connect as STA Client) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type ScannedWifiNetwork struct {
 	SSID       string `json:"ssid"`
@@ -1391,7 +1447,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.ContainsAny(body.Key, "\r\n\x00") {
-			writeJSON(w, http.StatusBadRequest, false, "Mật khẩu Wi-Fi không hợp lệ")
+			writeJSON(w, http.StatusBadRequest, false, "Máº­t kháº©u Wi-Fi khÃ´ng há»£p lá»‡")
 			return
 		}
 		enc := body.Encryption
@@ -1399,7 +1455,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			enc = "psk2"
 		}
 		wifiKey := body.Key
-		if wifiKey == "" || strings.HasPrefix(wifiKey, "••••") {
+		if wifiKey == "" || strings.HasPrefix(wifiKey, "â€¢â€¢â€¢â€¢") {
 			// Preserve stored password when switching DHCP <-> Static IP on an already-configured SSID
 			curUCI := parseUCIConfigMap("wireless")
 			if strings.EqualFold(curUCI["wireless.wwan_sta.ssid"], ssid) && curUCI["wireless.wwan_sta.key"] != "" {
@@ -1414,7 +1470,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if enc != "none" && (len(wifiKey) < 8 || len(wifiKey) > 63) {
-			writeJSON(w, http.StatusBadRequest, false, "Mật khẩu Wi-Fi phải từ 8–63 ký tự")
+			writeJSON(w, http.StatusBadRequest, false, "Máº­t kháº©u Wi-Fi pháº£i tá»« 8â€“63 kÃ½ tá»±")
 			return
 		}
 
@@ -1430,7 +1486,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		for _, d := range strings.Fields(strings.ReplaceAll(body.DNS, ",", " ")) {
 			parsed := net.ParseIP(d)
 			if parsed == nil || parsed.To4() == nil {
-				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ DNS IPv4 không hợp lệ: "+d)
+				writeJSON(w, http.StatusBadRequest, false, "Äá»‹a chá»‰ DNS IPv4 khÃ´ng há»£p lá»‡: "+d)
 				return
 			}
 			dnsList = append(dnsList, d)
@@ -1438,27 +1494,27 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		if proto == "static" {
 			parsedIP := net.ParseIP(staticIP)
 			if parsedIP == nil || parsedIP.To4() == nil {
-				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ IPv4 tĩnh không hợp lệ cho WWAN")
+				writeJSON(w, http.StatusBadRequest, false, "Äá»‹a chá»‰ IPv4 tÄ©nh khÃ´ng há»£p lá»‡ cho WWAN")
 				return
 			}
 			if nm == "" {
 				nm = "255.255.255.0"
 			}
 			if !isValidIPv4Netmask(nm) {
-				writeJSON(w, http.StatusBadRequest, false, "Subnet Mask không hợp lệ cho WWAN")
+				writeJSON(w, http.StatusBadRequest, false, "Subnet Mask khÃ´ng há»£p lá»‡ cho WWAN")
 				return
 			}
 		}
 		if gw != "" {
 			parsedGW := net.ParseIP(gw)
 			if parsedGW == nil || parsedGW.To4() == nil {
-				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ Gateway WWAN không hợp lệ")
+				writeJSON(w, http.StatusBadRequest, false, "Äá»‹a chá»‰ Gateway WWAN khÃ´ng há»£p lá»‡")
 				return
 			}
 		}
 		if body.BSSID != "" {
 			if _, err := net.ParseMAC(strings.TrimSpace(body.BSSID)); err != nil {
-				writeJSON(w, http.StatusBadRequest, false, "Địa chỉ BSSID không hợp lệ")
+				writeJSON(w, http.StatusBadRequest, false, "Äá»‹a chá»‰ BSSID khÃ´ng há»£p lá»‡")
 				return
 			}
 		}
@@ -1572,7 +1628,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 			"device":         body.Device,
 			"enabled":        body.Enabled,
 			"saved_list":     sanitizeSavedWifiList(loadSavedWifiList()),
-			"message":        "Đã cấu hình thu sóng Wi-Fi Client (WWAN), lưu mạng và đang kết nối...",
+			"message":        "ÄÃ£ cáº¥u hÃ¬nh thu sÃ³ng Wi-Fi Client (WWAN), lÆ°u máº¡ng vÃ  Ä‘ang káº¿t ná»‘i...",
 		})
 
 	case http.MethodDelete:
@@ -1592,7 +1648,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 		}()
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"deleted": true,
-			"message": "Đã ngắt kết nối và tắt chế độ thu Wi-Fi Client (WWAN).",
+			"message": "ÄÃ£ ngáº¯t káº¿t ná»‘i vÃ  táº¯t cháº¿ Ä‘á»™ thu Wi-Fi Client (WWAN).",
 		})
 
 	default:
@@ -1600,7 +1656,7 @@ func handleWirelessClient(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ─── Saved Wi-Fi Networks Management (/api/v1/wireless/saved) ──────────────
+// â”€â”€â”€ Saved Wi-Fi Networks Management (/api/v1/wireless/saved) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const savedWifiFile = "/etc/r3p/saved-wifi.json"
 
@@ -1756,7 +1812,7 @@ func handleWirelessSavedForget(w http.ResponseWriter, r *http.Request) {
 		"forgotten": true,
 		"ssid":      targetSSID,
 		"networks":  sanitizeSavedWifiList(loadSavedWifiList()),
-		"message":   fmt.Sprintf("Đã quên mạng Wi-Fi '%s' và xóa dữ liệu mật khẩu thành công!", targetSSID),
+		"message":   fmt.Sprintf("ÄÃ£ quÃªn máº¡ng Wi-Fi '%s' vÃ  xÃ³a dá»¯ liá»‡u máº­t kháº©u thÃ nh cÃ´ng!", targetSSID),
 	})
 }
 
@@ -1783,7 +1839,7 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if matched == nil {
-		writeJSON(w, http.StatusNotFound, false, "Không tìm thấy thông tin mạng đã lưu")
+		writeJSON(w, http.StatusNotFound, false, "KhÃ´ng tÃ¬m tháº¥y thÃ´ng tin máº¡ng Ä‘Ã£ lÆ°u")
 		return
 	}
 
@@ -1796,7 +1852,7 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 		enc = "psk2"
 	}
 	if enc != "none" && matched.Key == "" {
-		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Mạng '%s' chưa có mật khẩu đã lưu, vui lòng nhập lại mật khẩu để kết nối.", matched.SSID))
+		writeJSON(w, http.StatusBadRequest, false, fmt.Sprintf("Máº¡ng '%s' chÆ°a cÃ³ máº­t kháº©u Ä‘Ã£ lÆ°u, vui lÃ²ng nháº­p láº¡i máº­t kháº©u Ä‘á»ƒ káº¿t ná»‘i.", matched.SSID))
 		return
 	}
 
@@ -1895,7 +1951,7 @@ func handleWirelessSavedConnect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, true, map[string]interface{}{
 		"connected_ssid": matched.SSID,
 		"device":         dev,
-		"message":        fmt.Sprintf("Đang kết nối lại tới mạng '%s'...", matched.SSID),
+		"message":        fmt.Sprintf("Äang káº¿t ná»‘i láº¡i tá»›i máº¡ng '%s'...", matched.SSID),
 	})
 }
 
