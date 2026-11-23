@@ -308,4 +308,20 @@ func TestSambaShareNameSpacesAndGDriveOAuthFallback(t *testing.T) {
 	if atomic.LoadInt32(&oauthCalled) == 0 || atomic.LoadInt32(&pgCalled) == 0 {
 		t.Fatalf("expected both oauth and pg servers to be called, got oauth=%d pg=%d", oauthCalled, pgCalled)
 	}
+
+	// 3c. Verify refreshGDriveTokenWithOverride does NOT wipe Client ID and Client Secret even on playground fallback
+	customCID := "99999-hash.apps.googleusercontent.com"
+	customSec := "my-secret-key-1234"
+	refTok := "1//playground_token"
+	tok3, err3 := refreshGDriveTokenWithOverride("", true, &refTok, &customCID, &customSec)
+	if err3 != nil || tok3 != "ya29.pg_fallback_success" {
+		t.Fatalf("expected token refresh via playground fallback, got tok=%q err=%v", tok3, err3)
+	}
+	gdriveConfigLock.RLock()
+	persistedCID := currentGDriveCfg.ClientID
+	persistedSec := currentGDriveCfg.ClientSecret
+	gdriveConfigLock.RUnlock()
+	if persistedCID != customCID || persistedSec != customSec {
+		t.Fatalf("expected custom credentials preserved after fallback, got client_id=%q client_secret=%q", persistedCID, persistedSec)
+	}
 }

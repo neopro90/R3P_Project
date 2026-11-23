@@ -1368,6 +1368,31 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 	ftpAnonEnable := false
 	ftpLocalEnable := true
 
+	var savedFTP struct {
+		Port            int    `json:"port"`
+		RootDir         string `json:"root_dir"`
+		WriteEnable     *bool  `json:"write_enable"`
+		AnonymousEnable *bool  `json:"anonymous_enable"`
+		LocalEnable     *bool  `json:"local_enable"`
+	}
+	if settingsDBLoadJSON(bucketSettings, "ftp_config", "/etc/r3p/ftp_config.json", &savedFTP) {
+		if savedFTP.Port > 0 {
+			ftpPort = savedFTP.Port
+		}
+		if savedFTP.RootDir != "" {
+			ftpRootDir = savedFTP.RootDir
+		}
+		if savedFTP.WriteEnable != nil {
+			ftpWriteEnable = *savedFTP.WriteEnable
+		}
+		if savedFTP.AnonymousEnable != nil {
+			ftpAnonEnable = *savedFTP.AnonymousEnable
+		}
+		if savedFTP.LocalEnable != nil {
+			ftpLocalEnable = *savedFTP.LocalEnable
+		}
+	}
+
 	for _, line := range readFileLines("/etc/vsftpd.conf", 100) {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
@@ -1594,6 +1619,13 @@ func handleNASServices(w http.ResponseWriter, r *http.Request) {
 			sb.WriteString(fmt.Sprintf("anon_root=%s\n", ftpRootDir))
 
 			_ = atomicWriteFile("/etc/vsftpd.conf", []byte(sb.String()), 0644)
+			_ = settingsDBSaveJSON(bucketSettings, "ftp_config", "/etc/r3p/ftp_config.json", 0644, map[string]interface{}{
+				"port":             ftpPort,
+				"root_dir":         ftpRootDir,
+				"write_enable":     ftpWriteEnable,
+				"anonymous_enable": ftpAnonEnable,
+				"local_enable":     ftpLocalEnable,
+			})
 
 			if body.Enabled != nil {
 				if *body.Enabled {

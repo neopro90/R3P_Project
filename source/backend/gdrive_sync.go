@@ -596,9 +596,6 @@ func refreshGDriveTokenWithOverride(previousFailedToken string, force bool, over
 	}
 	if hasClientIDOverride {
 		clientID = nextClientIDOverride
-		if clientID == "" {
-			clientSecret = ""
-		}
 	}
 	if hasClientSecretOverride {
 		clientSecret = nextClientSecretOverride
@@ -654,10 +651,6 @@ func refreshGDriveTokenWithOverride(previousFailedToken string, force bool, over
 	}
 	if hasClientSecretOverride {
 		currentGDriveCfg.ClientSecret = clientSecret
-	}
-	if actualMode == "playground" && (!isValidGDriveClientID(currentGDriveCfg.ClientID) || res.SourceMode == "playground") {
-		currentGDriveCfg.ClientID = ""
-		currentGDriveCfg.ClientSecret = ""
 	}
 	currentGDriveCfg.TokenExpiresAt = time.Now().Unix() + expiresIn
 	currentGDriveCfg.TokenLastRefreshed = getSystemTimeNow().Format("2006-01-02 15:04:05")
@@ -1649,9 +1642,6 @@ func handleGDriveSync(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(v, "••••") {
 				next.ClientID = v
 				next.LastRefreshError = ""
-				if v == "" {
-					next.ClientSecret = ""
-				}
 			}
 		}
 		if incoming.ClientSecret != nil {
