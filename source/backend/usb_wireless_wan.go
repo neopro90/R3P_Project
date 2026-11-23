@@ -255,7 +255,7 @@ case "$DEVNAME" in
                 ln -sfn "$MNT" /mnt/usb
                 mkdir -p "$MNT/downloads" "$MNT/share"
                 chmod 777 "$MNT/downloads" "$MNT/share" 2>/dev/null
-                ln -sfn "$MNT/share" "$MNT/Share" 2>/dev/null
+                [ ! -e "$MNT/Share" ] && ln -sfn "$MNT/share" "$MNT/Share" 2>/dev/null
                 if [ "$DEVNAME" = "sda1" ]; then
                     ln -sfn /mnt/sda1 /mnt/sda 2>/dev/null
                 elif [ "$DEVNAME" = "sda" ]; then
@@ -327,8 +327,9 @@ esac
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
 		_ = os.Chmod("/mnt/sda1/downloads", 0777)
 		_ = os.Chmod("/mnt/sda1/share", 0777)
-		_ = os.Remove("/mnt/sda1/Share")
-		_ = os.Symlink("/mnt/sda1/share", "/mnt/sda1/Share")
+		if _, statErr := os.Lstat("/mnt/sda1/Share"); os.IsNotExist(statErr) {
+			_ = os.Symlink("/mnt/sda1/share", "/mnt/sda1/Share")
+		}
 		ensureUsbNASShares()
 	}
 }
@@ -363,22 +364,14 @@ func ensureFirewallWanNetwork(netName string) {
 }
 
 func ensureUsbNASShares() {
+	var existing []ShareItem
+	if settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &existing) {
+		// User has already configured shares (or explicitly deleted them).
+		// Never overwrite or auto-inject default shares over user's configuration.
+		return
+	}
 	shares := loadNASShares()
-	hasUsbShare := false
-	for _, s := range shares {
-		clean := strings.TrimRight(strings.ReplaceAll(s.Path, "\\", "/"), "/")
-		if clean == "/mnt/sda1/share" || clean == "/mnt/sda1" || clean == "/mnt/sda/share" || clean == "/mnt/sda" {
-			hasUsbShare = true
-			break
-		}
-	}
-	if !hasUsbShare {
-		shares = append([]ShareItem{
-			{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 High-Speed Storage Share"},
-			{Name: "R3P_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Local Auto-Downloader Media Library"},
-		}, shares...)
-		saveNASShares(shares)
-	}
+	saveNASShares(shares)
 }
 
 type USBStorageDeviceInfo struct {
@@ -776,8 +769,9 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(mntPoint+"/share", 0755)
 	_ = os.Chmod(mntPoint+"/downloads", 0777)
 	_ = os.Chmod(mntPoint+"/share", 0777)
-	_ = os.Remove(mntPoint + "/Share")
-	_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+	if _, statErr := os.Lstat(mntPoint + "/Share"); os.IsNotExist(statErr) {
+		_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+	}
 	if mntPoint == "/mnt/sda1" {
 		_ = os.Remove("/mnt/sda")
 		_ = os.Symlink("/mnt/sda1", "/mnt/sda")
@@ -1001,8 +995,9 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		_ = os.MkdirAll(mntPoint+"/share", 0755)
 		_ = os.Chmod(mntPoint+"/downloads", 0777)
 		_ = os.Chmod(mntPoint+"/share", 0777)
-		_ = os.Remove(mntPoint + "/Share")
-		_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+		if _, statErr := os.Lstat(mntPoint + "/Share"); os.IsNotExist(statErr) {
+			_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+		}
 		if mntPoint == "/mnt/sda1" {
 			_ = os.Remove("/mnt/sda")
 			_ = os.Symlink("/mnt/sda1", "/mnt/sda")

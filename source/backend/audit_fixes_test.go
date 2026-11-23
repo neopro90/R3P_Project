@@ -4,12 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func buildTestTarGz(t *testing.T, entries []struct {
@@ -257,32 +259,58 @@ func TestNASShareStandardizationAndKsmbdSync(t *testing.T) {
 		}
 	}
 
-	// Test share normalization logic
+	// Test share normalization logic: partition root /mnt/sda -> /mnt/sda1, /mnt/sda1 stays /mnt/sda1
 	rawShares := []ShareItem{
-		{Name: "USB_Storage", Path: "/mnt/sda", ReadOnly: false, GuestOk: true},
+		{Name: "USB_DiskRoot", Path: "/mnt/sda", ReadOnly: false, GuestOk: true},
+		{Name: "DirectRoot", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true},
 		{Name: "OldShare", Path: "/mnt/sda/share", ReadOnly: false, GuestOk: true},
 		{Name: "CaseShare", Path: "/mnt/sda1/Share", ReadOnly: false, GuestOk: true},
 		{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true},
 	}
 	for i := range rawShares {
 		cleanPath := strings.TrimRight(strings.ReplaceAll(rawShares[i].Path, "\\", "/"), "/")
-		if cleanPath == "/mnt/sda" || cleanPath == "/mnt/sda1" ||
-			strings.EqualFold(cleanPath, "/mnt/sda/share") ||
-			strings.EqualFold(cleanPath, "/mnt/sda1/share") {
+		if cleanPath == "/mnt/sda" {
+			rawShares[i].Path = "/mnt/sda1"
+		} else if strings.EqualFold(cleanPath, "/mnt/sda/share") || strings.EqualFold(cleanPath, "/mnt/sda1/Share") {
 			rawShares[i].Path = "/mnt/sda1/share"
 		}
 	}
 
-	if rawShares[0].Path != "/mnt/sda1/share" {
-		t.Errorf("rawShares[0].Path = %q, want /mnt/sda1/share", rawShares[0].Path)
+	if rawShares[0].Path != "/mnt/sda1" {
+		t.Errorf("rawShares[0].Path = %q, want /mnt/sda1", rawShares[0].Path)
 	}
-	if rawShares[1].Path != "/mnt/sda1/share" {
-		t.Errorf("rawShares[1].Path = %q, want /mnt/sda1/share", rawShares[1].Path)
+	if rawShares[1].Path != "/mnt/sda1" {
+		t.Errorf("rawShares[1].Path = %q, want /mnt/sda1", rawShares[1].Path)
 	}
 	if rawShares[2].Path != "/mnt/sda1/share" {
 		t.Errorf("rawShares[2].Path = %q, want /mnt/sda1/share", rawShares[2].Path)
 	}
-	if rawShares[3].Path != "/overlay/share" {
-		t.Errorf("rawShares[3].Path = %q, want /overlay/share", rawShares[3].Path)
+	if rawShares[3].Path != "/mnt/sda1/share" {
+		t.Errorf("rawShares[3].Path = %q, want /mnt/sda1/share", rawShares[3].Path)
 	}
+	if rawShares[4].Path != "/overlay/share" {
+		t.Errorf("rawShares[4].Path = %q, want /overlay/share", rawShares[4].Path)
+	}
+}
+
+func TestFacebookPhotoPostDownload(t *testing.T) {
+	fbURL := "https://www.facebook.com/share/p/1Dp8WAP65G/"
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	job := &DownloadJob{ID: "fb-test-456"}
+	mainPath, allPaths, err := tryDownloadSocialImagePost(ctx, fbURL, tmpDir, tmpDir, job)
+	if err != nil {
+		t.Logf("tryDownloadSocialImagePost network warning (may require live internet): %v", err)
+		return
+	}
+	if len(allPaths) == 0 || mainPath == "" {
+		t.Fatalf("expected non-empty downloaded paths, got mainPath=%q, all=%v", mainPath, allPaths)
+	}
+	st, sErr := os.Stat(mainPath)
+	if sErr != nil || st.Size() == 0 {
+		t.Fatalf("downloaded file stat error: %v, size=%d", sErr, st.Size())
+	}
+	t.Logf("Downloaded Facebook photo verified: %s (%d bytes)", mainPath, st.Size())
 }

@@ -1126,13 +1126,10 @@ type ShareItem struct {
 const sharesConfigFile = "/etc/r3p/shares.json"
 
 func loadNASShares() []ShareItem {
-	_ = os.MkdirAll("/overlay/share", 0755)
-	_ = os.MkdirAll("/overlay/downloads", 0755)
-	_ = os.Chmod("/overlay/share", 0777)
-	_ = os.Chmod("/overlay/downloads", 0777)
 	var list []ShareItem
-	settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &list)
-	if len(list) == 0 {
+	hasConfig := settingsDBLoadJSON(bucketCollections, "shares", sharesConfigFile, &list)
+	if !hasConfig {
+		// First-time factory initialization: provide clean standard defaults
 		list = []ShareItem{
 			{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
 			{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
@@ -1143,31 +1140,22 @@ func loadNASShares() []ShareItem {
 		saveNASShares(list)
 		return list
 	}
-	hasUSB := false
+
 	changed := false
 	for i := range list {
 		list[i].Password = ""
-		// Standardize and normalize USB share path: eliminate /mnt/sda vs /mnt/sda1 and Share vs share discrepancy
 		cleanPath := strings.TrimRight(strings.ReplaceAll(list[i].Path, "\\", "/"), "/")
-		if cleanPath == "/mnt/sda" || cleanPath == "/mnt/sda1" ||
-			strings.EqualFold(cleanPath, "/mnt/sda/share") ||
-			strings.EqualFold(cleanPath, "/mnt/sda1/share") {
+		// Normalize partition root: /mnt/sda -> /mnt/sda1 (mount point of partition 1).
+		// Never overwrite /mnt/sda1 to /mnt/sda1/share (user may share partition root).
+		if cleanPath == "/mnt/sda" {
+			list[i].Path = "/mnt/sda1"
+			changed = true
+		} else if strings.EqualFold(cleanPath, "/mnt/sda/share") || strings.EqualFold(cleanPath, "/mnt/sda1/Share") {
+			// Normalize case/prefix for the specific 'share' subfolder only
 			if list[i].Path != "/mnt/sda1/share" {
 				list[i].Path = "/mnt/sda1/share"
 				changed = true
 			}
-			hasUSB = true
-		} else if strings.HasPrefix(list[i].Path, "/mnt/sda1") || strings.HasPrefix(list[i].Path, "/mnt/sda") {
-			hasUSB = true
-		}
-	}
-	if !hasUSB {
-		if st, err := os.Stat("/mnt/sda1"); err == nil && st.IsDir() {
-			list = append([]ShareItem{
-				{Name: "USB_Storage", Path: "/mnt/sda1/share", ReadOnly: false, GuestOk: true, Comment: "USB 3.0 External Storage Root"},
-				{Name: "USB_Downloads", Path: "/mnt/sda1/downloads", ReadOnly: false, GuestOk: true, Comment: "R3P Auto-Downloader & USB High-Speed Downloads"},
-			}, list...)
-			changed = true
 		}
 	}
 	if changed {
@@ -1273,11 +1261,12 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		}
 		_ = os.MkdirAll(s.Path, 0755)
 		_ = os.Chmod(s.Path, 0777)
-		// Ensure case-insensitivity alias symlinks on filesystem
-		if strings.HasSuffix(s.Path, "/share") {
+		// Ensure case-insensitivity alias symlinks on filesystem only if alias doesn't exist
+		if strings.HasSuffix(s.Path, "/share") && s.Path != "/mnt/sda1" && s.Path != "/mnt/sda" {
 			alias := strings.TrimSuffix(s.Path, "/share") + "/Share"
-			_ = os.Remove(alias)
-			_ = os.Symlink(s.Path, alias)
+			if _, statErr := os.Lstat(alias); os.IsNotExist(statErr) {
+				_ = os.Symlink(s.Path, alias)
+			}
 		}
 		if strings.HasPrefix(s.Path, "/mnt/sda1") {
 			_ = os.Remove("/mnt/sda")

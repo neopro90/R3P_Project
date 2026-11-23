@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1168,6 +1170,11 @@ func startDownloadJob(job *DownloadJob) {
 			return
 		}
 		if err != nil {
+			// Fallback: Check if this URL is an image/photo share post that yt-dlp cannot parse (e.g. Facebook photo / post)
+			if mainP, allP, fbErr := tryDownloadSocialImagePost(ctx, job.URL, targetDir, tempDir, job); fbErr == nil && len(allP) > 0 {
+				finishDownloadJob(job, true, false, mainP, allP, "")
+				return
+			}
 			errMsg := strings.Join(lastErrLines, " | ")
 			if errMsg == "" {
 				errMsg = err.Error()
@@ -1250,6 +1257,177 @@ func finishDownloadJob(job *DownloadJob, success, cancelled bool, outPath string
 		}
 		_ = sendR3pTelegramMsg(job.TelegramChatID, msg)
 	}
+}
+
+// tryDownloadSocialImagePost handles image/photo posts (e.g. Facebook share post/photo)
+// that yt-dlp cannot parse because they lack video streams.
+func tryDownloadSocialImagePost(ctx context.Context, rawURL, targetDir, tempDir string, job *DownloadJob) (string, []string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", nil, err
+	}
+	host := strings.ToLower(u.Host)
+	isFB := strings.Contains(host, "facebook.com") || strings.Contains(host, "fb.watch") || strings.Contains(host, "fb.com")
+	if !isFB {
+		return "", nil, fmt.Errorf("not a supported social image domain")
+	}
+
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	fetchMeta := func(ua string) (string, error) {
+		req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if rErr != nil {
+			return "", rErr
+		}
+		req.Header.Set("User-Agent", ua)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "vi,en;q=0.9")
+		resp, dErr := client.Do(req)
+		if dErr != nil {
+			return "", dErr
+		}
+		defer resp.Body.Close()
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		return string(bodyBytes), nil
+	}
+
+	// Try with mobile/crawler UAs that trigger Facebook's OpenGraph server rendering
+	htmlContent, _ := fetchMeta("WhatsApp/2.21.12.21 A")
+	if !strings.Contains(htmlContent, "og:image") {
+		htmlContent, _ = fetchMeta("facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)")
+	}
+
+	ogImgRegex := regexp.MustCompile(`(?i)<meta\s+(?:property|name)=["']og:image["']\s+content=["']([^"']+)["']`)
+	matches := ogImgRegex.FindAllStringSubmatch(htmlContent, -1)
+	if len(matches) == 0 {
+		ogImgRegex2 := regexp.MustCompile(`(?i)<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["']og:image["']`)
+		matches = ogImgRegex2.FindAllStringSubmatch(htmlContent, -1)
+	}
+
+	var imgURLs []string
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		if len(m) >= 2 {
+			uStr := html.UnescapeString(m[1])
+			if strings.HasPrefix(uStr, "http") && !seen[uStr] && !strings.Contains(uStr, "rsrc.php") {
+				seen[uStr] = true
+				imgURLs = append(imgURLs, uStr)
+			}
+		}
+	}
+
+	if len(imgURLs) == 0 {
+		fbcdnRegex := regexp.MustCompile(`https://[^"'\s<>]+\.fbcdn\.net/[^"'\s<>]+`)
+		for _, m := range fbcdnRegex.FindAllString(htmlContent, 10) {
+			uStr := html.UnescapeString(m)
+			if !seen[uStr] && !strings.Contains(uStr, "rsrc.php") && strings.Contains(uStr, "stp=dst-jpg") {
+				seen[uStr] = true
+				imgURLs = append(imgURLs, uStr)
+			}
+		}
+	}
+
+	if len(imgURLs) == 0 {
+		return "", nil, fmt.Errorf("không tìm thấy ảnh trong bài viết Facebook này")
+	}
+
+	title := "Facebook_Photo"
+	ogTitleRegex := regexp.MustCompile(`(?i)<meta\s+(?:property|name)=["']og:title["']\s+content=["']([^"']+)["']`)
+	if tm := ogTitleRegex.FindStringSubmatch(htmlContent); len(tm) >= 2 {
+		t := html.UnescapeString(tm[1])
+		t = strings.TrimSpace(t)
+		if t != "" {
+			title = t
+		}
+	}
+	safeTitle := sanitizeFilename(title)
+	if len(safeTitle) > 60 {
+		safeTitle = safeTitle[:60]
+	}
+	if safeTitle == "" {
+		safeTitle = "Facebook_Photo"
+	}
+
+	_ = os.MkdirAll(targetDir, 0755)
+
+	var downloadedPaths []string
+	var totalBytes int64
+
+	for idx, imgURL := range imgURLs {
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
+		imgReq, iErr := http.NewRequestWithContext(ctx, http.MethodGet, imgURL, nil)
+		if iErr != nil {
+			continue
+		}
+		imgReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+		imgReq.Header.Set("Referer", "https://www.facebook.com/")
+		imgResp, gErr := client.Do(imgReq)
+		if gErr != nil {
+			continue
+		}
+
+		if imgResp.StatusCode < 200 || imgResp.StatusCode >= 300 {
+			imgResp.Body.Close()
+			continue
+		}
+
+		ext := ".jpg"
+		ctype := strings.ToLower(imgResp.Header.Get("Content-Type"))
+		if strings.Contains(ctype, "png") {
+			ext = ".png"
+		} else if strings.Contains(ctype, "webp") {
+			ext = ".webp"
+		}
+
+		var filename string
+		if len(imgURLs) == 1 {
+			filename = fmt.Sprintf("%s [%s]%s", safeTitle, job.ID, ext)
+		} else {
+			filename = fmt.Sprintf("%s_%d [%s]%s", safeTitle, idx+1, job.ID, ext)
+		}
+		outPath := filepath.Join(targetDir, filename)
+
+		outF, cErr := os.Create(outPath)
+		if cErr != nil {
+			imgResp.Body.Close()
+			continue
+		}
+
+		written, cpErr := io.Copy(outF, imgResp.Body)
+		outF.Close()
+		imgResp.Body.Close()
+
+		if cpErr == nil && written > 0 {
+			downloadedPaths = append(downloadedPaths, outPath)
+			totalBytes += written
+		} else {
+			_ = os.Remove(outPath)
+		}
+	}
+
+	if len(downloadedPaths) == 0 {
+		return "", nil, fmt.Errorf("không thể tải file ảnh từ Facebook CDN")
+	}
+
+	dlMu.Lock()
+	job.Progress = 100
+	job.Speed = ""
+	job.ETA = "00:00"
+	job.OutputBytes = totalBytes
+	job.OutputBytesMeasured = true
+	dlMu.Unlock()
+
+	return downloadedPaths[0], downloadedPaths, nil
 }
 
 func fmtBytesHuman(b int64) string {

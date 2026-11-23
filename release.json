@@ -1,9 +1,9 @@
 {
-    "version": "v1.1.30",
-    "revision": 30,
-    "released_at": "2026-11-21 21:25:41",
+    "version": "v1.1.31",
+    "revision": 31,
+    "released_at": "2026-11-23 17:09:31",
     "repo_url": "https://github.com/neopro90/R3P_Project.git",
     "branch": "main",
-    "commit_sha": "v1.1.30",
-    "changelog": "Fix SMB write access denied: chmod 777 NAS share dirs, add ksmbd user provisioning & VNPT/Viettel speedtest servers"
+    "commit_sha": "v1.1.31",
+    "changelog": "Fix SMB share auto-recreation, preserve hard drive root /mnt/sda1 shares, and support Facebook photo post downloads in yt-dlp"
 }
