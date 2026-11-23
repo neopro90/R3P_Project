@@ -1763,6 +1763,10 @@ func handleGDriveSyncClearLog(w http.ResponseWriter, r *http.Request) {
 	gdriveConfigLock.Lock()
 	gdriveLogHistory = []string{}
 	currentGDriveCfg.LastLog = []string{}
+	if currentGDriveCfg.IsSyncing {
+		currentGDriveCfg.IsSyncing = false
+		currentGDriveCfg.LastStatus = "idle"
+	}
 	_ = saveGDriveConfigToFileLocked()
 	gdriveConfigLock.Unlock()
 

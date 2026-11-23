@@ -183,25 +183,25 @@ onMounted(() => {
   <div class="h-full overflow-y-auto p-3 space-y-3 bg-[#080b11]">
     <!-- Firewall Overview Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
-      <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_engine') }}</div>
+      <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+        <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{{ t('fw_engine') }}</div>
         <div class="mono text-sm font-bold text-sky-400">nftables (fw4)</div>
-        <div class="text-[10px] text-gray-500">Live UCI /etc/config/firewall</div>
+        <div class="text-[10px] text-gray-500 truncate">Live UCI /etc/config/firewall</div>
       </div>
-      <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_syn_flood') }}</div>
+      <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+        <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{{ t('fw_syn_flood') }}</div>
         <div class="mono text-sm font-bold text-emerald-400">{{ defaults.syn_flood === '1' ? 'ENABLED' : 'DISABLED' }}</div>
-        <div class="text-[10px] text-gray-500">Default Input: {{ defaults.input || 'REJECT' }}</div>
+        <div class="text-[10px] text-gray-500 truncate">Default Input: {{ defaults.input || 'REJECT' }}</div>
       </div>
-      <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_conntrack') }}</div>
+      <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+        <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{{ t('fw_conntrack') }}</div>
         <div class="mono text-sm font-bold text-purple-400">{{ conntrackCount }} / {{ conntrackMax }}</div>
-        <div class="text-[10px] text-gray-500">nf_conntrack sessions</div>
+        <div class="text-[10px] text-gray-500 truncate">nf_conntrack active sessions</div>
       </div>
-      <div class="stat-mini">
-        <div class="text-[10.5px] text-gray-400 uppercase tracking-wider mb-1">{{ t('fw_rules_redirects') }}</div>
+      <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+        <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{{ t('fw_rules_redirects') }}</div>
         <div class="mono text-sm font-bold text-amber-400">{{ rules.length }} Rules · {{ redirects.length }} DNAT</div>
-        <div class="text-[10px] text-gray-500">{{ zones.length }} Active Zones</div>
+        <div class="text-[10px] text-gray-500 truncate">{{ zones.length }} Active Security Zones</div>
       </div>
     </div>
 
@@ -305,21 +305,21 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-for="pf in redirects" :key="pf.id">
-              <td class="font-semibold text-gray-100 text-[13.5px]">{{ pf.name || pf.id }}</td>
-              <td><span class="badge badge-blue mono uppercase text-[11px] font-bold">{{ pf.proto }}</span></td>
-              <td class="mono font-bold text-sky-300 text-[13.5px]">{{ pf.src_dport }}</td>
-              <td class="mono text-gray-200 text-[13.5px]">{{ pf.dest_ip }}:{{ pf.dest_port || pf.src_dport }}</td>
+              <td class="font-semibold text-gray-100 text-xs">{{ pf.name || pf.id }}</td>
+              <td><span class="badge badge-blue mono uppercase text-[10px] font-bold">{{ pf.proto }}</span></td>
+              <td class="mono font-bold text-sky-300 text-xs">{{ pf.src_dport }}</td>
+              <td class="mono text-gray-200 text-xs">{{ pf.dest_ip }}:{{ pf.dest_port || pf.src_dport }}</td>
               <td>
-                <span :class="pf.enabled ? 'badge badge-green' : 'badge badge-gray'">
+                <span :class="pf.enabled ? 'badge badge-green' : 'badge badge-gray'" class="text-[10px]">
                   {{ pf.enabled ? 'ACTIVE' : 'DISABLED' }}
                 </span>
               </td>
               <td>
-                <div class="flex items-center gap-2">
-                  <button type="button" class="btn-secondary text-[11.5px] py-1 px-2.5 min-w-[66px] font-semibold cursor-pointer" @click="toggleRedirect(pf)">
+                <div class="flex items-center gap-1.5">
+                  <button type="button" class="btn-secondary text-[10px] py-0.5 px-2 min-w-[58px] cursor-pointer" @click="toggleRedirect(pf)">
                     {{ pf.enabled ? 'Disable' : 'Enable' }}
                   </button>
-                  <button type="button" class="btn-danger text-[11.5px] py-1 px-2.5 font-semibold cursor-pointer" @click="deleteRedirect(pf.id)">
+                  <button type="button" class="btn-danger text-[10px] py-0.5 px-2 cursor-pointer" @click="deleteRedirect(pf.id)">
                     Delete
                   </button>
                 </div>

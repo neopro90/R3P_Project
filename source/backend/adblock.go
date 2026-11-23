@@ -1293,6 +1293,10 @@ func handleAdblockStreams(w http.ResponseWriter, r *http.Request) {
 		adStreamStats["video_ads"] = 0
 		adStreamStats["trackers"] = 0
 		adStreamsMu.Unlock()
+		adStreamSeenMu.Lock()
+		adStreamSeen = make(map[string]struct{})
+		adStreamSeenMu.Unlock()
+		_, _ = runCmd(5, "sh", "-c", "> /var/log/messages 2>/dev/null; > /tmp/log/messages 2>/dev/null; /etc/init.d/log restart; dmesg -c >/dev/null 2>&1")
 		writeJSON(w, http.StatusOK, true, map[string]interface{}{
 			"cleared": true,
 		})

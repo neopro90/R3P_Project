@@ -679,7 +679,7 @@ onMounted(async () => {
 <template>
   <div class="h-full flex flex-col space-y-3 p-2 sm:p-3 bg-[#070a12] overflow-hidden max-w-full">
     <!-- Top Configuration Accordion Bar -->
-    <div class="pro-card p-3 shrink-0">
+    <div class="pro-card p-2 shrink-0">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2 min-w-0">
           <span class="text-lg">🤖</span>

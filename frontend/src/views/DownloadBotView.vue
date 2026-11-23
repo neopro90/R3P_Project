@@ -703,7 +703,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Jobs Table -->
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto max-h-64">
         <table class="pro-table">
           <thead>
             <tr>
@@ -718,38 +718,38 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr v-if="!filteredJobs.length">
-              <td colspan="7" class="text-center text-gray-400 py-6 text-xs">
+              <td colspan="7" class="text-center text-gray-400 py-4 text-xs">
                 Chưa có tác vụ tải xuống nào trong mục này. Dán URL ở khung phía trên để bắt đầu!
               </td>
             </tr>
             <tr v-for="j in filteredJobs" :key="j.id">
-              <td class="mono font-bold text-sky-400">#{{ j.id }}</td>
-              <td class="max-w-md xl:max-w-3xl">
-                <div class="font-bold text-gray-100 truncate" :title="j.url">{{ j.url }}</div>
-                <div v-if="j.error" class="text-xs text-red-400 truncate mt-0.5" :title="j.error">
+              <td class="mono font-bold text-sky-400 text-xs">#{{ j.id }}</td>
+              <td class="max-w-md xl:max-w-xl">
+                <div class="font-bold text-gray-100 text-xs truncate" :title="j.url">{{ j.url }}</div>
+                <div v-if="j.error" class="text-[11px] text-red-400 truncate mt-0.5" :title="j.error">
                   ⚠️ {{ j.error }}
                 </div>
-                <div v-else-if="j.outputPath" class="text-xs text-gray-400 truncate font-mono mt-0.5">
+                <div v-else-if="j.outputPath" class="text-[11px] text-gray-400 truncate font-mono mt-0.5">
                   📁 {{ j.outputPath }}
                 </div>
               </td>
               <td>
-                <span class="badge" :class="j.source === 'telegram' ? 'badge-blue' : (j.source === 'ai' ? 'badge-purple' : 'badge-gray')">
-                  {{ j.source === 'telegram' ? '✈️ Telegram' : (j.source === 'ai' ? '🤖 Root AI' : '🌐 Web Dashboard') }}
+                <span class="badge text-[10px]" :class="j.source === 'telegram' ? 'badge-blue' : (j.source === 'ai' ? 'badge-purple' : 'badge-gray')">
+                  {{ j.source === 'telegram' ? '✈️ Telegram' : (j.source === 'ai' ? '🤖 Root AI' : '🌐 Web') }}
                 </span>
               </td>
               <td>
-                <span class="badge" :class="statusBadgeClass(j.status)">
+                <span class="badge text-[10px]" :class="statusBadgeClass(j.status)">
                   {{ statusLabel(j.status) }}
                 </span>
               </td>
               <td>
-                <div class="w-28 space-y-1">
-                  <div class="flex items-center justify-between text-[11px] font-mono">
+                <div class="w-24 space-y-0.5">
+                  <div class="flex items-center justify-between text-[10px] font-mono">
                     <span class="font-bold text-gray-200">{{ (j.progress || 0).toFixed(0) }}%</span>
-                    <span v-if="j.speed" class="text-emerald-400">{{ j.speed }}</span>
+                    <span v-if="j.speed" class="text-emerald-400 truncate max-w-[60px]">{{ j.speed }}</span>
                   </div>
-                  <div class="bar-track">
+                  <div class="bar-track h-1">
                     <div
                       class="bar-fill"
                       :class="j.status === 'COMPLETED' ? 'bg-emerald-400' : (j.status === 'FAILED' ? 'bg-red-400' : 'bg-sky-400')"
@@ -758,22 +758,22 @@ onUnmounted(() => {
                   </div>
                 </div>
               </td>
-              <td class="text-xs mono text-gray-400 font-medium">
+              <td class="text-[11px] mono text-gray-400 font-medium">
                 {{ j.createdAt ? j.createdAt.replace('T', ' ').slice(5, 19) : '—' }}
               </td>
-              <td class="text-right space-x-1.5 whitespace-nowrap">
+              <td class="text-right space-x-1 whitespace-nowrap">
                 <button
                   v-if="j.status === 'FAILED' || j.status.startsWith('ERR')"
                   type="button"
-                  class="btn-secondary text-xs py-1 px-2 font-semibold cursor-pointer"
+                  class="btn-secondary text-[10px] py-0.5 px-2 font-medium cursor-pointer"
                   title="Thử tải lại link này"
                   @click="retryJob(j)"
                 >
-                  🔄 Thử lại
+                  ↻ Thử lại
                 </button>
                 <button
                   type="button"
-                  class="btn-danger text-xs py-1 px-2 font-semibold cursor-pointer"
+                  class="btn-danger text-[10px] py-0.5 px-2 font-medium cursor-pointer"
                   title="Xóa job này khỏi hàng đợi"
                   @click="deleteJob(j.id)"
                 >
@@ -874,9 +874,9 @@ onUnmounted(() => {
               <td class="font-bold text-gray-100">
                 <div class="flex items-center gap-1.5">
                   <span>{{ f.name.endsWith('.mp3') ? '🎵' : '🎬' }}</span>
-                  <span class="truncate max-w-sm xl:max-w-3xl" :title="f.name">{{ f.name }}</span>
+                  <span class="truncate max-w-sm xl:max-w-2xl text-xs" :title="f.name">{{ f.name }}</span>
                 </div>
-                <div class="text-[11px] text-gray-400 mono font-normal truncate mt-0.5">
+                <div v-if="f.sub_path && f.sub_path !== f.name" class="text-[10.5px] text-gray-500 mono font-normal truncate mt-0.5">
                   📁 {{ f.sub_path }}
                 </div>
               </td>

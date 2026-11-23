@@ -371,9 +371,9 @@ onMounted(() => {
             class="w-2.5 h-2.5 rounded-full shrink-0"
             :class="clientStatus.connected ? 'bg-emerald-400 animate-pulse' : clientStatus.enabled ? 'bg-amber-400' : 'bg-gray-500'"
           ></span>
-          <span class="pro-card-title truncate">Wireless WAN Client / Thu Wi-Fi Làm Internet (STA Mode · WWAN)</span>
+          <span class="pro-card-title truncate">Thu Wi-Fi Làm Internet (STA Client · WWAN)</span>
           <span
-            class="badge"
+            class="badge text-[10px]"
             :class="clientStatus.connected ? 'badge-green' : clientStatus.enabled ? 'badge-orange' : 'badge-gray'"
           >
             {{ clientStatus.connected ? `CONNECTED (${clientStatus.ip_address})` : clientStatus.enabled ? 'ASSOCIATING…' : 'CLIENT OFF' }}
@@ -383,39 +383,23 @@ onMounted(() => {
         <div class="flex flex-wrap items-center gap-1.5 shrink-0">
           <button
             type="button"
-            class="btn-primary text-[11px] py-1 min-w-[164px]"
+            class="btn-primary text-[11px] py-0.5 px-3"
             :disabled="scanning"
             @click="scanNearbyWifi('all')"
           >
-            {{ scanning ? 'Đang quét sóng Wi-Fi…' : '🔍 Quét Cả 2.4G & 5G' }}
+            {{ scanning ? 'Đang quét sóng…' : '🔍 Quét Sóng Wi-Fi' }}
           </button>
           <button
             type="button"
-            class="btn-secondary text-[11px] py-1 border-purple-500/40 text-purple-300"
-            :disabled="scanning"
-            @click="scanNearbyWifi('5GHz')"
-          >
-            📡 Quét Riêng 5GHz
-          </button>
-          <button
-            type="button"
-            class="btn-secondary text-[11px] py-1"
-            :disabled="scanning"
-            @click="scanNearbyWifi('2.4GHz')"
-          >
-            📶 Quét Riêng 2.4GHz
-          </button>
-          <button
-            type="button"
-            class="btn-secondary text-[11px] py-1 min-w-[186px]"
+            class="btn-secondary text-[11px] py-0.5 px-2.5"
             @click="showClientForm = !showClientForm"
           >
-            {{ showClientForm ? '✕ Ẩn Khung Nhập' : '+ Nhập Thủ Công Wi-Fi Cần Thu' }}
+            {{ showClientForm ? '✕ Đóng Khung Nhập' : '+ Nhập Thủ Công' }}
           </button>
           <button
             v-if="clientStatus.configured && clientStatus.enabled"
             type="button"
-            class="btn-danger text-[11px] py-1"
+            class="btn-danger text-[11px] py-0.5 px-2.5"
             :disabled="connectingClient"
             @click="disconnectClient"
           >
@@ -425,26 +409,26 @@ onMounted(() => {
       </div>
 
       <!-- Current WWAN Status Summary -->
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-2.5 text-[12.5px] mb-2.5">
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
-          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Upstream SSID</div>
-          <div class="mono font-bold text-sky-300 text-[14px] truncate mt-0.5">{{ clientStatus.ssid || 'Chưa cấu hình' }}</div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs mb-2">
+        <div class="p-2 rounded bg-black/30 border border-white/5">
+          <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Upstream SSID</div>
+          <div class="mono font-bold text-sky-300 text-xs truncate mt-0.5">{{ clientStatus.ssid || 'Chưa cấu hình' }}</div>
         </div>
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
-          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Radio / Band</div>
-          <div class="mono text-gray-100 font-bold text-[14px] mt-0.5">{{ clientStatus.configured ? `${clientStatus.band} (${clientStatus.device})` : '—' }}</div>
+        <div class="p-2 rounded bg-black/30 border border-white/5">
+          <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Radio / Band</div>
+          <div class="mono text-gray-200 font-semibold text-xs mt-0.5">{{ clientStatus.configured ? `${clientStatus.band} (${clientStatus.device})` : '—' }}</div>
         </div>
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
-          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">WWAN Local IP</div>
-          <div class="mono text-emerald-400 font-bold text-[14px] mt-0.5">{{ clientStatus.ip_address || 'DHCP Waiting' }}</div>
+        <div class="p-2 rounded bg-black/30 border border-white/5">
+          <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">WWAN Local IP</div>
+          <div class="mono text-emerald-400 font-bold text-xs mt-0.5">{{ clientStatus.ip_address || 'DHCP Waiting' }}</div>
         </div>
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
-          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Signal / RSSI</div>
-          <div class="mono text-gray-100 font-bold text-[14px] mt-0.5">{{ clientStatus.signal_dbm || '—' }}</div>
+        <div class="p-2 rounded bg-black/30 border border-white/5">
+          <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Signal / RSSI</div>
+          <div class="mono text-gray-200 font-semibold text-xs mt-0.5">{{ clientStatus.signal_dbm || '—' }}</div>
         </div>
-        <div class="p-2.5 rounded-lg bg-black/30 border border-white/10">
-          <div class="text-[12px] text-gray-300 font-bold uppercase tracking-wide">Security</div>
-          <div class="mono text-purple-300 uppercase font-bold text-[14px] mt-0.5">{{ clientStatus.encryption || '—' }}</div>
+        <div class="p-2 rounded bg-black/30 border border-white/5">
+          <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Security</div>
+          <div class="mono text-purple-300 uppercase font-bold text-xs mt-0.5">{{ clientStatus.encryption || '—' }}</div>
         </div>
       </div>
 
@@ -660,45 +644,57 @@ onMounted(() => {
             <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="r.enabled ? 'bg-emerald-400' : 'bg-amber-400'"></span>
             <span class="pro-card-title truncate">{{ r.band }} AP · {{ r.chip }}</span>
           </div>
-          <span :class="r.enabled ? 'badge badge-green' : 'badge badge-orange'">
-            {{ r.enabled ? 'AP BROADCASTING' : 'RADIO DISABLED' }}
-          </span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span :class="r.enabled ? 'badge badge-green' : 'badge badge-orange'" class="text-[10px]">
+              {{ r.enabled ? 'BROADCASTING' : 'DISABLED' }}
+            </span>
+            <button
+              type="button"
+              class="btn-secondary text-[11px] py-0.5 px-2.5 font-medium cursor-pointer"
+              @click="editingRadio = editingRadio === r.device ? null : r.device"
+            >
+              {{ editingRadio === r.device ? '✕ Đóng' : '⚙ Cấu Hình' }}
+            </button>
+          </div>
         </div>
 
         <!-- Read-Only Summary View -->
-        <div v-if="editingRadio !== r.device" class="space-y-2.5 text-[13px]">
-          <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-300 font-medium">UCI Device / Section</span>
-            <span class="mono text-gray-200 font-semibold">{{ r.device }} / {{ r.iface_section }}</span>
-          </div>
-          <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-300 font-medium">Broadcast SSID</span>
-            <span class="mono font-bold text-sky-400 text-[14px] truncate max-w-[200px]">{{ r.ssid }}</span>
-          </div>
-          <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-300 font-medium">Channel & Bandwidth</span>
-            <span class="mono text-gray-100 font-semibold">Channel {{ r.channel }} ({{ r.htmode }})</span>
-          </div>
-          <div class="flex items-center justify-between py-1 border-b border-white/5">
-            <span class="text-gray-300 font-medium">Transmit Power</span>
-            <span class="mono text-gray-100 font-semibold">{{ r.txpower }} dBm</span>
-          </div>
-          <div class="flex items-center justify-between py-1">
-            <span class="text-gray-300 font-medium">Security Mode</span>
-            <span class="mono text-emerald-400 uppercase font-bold">{{ r.encryption }}</span>
+        <div v-if="editingRadio !== r.device" class="space-y-1.5 text-xs">
+          <div class="grid grid-cols-2 gap-2">
+            <div class="bg-black/30 border border-white/5 rounded p-2">
+              <div class="text-[10px] text-gray-400 uppercase font-semibold">Tên Wi-Fi (SSID)</div>
+              <div class="mono font-bold text-sky-400 text-[13px] truncate mt-0.5">{{ r.ssid }}</div>
+            </div>
+            <div class="bg-black/30 border border-white/5 rounded p-2">
+              <div class="text-[10px] text-gray-400 uppercase font-semibold">Bảo Mật (Encryption)</div>
+              <div class="mono font-bold text-emerald-400 uppercase text-xs truncate mt-0.5">{{ r.encryption }}</div>
+            </div>
           </div>
 
-          <div class="mt-3 pt-2.5 border-t border-white/5 flex justify-end gap-2.5">
+          <div class="grid grid-cols-3 gap-2">
+            <div class="bg-black/30 border border-white/5 rounded p-1.5">
+              <div class="text-[10px] text-gray-400 uppercase font-semibold">Kênh (Channel)</div>
+              <div class="mono font-semibold text-gray-100 text-xs mt-0.5">CH {{ r.channel }} ({{ r.htmode }})</div>
+            </div>
+            <div class="bg-black/30 border border-white/5 rounded p-1.5">
+              <div class="text-[10px] text-gray-400 uppercase font-semibold">Công Suất</div>
+              <div class="mono font-semibold text-gray-100 text-xs mt-0.5">{{ r.txpower }} dBm</div>
+            </div>
+            <div class="bg-black/30 border border-white/5 rounded p-1.5">
+              <div class="text-[10px] text-gray-400 uppercase font-semibold">Phần Cứng</div>
+              <div class="mono font-semibold text-gray-400 text-xs mt-0.5 truncate">{{ r.device }}/{{ r.iface_section }}</div>
+            </div>
+          </div>
+
+          <div class="pt-1.5 border-t border-white/5 flex justify-end">
             <button
               type="button"
-              class="btn-secondary text-[12.5px] py-1.5 px-3.5 min-w-[106px] font-semibold cursor-pointer"
+              class="text-[11px] py-1 px-3 rounded font-medium cursor-pointer transition-colors"
+              :class="r.enabled ? 'btn-danger' : 'btn-primary'"
               :disabled="savingDevice === r.device"
               @click="toggleRadioEnabled(r)"
             >
-              {{ r.enabled ? 'Disable AP' : 'Enable AP' }}
-            </button>
-            <button type="button" class="btn-primary text-[12.5px] py-1.5 px-3.5 font-bold cursor-pointer" @click="editingRadio = r.device">
-              Configure AP Radio
+              {{ r.enabled ? 'Tắt Phát Sóng (Disable AP)' : 'Bật Phát Sóng (Enable AP)' }}
             </button>
           </div>
         </div>

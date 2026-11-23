@@ -299,7 +299,6 @@ async function clearAllLogs() {
     await apiRequest('/logs', { method: 'DELETE' })
     notice.value = 'Đã xóa sạch bộ đệm nhật ký hệ thống thành công!'
     logs.value = []
-    await fetchLogs()
     setTimeout(() => { notice.value = null }, 3000)
   } catch (err: any) {
     errorMsg.value = 'Lỗi xóa log: ' + (err?.message || err)

@@ -633,9 +633,9 @@ func handleUSBStatus(w http.ResponseWriter, r *http.Request) {
 	if storageMounted && tetherActive {
 		activeMode = "Dual Active (Storage + USB Tether WAN)"
 	} else if storageMounted {
-		activeMode = fmt.Sprintf("USB 3.0 Storage (%s Â· %s)", storageDevices[0].Device, storageDevices[0].MountPoint)
+		activeMode = fmt.Sprintf("USB 3.0 Storage (%s · %s)", storageDevices[0].Device, storageDevices[0].MountPoint)
 	} else if len(storageDevices) > 0 {
-		activeMode = fmt.Sprintf("USB Disk Detected (%s Â· Unmounted)", storageDevices[0].Device)
+		activeMode = fmt.Sprintf("USB Disk Detected (%s · Unmounted)", storageDevices[0].Device)
 	} else if tetherActive {
 		activeMode = "USB Tethering / 4G WAN (" + tetherIface + ")"
 	}

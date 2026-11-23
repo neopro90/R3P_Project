@@ -255,6 +255,11 @@ func handleExplorerList(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]ExplorerEntry, 0, len(entries))
 	for _, e := range entries {
+		name := e.Name()
+		// Omit internal partition artifacts & metadata files
+		if name == "lost+found" || name == ".Trash" || strings.HasPrefix(name, ".Trash-") || name == ".DS_Store" || name == "Thumbs.db" {
+			continue
+		}
 		info, iErr := e.Info()
 		if iErr != nil {
 			continue

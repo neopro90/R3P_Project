@@ -257,14 +257,6 @@ onMounted(() => {
           </tbody>
         </table>
       </div>
-
-      <div v-if="runOutput" class="mt-3">
-        <div class="flex items-center justify-between text-[10.5px] text-gray-400 mb-1">
-          <span>Task Execution Output</span>
-          <button type="button" class="text-gray-400 hover:text-white cursor-pointer" @click="runOutput = null">Clear ×</button>
-        </div>
-        <pre class="bg-black/60 border border-white/10 rounded p-2 mono text-[11px] text-emerald-300 overflow-x-auto whitespace-pre-wrap">{{ runOutput }}</pre>
-      </div>
     </div>
 
     <!-- Integrations Grid: Telegram Bot & Quick System Scripts -->
@@ -371,6 +363,21 @@ onMounted(() => {
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Task Execution Output Terminal -->
+    <div class="pro-card">
+      <div class="pro-card-header">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" :class="runningCmd ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'"></span>
+          <span class="pro-card-title">Kết Quả Thực Thi Nhiệm Vụ (Task Execution Terminal)</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span v-if="runningCmd" class="badge badge-orange text-[9.5px] font-mono">ĐANG CHẠY: {{ runningCmd }}</span>
+          <button v-if="runOutput" type="button" class="btn-secondary text-[10.5px] py-0.5 px-2 cursor-pointer" @click="runOutput = null">Xóa output ✕</button>
+        </div>
+      </div>
+      <pre class="bg-black/60 border border-white/5 rounded p-2.5 mono text-[11px] text-emerald-300 h-28 overflow-y-auto whitespace-pre-wrap leading-relaxed">{{ runOutput || '# Sẵn sàng thực thi. Bấm [▶ Run Now] trên bảng cron hoặc [▶ Execute] ở kịch bản bảo trì để chạy và xem output trực tiếp tại đây.' }}</pre>
     </div>
   </div>
 </template>

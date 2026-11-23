@@ -81,8 +81,16 @@ const searchQuery = ref('')
 
 const filteredEntries = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return entries.value
-  return entries.value.filter((e) => e.name.toLowerCase().includes(q))
+  const base = entries.value.filter(
+    (e) =>
+      e.name !== 'lost+found' &&
+      e.name !== '.Trash' &&
+      !e.name.startsWith('.Trash-') &&
+      e.name !== '.DS_Store' &&
+      e.name !== 'Thumbs.db'
+  )
+  if (!q) return base
+  return base.filter((e) => e.name.toLowerCase().includes(q))
 })
 
 const pathSegments = computed(() => {
@@ -308,16 +316,16 @@ onUnmounted(() => {
     </div>
 
     <!-- Quick Location Shortcuts -->
-    <div class="pro-card p-3">
-      <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+    <div class="pro-card p-2">
+      <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
         <span>{{ t('exp_quick_roots') }}</span>
       </div>
-      <div class="flex items-center gap-1.5 flex-wrap">
+      <div class="flex items-center gap-1 flex-wrap">
         <button
           v-for="q in quickFolders"
           :key="q.path"
           type="button"
-          class="px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+          class="px-2 py-1 rounded border text-[11px] font-medium flex items-center gap-1 transition cursor-pointer"
           :class="currentPath === q.path || currentPath.startsWith(q.path + '/')
             ? 'bg-sky-500/20 border-sky-500/50 text-sky-300 shadow-sm'
             : 'bg-black/30 border-white/10 text-gray-400 hover:text-gray-200 hover:border-white/20'"
@@ -331,12 +339,12 @@ onUnmounted(() => {
     </div>
 
     <!-- Path Bar & Action Toolbar -->
-    <div class="pro-card p-3 flex flex-col md:flex-row items-center justify-between gap-2.5">
+    <div class="pro-card p-2 flex flex-col md:flex-row items-center justify-between gap-2">
       <!-- Breadcrumbs -->
-      <div class="flex items-center gap-1 overflow-x-auto w-full md:w-auto text-xs py-1 min-w-0">
+      <div class="flex items-center gap-1 overflow-x-auto w-full md:w-auto text-xs py-0.5 min-w-0">
         <button
           type="button"
-          class="btn-secondary px-2 py-1 text-xs shrink-0"
+          class="btn-secondary px-2 py-0.5 text-xs shrink-0"
           :disabled="currentPath === '/' || loading"
           title="Lên thư mục cha"
           @click="loadDirectory(parentPath)"
@@ -364,16 +372,16 @@ onUnmounted(() => {
       </div>
 
       <!-- Action Buttons & Search -->
-      <div class="flex items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+      <div class="flex items-center gap-1.5 w-full md:w-auto shrink-0 justify-end">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Lọc tệp..."
-          class="pro-input py-1 text-xs w-36 md:w-44"
+          class="pro-input py-0.5 text-xs w-32 md:w-40"
         />
         <button
           type="button"
-          class="btn-secondary py-1 text-xs flex items-center gap-1 min-w-[84px] justify-center"
+          class="btn-secondary py-0.5 px-2 text-xs flex items-center gap-1 cursor-pointer"
           :disabled="loading"
           @click="loadDirectory(currentPath)"
         >
@@ -382,14 +390,14 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="btn-primary py-1 text-xs flex items-center gap-1 min-w-[68px] justify-center"
+          class="btn-primary py-0.5 px-2.5 text-xs flex items-center gap-1 cursor-pointer"
           @click="createType = 'file'; showCreateModal = true"
         >
           <span>+ Tệp</span>
         </button>
         <button
           type="button"
-          class="btn-secondary py-1 text-xs flex items-center gap-1 min-w-[88px] justify-center"
+          class="btn-secondary py-0.5 px-2.5 text-xs flex items-center gap-1 cursor-pointer"
           @click="createType = 'dir'; showCreateModal = true"
         >
           <span>+ Thư mục</span>

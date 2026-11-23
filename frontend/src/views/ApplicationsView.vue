@@ -364,9 +364,9 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-for="r in repos" :key="r.id">
-              <td>
+              <td class="max-w-xs xl:max-w-md">
                 <div class="font-semibold text-gray-200 text-xs">{{ r.name }}</div>
-                <div class="text-[10.5px] text-gray-400">{{ r.description }}</div>
+                <div class="text-[10.5px] text-gray-400 truncate mt-0.5" :title="r.description">{{ r.description }}</div>
               </td>
               <td>
                 <span :class="r.type === 'github' ? 'badge badge-purple' : 'badge badge-blue'">

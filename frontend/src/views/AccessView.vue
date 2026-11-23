@@ -431,41 +431,37 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- DDNS Settings Fields -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-[13px]">
-        <!-- Provider Select -->
-        <div>
-          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Máy Chủ / Nhà Cung Cấp DDNS</label>
+      <!-- DDNS Settings Fields (All 4 on 1 row) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2 text-xs">
+        <!-- 1. Provider Select -->
+        <div class="lg:col-span-3">
+          <label class="block text-[10.5px] font-bold text-gray-400 uppercase mb-1">Nhà Cung Cấp DDNS</label>
           <select v-model="ddnsConfig.provider" class="w-full pro-input font-medium text-sky-300">
             <option v-for="p in ddnsProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <p class="text-[11px] text-gray-400 mt-1">Khuyên dùng <strong>DuckDNS.org</strong>: Hoàn toàn miễn phí, không bị hết hạn tên miền.</p>
         </div>
 
-        <!-- Domain / Subdomain Input -->
-        <div>
-          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Tên Miền (Domain / Subdomain)</label>
+        <!-- 2. Domain / Subdomain Input -->
+        <div class="lg:col-span-3">
+          <label class="block text-[10.5px] font-bold text-gray-400 uppercase mb-1">Tên Miền (Subdomain)</label>
           <div class="flex items-center gap-1">
             <input
               v-model.trim="ddnsConfig.domain"
               type="text"
               class="w-full pro-input mono font-bold text-emerald-400"
-              :placeholder="ddnsProviders.find(p => p.id === ddnsConfig.provider)?.placeholder || 'subdomain'"
+              :placeholder="ddnsConfig.provider === 'duckdns' ? 'vd: r3phome' : 'vd: domain.com'"
             />
             <span v-if="ddnsConfig.provider === 'duckdns'" class="text-xs text-gray-400 mono font-semibold shrink-0">
               .duckdns.org
             </span>
           </div>
-          <p class="text-[11px] text-gray-400 mt-1">
-            {{ ddnsConfig.provider === 'duckdns' ? 'Chỉ cần điền tên phụ (vd: r3phome)' : 'Điền đầy đủ tên miền FQDN' }}
-          </p>
         </div>
 
-        <!-- Token / Secret Key Input -->
-        <div>
+        <!-- 3. Token / Secret Key Input -->
+        <div class="lg:col-span-4">
           <div class="flex items-center justify-between mb-1">
-            <label class="text-xs font-bold text-gray-300 uppercase">Token / Khóa Bảo Mật (API Key)</label>
-            <button type="button" class="text-[11px] text-sky-400 hover:underline" @click="showDdnsToken = !showDdnsToken">
+            <label class="text-[10.5px] font-bold text-gray-400 uppercase">Token / Khóa Bảo Mật (API Key)</label>
+            <button type="button" class="text-[10.5px] text-sky-400 hover:underline cursor-pointer" @click="showDdnsToken = !showDdnsToken">
               {{ showDdnsToken ? 'Ẩn token' : 'Hiện token' }}
             </button>
           </div>
@@ -473,30 +469,15 @@ onMounted(() => {
             v-model.trim="ddnsConfig.token"
             :type="showDdnsToken ? 'text' : 'password'"
             class="w-full pro-input mono text-gray-200"
-            placeholder="Nhập Token lấy từ DuckDNS hoặc API Key"
+            placeholder="Token hoặc giữ nguyên ••••"
           />
-          <p class="text-[11px] text-gray-400 mt-1">
-            <span v-if="ddnsConfig.token.startsWith('••••')" class="text-emerald-400">
-              Token đã được ẩn bảo mật — giữ nguyên giá trị <code class="mono">••••</code> nếu không thay đổi.
-            </span>
-            <span v-else>Lấy tại trang quản trị tài khoản DuckDNS hoặc nhà cung cấp DNS.</span>
-          </p>
         </div>
-      </div>
 
-      <!-- Extra fields for Username (No-IP / DynDNS), Check Interval, and Custom URL -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-[13px]">
-        <div v-if="ddnsConfig.provider === 'noip' || ddnsConfig.provider === 'dyndns'">
-          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Tài Khoản (Username / Email)</label>
-          <input
-            v-model.trim="ddnsConfig.username"
-            type="text"
-            class="w-full pro-input mono text-gray-200"
-            placeholder="Nhập Username tài khoản No-IP / DynDNS"
-          />
-        </div>
-        <div>
-          <label class="block text-xs font-bold text-gray-300 uppercase mb-1">Chu Kỳ Kiểm Tra IP (Phút)</label>
+        <!-- 4. Check Interval (Minutes) -->
+        <div class="lg:col-span-2">
+          <label class="block text-[10.5px] font-bold text-gray-400 uppercase mb-1 truncate" title="Chu Kỳ Kiểm Tra IP (Phút)">
+            Chu Kỳ Kiểm Tra (Phút)
+          </label>
           <input
             v-model.number="ddnsConfig.check_interval"
             type="number"
@@ -506,6 +487,17 @@ onMounted(() => {
             placeholder="10"
           />
         </div>
+      </div>
+
+      <!-- Extra fields for Username (No-IP / DynDNS) -->
+      <div v-if="ddnsConfig.provider === 'noip' || ddnsConfig.provider === 'dyndns'" class="p-2.5 rounded bg-black/30 border border-white/10 text-xs">
+        <label class="block text-[10.5px] font-bold text-gray-400 uppercase mb-1">Tài Khoản (Username / Email)</label>
+        <input
+          v-model.trim="ddnsConfig.username"
+          type="text"
+          class="w-full pro-input mono text-gray-200"
+          placeholder="Nhập Username tài khoản No-IP / DynDNS"
+        />
       </div>
 
       <div v-if="ddnsConfig.provider === 'custom'" class="p-3 rounded-lg bg-black/30 border border-white/10 space-y-2">

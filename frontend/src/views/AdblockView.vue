@@ -191,10 +191,11 @@ async function clearDnsLogs() {
   if (!confirm('Bạn có muốn xóa sạch toàn bộ nhật ký truy vấn DNS?')) return
   clearingDnsLogs.value = true
   try {
+    await apiRequest('/adblock/streams', { method: 'DELETE' })
     await apiRequest('/logs', { method: 'DELETE' })
     recentLogs.value = []
-    await loadAdblock()
-    showNotice('Đã xóa nhật ký truy vấn DNS.')
+    streams.value = []
+    showNotice('Đã xóa sạch nhật ký truy vấn DNS.')
   } catch (err: any) {
     showError('Lỗi xóa log: ' + (err?.message || err))
   } finally {
@@ -463,163 +464,141 @@ onMounted(() => {
       </div>
 
       <!-- Summary KPI Strip -->
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mt-1.5">
-        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
-          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Tổng Tên Miền Đang Chặn</div>
-          <div class="mono text-xl font-black text-emerald-400">{{ (config.enabled ? (activeRules || config.total_blocked) : 0).toLocaleString() }}</div>
-          <div class="text-[12px] text-gray-400 font-medium">Nạp trong /tmp/dnsmasq.d/r3p-adblock.conf</div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-1.5">
+        <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tổng Tên Miền Đang Chặn</div>
+          <div class="mono text-lg font-bold text-emerald-400">{{ (config.enabled ? (activeRules || config.total_blocked) : 0).toLocaleString() }}</div>
+          <div class="text-[10px] text-gray-500 truncate">Nạp /tmp/dnsmasq.d/r3p-adblock.conf</div>
         </div>
-        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
-          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Nguồn Blocklist Đang Bật</div>
-          <div class="mono text-xl font-black text-sky-400">
+        <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Nguồn Blocklist Đang Bật</div>
+          <div class="mono text-lg font-bold text-sky-400">
             {{ config.sources.filter(s => s.enabled).length }} / {{ config.sources.length }}
           </div>
-          <div class="text-[12px] text-gray-400 font-medium">Hỗ trợ thêm URL tùy chỉnh</div>
+          <div class="text-[10px] text-gray-500 truncate">Hỗ trợ thêm URL tùy chỉnh</div>
         </div>
-        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
-          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Danh Sách Đen / Trắng</div>
-          <div class="mono text-xl font-black text-purple-400">
+        <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Danh Sách Đen / Trắng</div>
+          <div class="mono text-lg font-bold text-purple-400">
             {{ config.blacklist.length }} Chặn · {{ config.whitelist.length }} Cho phép
           </div>
-          <div class="text-[12px] text-gray-400 font-medium">Quy tắc tùy chỉnh của Admin</div>
+          <div class="text-[10px] text-gray-500 truncate">Quy tắc tùy chỉnh của Admin</div>
         </div>
-        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
-          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Upstream DNS</div>
-          <div class="mono text-base font-bold text-amber-400 truncate">{{ (config.upstream_dns || []).join(' · ') }}</div>
-          <div class="text-[12px] text-gray-400 font-medium">Máy chủ phân giải DNS gốc</div>
+        <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Upstream DNS</div>
+          <div class="mono text-sm font-bold text-amber-400 truncate">{{ (config.upstream_dns || []).join(' · ') }}</div>
+          <div class="text-[10px] text-gray-500 truncate">Máy chủ phân giải gốc</div>
         </div>
-        <div class="p-3 rounded-lg bg-black/35 border border-white/10 space-y-1">
-          <div class="text-[12px] font-bold text-gray-300 uppercase tracking-wide">Cập Nhật Lần Cuối</div>
-          <div class="mono text-sm font-bold text-gray-200">{{ config.last_rebuild || '—' }}</div>
-          <div class="text-[12px] text-gray-400 font-medium">Auto Cron: {{ config.auto_update ? config.update_schedule : 'Tắt' }}</div>
+        <div class="p-2 rounded bg-black/40 border border-white/5 space-y-0.5">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Cập Nhật Lần Cuối</div>
+          <div class="mono text-xs font-bold text-gray-200 truncate">{{ config.last_rebuild || '—' }}</div>
+          <div class="text-[10px] text-gray-500 truncate">Auto Cron: {{ config.auto_update ? config.update_schedule : 'Tắt' }}</div>
         </div>
       </div>
     </div>
 
-    <!-- Gateway DNS Setup Guide (When R3P operates as a Client on Upstream Router) -->
-    <div class="pro-card border border-emerald-500/35 bg-gradient-to-r from-emerald-500/[0.06] to-sky-500/[0.05]">
-      <div class="pro-card-header flex-wrap gap-2">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-          <span class="pro-card-title text-emerald-300 truncate">
-            💡 Gợi Ý Setup DNS Cho Gateway Chính (Do R3P Đang Chạy Chế Độ Client · {{ gatewaySetup.r3p_client_iface || 'WWAN/WAN' }})
-          </span>
-          <span class="badge" :class="gatewaySetup.wan_dns_listening ? 'badge-green' : 'badge-gray'">
-            {{ gatewaySetup.wan_dns_listening ? 'PORT 53 WAN/WWAN: ĐANG MỞ' : 'PORT 53 WAN/WWAN: CHỈ LAN' }}
+    <!-- Gateway DNS Setup Guide (Collapsible to save screen space) -->
+    <details class="pro-card border border-emerald-500/35 bg-gradient-to-r from-emerald-500/[0.04] to-sky-500/[0.03]">
+      <summary class="cursor-pointer font-bold text-xs text-emerald-300 flex items-center justify-between py-1 select-none">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span>💡 Hướng Dẫn Trỏ DNS Cho Gateway / Router Chính ({{ gatewaySetup.r3p_client_ip || '192.168.1.7' }})</span>
+          <span class="badge text-[9.5px]" :class="gatewaySetup.wan_dns_listening ? 'badge-green' : 'badge-gray'">
+            {{ gatewaySetup.wan_dns_listening ? 'PORT 53: ĐANG MỞ' : 'PORT 53: CHỈ LAN' }}
           </span>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
+        <span class="text-[11px] text-sky-400 font-normal">Bấm xem chi tiết ▾</span>
+      </summary>
+
+      <div class="pt-3 border-t border-white/10 mt-2 space-y-2.5">
+        <div class="flex justify-end">
           <a
             v-if="gatewaySetup.upstream_gateway_ip"
             :href="`http://${gatewaySetup.upstream_gateway_ip}`"
             target="_blank"
             rel="noopener"
-            class="btn-primary text-[11px] py-1 px-2.5"
+            class="btn-primary text-[10.5px] py-0.5 px-2.5"
           >
             🔗 Mở Trang Quản Trị Gateway Chính ({{ gatewaySetup.upstream_gateway_ip }})
           </a>
         </div>
-      </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 text-[11.5px]">
-        <!-- Box 1: Live IP Addresses of R3P DNS Server -->
-        <div class="p-3 rounded-lg bg-black/40 border border-white/10 space-y-2">
-          <div class="font-bold text-sky-300 uppercase text-[11px]">1. Địa Chỉ IP Máy Chủ DNS Của R3P</div>
-          <p class="text-gray-400 text-[11px]">
-            {{ gatewaySetup.wan_dns_listening
-              ? 'R3P đang mở cổng DNS 53 (TCP/UDP) trên cả mạng LAN và mạng chính nội bộ (RFC1918):'
-              : 'R3P đang lắng nghe cổng DNS 53 (TCP/UDP) trên mạng LAN nội bộ (bật tùy chọn chia sẻ RFC1918 bên dưới nếu cần cho router chính dùng chung):' }}
-          </p>
-          <div class="flex items-center justify-between p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
-            <div class="min-w-0 pr-2">
-              <div class="text-[10px] text-emerald-300 uppercase font-semibold truncate">IP R3P Trên Mạng Gateway Chính ({{ gatewaySetup.r3p_client_iface || 'WWAN' }})</div>
-              <div class="mono text-sm font-bold text-white">{{ gatewaySetup.r3p_client_ip || '192.168.1.6' }}</div>
-            </div>
-            <button
-              type="button"
-              class="btn-primary text-[10.5px] py-1 px-2.5 min-w-[96px]"
-              @click="copyToClipboard(gatewaySetup.r3p_client_ip || '192.168.1.6', 'client_ip')"
-            >
-              {{ copiedText === 'client_ip' ? '✓ Đã Copy!' : '📋 Copy IP' }}
-            </button>
-          </div>
-          <div class="flex items-center justify-between p-2 rounded bg-sky-500/10 border border-sky-500/25">
-            <div class="min-w-0 pr-2">
-              <div class="text-[10px] text-sky-300 uppercase font-semibold truncate">IP R3P Trên Mạng LAN Nội Bộ (br-lan)</div>
-              <div class="mono text-sm font-bold text-white">{{ gatewaySetup.r3p_lan_ip || '192.168.2.1' }}</div>
-            </div>
-            <button
-              type="button"
-              class="btn-secondary text-[10.5px] py-1 px-2.5 min-w-[96px]"
-              @click="copyToClipboard(gatewaySetup.r3p_lan_ip || '192.168.2.1', 'lan_ip')"
-            >
-              {{ copiedText === 'lan_ip' ? '✓ Đã Copy!' : '📋 Copy IP' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Box 2: How to configure on Main Gateway Router -->
-        <div class="p-3 rounded-lg bg-black/40 border border-white/10 space-y-1.5">
-          <div class="font-bold text-emerald-300 uppercase text-[11px]">
-            2. Cách Cài Trên Modem / Gateway Chính ({{ gatewaySetup.upstream_gateway_ip || '192.168.1.1' }})
-          </div>
-          <p class="text-gray-300 text-[11px]">
-            Để <strong>toàn bộ điện thoại, TV, laptop đang bắt Wi-Fi của Modem chính</strong> đều được R3P lọc sạch quảng cáo:
-          </p>
-          <ol class="list-decimal list-inside space-y-1 text-gray-300 text-[11px]">
-            <li>
-              Truy cập Modem chính tại
-              <a
-                :href="`http://${gatewaySetup.upstream_gateway_ip || '192.168.1.1'}`"
-                target="_blank"
-                rel="noopener"
-                class="mono text-sky-400 underline font-semibold"
-              >http://{{ gatewaySetup.upstream_gateway_ip || '192.168.1.1' }}</a>
-            </li>
-            <li>Vào mục <strong>Network / LAN → DHCP Server → DNS Server</strong>.</li>
-            <li>
-              Đặt <strong>Primary DNS (DNS 1)</strong> =
-              <code class="mono font-bold text-emerald-300 bg-emerald-500/15 px-1.5 py-0.5 rounded">{{ gatewaySetup.r3p_client_ip || '192.168.1.6' }}</code>
-            </li>
-            <li>
-              Đặt <strong>Secondary DNS (DNS 2 dự phòng)</strong> =
-              <code class="mono font-bold text-sky-300 bg-sky-500/15 px-1.5 py-0.5 rounded">1.1.1.1</code>
-            </li>
-            <li>Lưu lại (Save) và kết nối lại Wi-Fi trên thiết bị để nhận DNS mới.</li>
-          </ol>
-        </div>
-
-        <!-- Box 3: Per-device DNS setup (Windows / Phone / Smart TV) -->
-        <div class="p-3 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between space-y-2">
-          <div>
-            <div class="font-bold text-purple-300 uppercase text-[11px]">3. Hoặc Trỏ DNS Trực Tiếp Trên Máy Tính / Điện Thoại</div>
-            <p class="text-gray-400 text-[11px] mt-1">
-              Nếu không muốn sửa cấu hình trên Modem chính, bạn có thể nhập DNS thủ công trên từng thiết bị:
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-2.5 text-xs">
+          <!-- Box 1: Live IP Addresses of R3P DNS Server -->
+          <div class="p-2.5 rounded bg-black/40 border border-white/10 space-y-1.5">
+            <div class="font-bold text-sky-300 uppercase text-[10.5px]">1. Địa Chỉ IP Máy Chủ DNS R3P</div>
+            <p class="text-gray-400 text-[10.5px]">
+              {{ gatewaySetup.wan_dns_listening
+                ? 'R3P đang mở cổng DNS 53 trên cả mạng LAN và mạng chính nội bộ (RFC1918):'
+                : 'R3P đang lắng nghe cổng DNS 53 trên LAN (bật chia sẻ RFC1918 bên dưới nếu cần router chính dùng chung):' }}
             </p>
-            <div class="mt-1.5 space-y-1 text-[11px] text-gray-300">
-              <div>• <strong>Khi bắt Wi-Fi nhà ({{ gatewaySetup.upstream_gateway_ip || '192.168.1.1' }}):</strong> Đặt DNS = <code class="mono text-emerald-300 font-bold">{{ gatewaySetup.r3p_client_ip || '192.168.1.6' }}</code></div>
-              <div>• <strong>Khi cắm dây LAN vào R3P:</strong> Đặt DNS = <code class="mono text-sky-300 font-bold">{{ gatewaySetup.r3p_lan_ip || '192.168.2.1' }}</code></div>
-            </div>
-          </div>
-
-          <div class="p-2 rounded bg-black/60 border border-white/10">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[10px] text-gray-400 uppercase font-semibold">Lệnh PowerShell đặt DNS nhanh trên Windows:</span>
+            <div class="flex items-center justify-between p-1.5 rounded bg-emerald-500/10 border border-emerald-500/30">
+              <div class="min-w-0 pr-2">
+                <div class="text-[9.5px] text-emerald-300 uppercase font-semibold truncate">IP R3P Trên Mạng Chính ({{ gatewaySetup.r3p_client_iface || 'WWAN' }})</div>
+                <div class="mono text-xs font-bold text-white">{{ gatewaySetup.r3p_client_ip || '192.168.1.7' }}</div>
+              </div>
               <button
                 type="button"
-                class="text-[10px] text-sky-400 hover:underline cursor-pointer"
-                @click="copyToClipboard(`Set-DnsClientServerAddress -InterfaceAlias 'Wi-Fi' -ServerAddresses ('${gatewaySetup.r3p_client_ip || '192.168.1.6'}','1.1.1.1')`, 'ps_cmd')"
+                class="btn-primary text-[10px] py-0.5 px-2"
+                @click="copyToClipboard(gatewaySetup.r3p_client_ip || '192.168.1.7', 'client_ip')"
               >
-                {{ copiedText === 'ps_cmd' ? '✓ Đã Copy Lệnh' : '📋 Copy Lệnh' }}
+                {{ copiedText === 'client_ip' ? '✓ Đã Copy' : '📋 Copy' }}
               </button>
             </div>
-            <code class="mono text-[10px] text-emerald-300 break-all block">
-              Set-DnsClientServerAddress -InterfaceAlias "Wi-Fi" -ServerAddresses ("{{ gatewaySetup.r3p_client_ip || '192.168.1.6' }}","1.1.1.1")
-            </code>
+            <div class="flex items-center justify-between p-1.5 rounded bg-sky-500/10 border border-sky-500/25">
+              <div class="min-w-0 pr-2">
+                <div class="text-[9.5px] text-sky-300 uppercase font-semibold truncate">IP R3P Trên LAN (br-lan)</div>
+                <div class="mono text-xs font-bold text-white">{{ gatewaySetup.r3p_lan_ip || '192.168.1.7' }}</div>
+              </div>
+              <button
+                type="button"
+                class="btn-secondary text-[10px] py-0.5 px-2"
+                @click="copyToClipboard(gatewaySetup.r3p_lan_ip || '192.168.1.7', 'lan_ip')"
+              >
+                {{ copiedText === 'lan_ip' ? '✓ Đã Copy' : '📋 Copy' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Box 2: How to configure on Main Gateway Router -->
+          <div class="p-2.5 rounded bg-black/40 border border-white/10 space-y-1">
+            <div class="font-bold text-emerald-300 uppercase text-[10.5px]">
+              2. Cài Trên Modem / Gateway Chính ({{ gatewaySetup.upstream_gateway_ip || '192.168.1.1' }})
+            </div>
+            <ol class="list-decimal list-inside space-y-1 text-gray-300 text-[10.5px]">
+              <li>Vào mục <strong>DHCP Server → DNS Server</strong> trên Modem.</li>
+              <li>Đặt <strong>DNS 1</strong> = <code class="mono font-bold text-emerald-300 bg-emerald-500/15 px-1 py-0.2 rounded">{{ gatewaySetup.r3p_client_ip || '192.168.1.7' }}</code></li>
+              <li>Đặt <strong>DNS 2 (dự phòng)</strong> = <code class="mono font-bold text-sky-300 bg-sky-500/15 px-1 py-0.2 rounded">1.1.1.1</code></li>
+              <li>Lưu lại và kết nối lại Wi-Fi thiết bị để nhận DNS mới.</li>
+            </ol>
+          </div>
+
+          <!-- Box 3: Per-device DNS setup -->
+          <div class="p-2.5 rounded bg-black/40 border border-white/10 space-y-1.5">
+            <div class="font-bold text-purple-300 uppercase text-[10.5px]">3. Trỏ DNS Trực Tiếp Thiết Bị</div>
+            <div class="space-y-1 text-[10.5px] text-gray-300">
+              <div>• Wi-Fi nhà: DNS = <code class="mono text-emerald-300 font-bold">{{ gatewaySetup.r3p_client_ip || '192.168.1.7' }}</code></div>
+              <div>• Cắm dây LAN R3P: DNS = <code class="mono text-sky-300 font-bold">{{ gatewaySetup.r3p_lan_ip || '192.168.1.7' }}</code></div>
+            </div>
+            <div class="p-1.5 rounded bg-black/60 border border-white/10">
+              <div class="flex items-center justify-between mb-0.5">
+                <span class="text-[9.5px] text-gray-400 uppercase font-semibold">PowerShell Windows:</span>
+                <button
+                  type="button"
+                  class="text-[9.5px] text-sky-400 hover:underline cursor-pointer"
+                  @click="copyToClipboard(`Set-DnsClientServerAddress -InterfaceAlias 'Wi-Fi' -ServerAddresses ('${gatewaySetup.r3p_client_ip || '192.168.1.7'}','1.1.1.1')`, 'ps_cmd')"
+                >
+                  {{ copiedText === 'ps_cmd' ? '✓ Đã Copy' : '📋 Copy' }}
+                </button>
+              </div>
+              <code class="mono text-[9px] text-emerald-300 break-all block leading-tight">
+                Set-DnsClientServerAddress -InterfaceAlias "Wi-Fi" -ServerAddresses ("{{ gatewaySetup.r3p_client_ip || '192.168.1.7' }}","1.1.1.1")
+              </code>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </details>
 
     <!-- Real-Time Ad Stream Inspector & Pattern Recognizer -->
     <div class="pro-card border border-purple-500/35 bg-gradient-to-r from-purple-500/[0.05] via-black/30 to-sky-500/[0.05] space-y-3">

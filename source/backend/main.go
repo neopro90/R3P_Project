@@ -1624,7 +1624,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodDelete || (r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/clear")) {
-		_, _ = runCmd(5, "sh", "-c", "/etc/init.d/log restart; dmesg -c >/dev/null 2>&1")
+		_, _ = runCmd(5, "sh", "-c", "> /var/log/messages 2>/dev/null; > /tmp/log/messages 2>/dev/null; /etc/init.d/log restart; dmesg -c >/dev/null 2>&1")
 		writeJSON(w, http.StatusOK, true, map[string]string{
 			"message": "Đã xóa sạch bộ đệm nhật ký hệ thống thành công!",
 		})

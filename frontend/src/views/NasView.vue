@@ -886,7 +886,7 @@ onUnmounted(() => {
         <div class="flex items-center gap-2 min-w-0">
           <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
           <span class="pro-card-title truncate">{{ t('nas_usb_heading') }}</span>
-          <span class="badge badge-blue uppercase">MODE: {{ usbStatus.active_mode }}</span>
+          <span class="badge badge-blue uppercase">MODE: {{ (usbStatus.active_mode || '').replace(/Â·/g, '·') }}</span>
           <span v-if="usbStatus.hotplug_ready" class="badge badge-green">AUTO-HOTPLUG ACTIVE</span>
         </div>
 
