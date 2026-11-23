@@ -43,12 +43,13 @@ uci set dropbear.@dropbear[0].RootPasswordAuth='on'
 uci -q delete dropbear.@dropbear[0].Interface
 uci commit dropbear
 
-# Ensure NAS base directories and compatibility symlinks (/mnt/sda <-> /mnt/sda1, Share <-> share)
+# Ensure NAS base directories and compatibility symlinks (/mnt/sda <-> /mnt/sda1)
 mkdir -p /mnt/sda1/share /mnt/sda1/downloads /overlay/share /overlay/downloads
 # World-writable so SMB clients can write regardless of auth mode or FS mount options
 chmod 777 /mnt/sda1/share /mnt/sda1/downloads /overlay/share /overlay/downloads 2>/dev/null || true
 ln -sfn /mnt/sda1 /mnt/sda 2>/dev/null
-ln -sfn /mnt/sda1/share /mnt/sda1/Share 2>/dev/null
+# Clean up any legacy Share -> share symlink so Share can be an independent folder
+[ -L /mnt/sda1/Share ] && rm -f /mnt/sda1/Share 2>/dev/null
 
 # Clean up default OpenWrt ksmbd testshare/share and configure canonical R3P shares
 if [ -f /etc/config/ksmbd ]; then

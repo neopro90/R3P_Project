@@ -1,9 +1,9 @@
 {
-    "version": "v1.1.31",
-    "revision": 31,
-    "released_at": "2026-11-23 17:09:31",
+    "version": "v1.1.32",
+    "revision": 32,
+    "released_at": "2026-11-23 17:20:41",
     "repo_url": "https://github.com/neopro90/R3P_Project.git",
     "branch": "main",
-    "commit_sha": "v1.1.31",
-    "changelog": "Fix SMB share auto-recreation, preserve hard drive root /mnt/sda1 shares, and support Facebook photo post downloads in yt-dlp"
+    "commit_sha": "v1.1.32",
+    "changelog": "Strict preservation of Share case: do not alias Share to share, remove symlinks, and allow real Share directories"
 }

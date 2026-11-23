@@ -259,11 +259,12 @@ func TestNASShareStandardizationAndKsmbdSync(t *testing.T) {
 		}
 	}
 
-	// Test share normalization logic: partition root /mnt/sda -> /mnt/sda1, /mnt/sda1 stays /mnt/sda1
+	// Test share normalization logic: partition root /mnt/sda -> /mnt/sda1, preserves exact subfolder case (Share stays Share)
 	rawShares := []ShareItem{
 		{Name: "USB_DiskRoot", Path: "/mnt/sda", ReadOnly: false, GuestOk: true},
 		{Name: "DirectRoot", Path: "/mnt/sda1", ReadOnly: false, GuestOk: true},
 		{Name: "OldShare", Path: "/mnt/sda/share", ReadOnly: false, GuestOk: true},
+		{Name: "OldUpperShare", Path: "/mnt/sda/Share", ReadOnly: false, GuestOk: true},
 		{Name: "CaseShare", Path: "/mnt/sda1/Share", ReadOnly: false, GuestOk: true},
 		{Name: "NAND_Share", Path: "/overlay/share", ReadOnly: false, GuestOk: true},
 	}
@@ -271,8 +272,8 @@ func TestNASShareStandardizationAndKsmbdSync(t *testing.T) {
 		cleanPath := strings.TrimRight(strings.ReplaceAll(rawShares[i].Path, "\\", "/"), "/")
 		if cleanPath == "/mnt/sda" {
 			rawShares[i].Path = "/mnt/sda1"
-		} else if strings.EqualFold(cleanPath, "/mnt/sda/share") || strings.EqualFold(cleanPath, "/mnt/sda1/Share") {
-			rawShares[i].Path = "/mnt/sda1/share"
+		} else if strings.HasPrefix(cleanPath, "/mnt/sda/") {
+			rawShares[i].Path = "/mnt/sda1/" + strings.TrimPrefix(cleanPath, "/mnt/sda/")
 		}
 	}
 
@@ -285,11 +286,14 @@ func TestNASShareStandardizationAndKsmbdSync(t *testing.T) {
 	if rawShares[2].Path != "/mnt/sda1/share" {
 		t.Errorf("rawShares[2].Path = %q, want /mnt/sda1/share", rawShares[2].Path)
 	}
-	if rawShares[3].Path != "/mnt/sda1/share" {
-		t.Errorf("rawShares[3].Path = %q, want /mnt/sda1/share", rawShares[3].Path)
+	if rawShares[3].Path != "/mnt/sda1/Share" {
+		t.Errorf("rawShares[3].Path = %q, want /mnt/sda1/Share", rawShares[3].Path)
 	}
-	if rawShares[4].Path != "/overlay/share" {
-		t.Errorf("rawShares[4].Path = %q, want /overlay/share", rawShares[4].Path)
+	if rawShares[4].Path != "/mnt/sda1/Share" {
+		t.Errorf("rawShares[4].Path = %q, want /mnt/sda1/Share", rawShares[4].Path)
+	}
+	if rawShares[5].Path != "/overlay/share" {
+		t.Errorf("rawShares[5].Path = %q, want /overlay/share", rawShares[5].Path)
 	}
 }
 

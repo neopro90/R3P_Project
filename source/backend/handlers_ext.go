@@ -1145,17 +1145,14 @@ func loadNASShares() []ShareItem {
 	for i := range list {
 		list[i].Password = ""
 		cleanPath := strings.TrimRight(strings.ReplaceAll(list[i].Path, "\\", "/"), "/")
-		// Normalize partition root: /mnt/sda -> /mnt/sda1 (mount point of partition 1).
-		// Never overwrite /mnt/sda1 to /mnt/sda1/share (user may share partition root).
+		// Normalize partition mount prefix only (/mnt/sda -> /mnt/sda1).
+		// Preserve exact case of all subdirectories (Share stays Share, share stays share).
 		if cleanPath == "/mnt/sda" {
 			list[i].Path = "/mnt/sda1"
 			changed = true
-		} else if strings.EqualFold(cleanPath, "/mnt/sda/share") || strings.EqualFold(cleanPath, "/mnt/sda1/Share") {
-			// Normalize case/prefix for the specific 'share' subfolder only
-			if list[i].Path != "/mnt/sda1/share" {
-				list[i].Path = "/mnt/sda1/share"
-				changed = true
-			}
+		} else if strings.HasPrefix(cleanPath, "/mnt/sda/") {
+			list[i].Path = "/mnt/sda1/" + strings.TrimPrefix(cleanPath, "/mnt/sda/")
+			changed = true
 		}
 	}
 	if changed {
@@ -1261,11 +1258,10 @@ func syncSambaConfigFile(shares []ShareItem) error {
 		}
 		_ = os.MkdirAll(s.Path, 0755)
 		_ = os.Chmod(s.Path, 0777)
-		// Ensure case-insensitivity alias symlinks on filesystem only if alias doesn't exist
-		if strings.HasSuffix(s.Path, "/share") && s.Path != "/mnt/sda1" && s.Path != "/mnt/sda" {
-			alias := strings.TrimSuffix(s.Path, "/share") + "/Share"
-			if _, statErr := os.Lstat(alias); os.IsNotExist(statErr) {
-				_ = os.Symlink(s.Path, alias)
+		// If a legacy symlink /mnt/sda1/Share -> /mnt/sda1/share exists, remove it so Share can be its own real directory
+		if s.Path == "/mnt/sda1/Share" {
+			if linfo, err := os.Lstat("/mnt/sda1/Share"); err == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				_ = os.Remove("/mnt/sda1/Share")
 			}
 		}
 		if strings.HasPrefix(s.Path, "/mnt/sda1") {

@@ -255,7 +255,7 @@ case "$DEVNAME" in
                 ln -sfn "$MNT" /mnt/usb
                 mkdir -p "$MNT/downloads" "$MNT/share"
                 chmod 777 "$MNT/downloads" "$MNT/share" 2>/dev/null
-                [ ! -e "$MNT/Share" ] && ln -sfn "$MNT/share" "$MNT/Share" 2>/dev/null
+                [ -L "$MNT/Share" ] && rm -f "$MNT/Share" 2>/dev/null
                 if [ "$DEVNAME" = "sda1" ]; then
                     ln -sfn /mnt/sda1 /mnt/sda 2>/dev/null
                 elif [ "$DEVNAME" = "sda" ]; then
@@ -327,8 +327,8 @@ esac
 		_ = os.MkdirAll("/mnt/sda1/share", 0755)
 		_ = os.Chmod("/mnt/sda1/downloads", 0777)
 		_ = os.Chmod("/mnt/sda1/share", 0777)
-		if _, statErr := os.Lstat("/mnt/sda1/Share"); os.IsNotExist(statErr) {
-			_ = os.Symlink("/mnt/sda1/share", "/mnt/sda1/Share")
+		if linfo, statErr := os.Lstat("/mnt/sda1/Share"); statErr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove("/mnt/sda1/Share")
 		}
 		ensureUsbNASShares()
 	}
@@ -769,8 +769,8 @@ func handleUSBMount(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(mntPoint+"/share", 0755)
 	_ = os.Chmod(mntPoint+"/downloads", 0777)
 	_ = os.Chmod(mntPoint+"/share", 0777)
-	if _, statErr := os.Lstat(mntPoint + "/Share"); os.IsNotExist(statErr) {
-		_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+	if linfo, statErr := os.Lstat(mntPoint + "/Share"); statErr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(mntPoint + "/Share")
 	}
 	if mntPoint == "/mnt/sda1" {
 		_ = os.Remove("/mnt/sda")
@@ -995,8 +995,8 @@ func handleUSBFormat(w http.ResponseWriter, r *http.Request) {
 		_ = os.MkdirAll(mntPoint+"/share", 0755)
 		_ = os.Chmod(mntPoint+"/downloads", 0777)
 		_ = os.Chmod(mntPoint+"/share", 0777)
-		if _, statErr := os.Lstat(mntPoint + "/Share"); os.IsNotExist(statErr) {
-			_ = os.Symlink(mntPoint+"/share", mntPoint+"/Share")
+		if linfo, statErr := os.Lstat(mntPoint + "/Share"); statErr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(mntPoint + "/Share")
 		}
 		if mntPoint == "/mnt/sda1" {
 			_ = os.Remove("/mnt/sda")
